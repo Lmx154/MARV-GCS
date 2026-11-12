@@ -74,10 +74,11 @@ Rates and commands
 - Every other command gets UNSUPPORTED. The device layer never arms, never changes a mode and does nothing
   when the ground station is lost.
 
-Both ends build the messages from the same definitions: `mavlink = "=0.21.0"` with `dialect-common` and
-`mav2-message-extensions`. A custom dialect is not needed yet; when the first message outside `common`
-appears it becomes one repo (`marv-dialect`: an XML that includes common.xml plus a build script), and the
-`dialect` alias changes in one line at each end.
+Both ends build the messages from byte-identical MAVLink XML with generator 0.21.0 and extension fields
+on: the ground station through `mavlink = "=0.21.0"` with `mav2-message-extensions`, the device through
+`marv-dialect` (see section 4). `marv-dialect` holds the `common` set only for now; the first message
+outside `common` adds a `marv.xml` to it, and the ground station then switches its `dialect` alias to
+that crate in one line.
 
 Not now, each with its trigger: SYS_STATUS and battery (battery data exists); ATTITUDE (an estimator);
 TIMESYNC (timestamps must line up with the computer); parameter metadata (descriptions or ranges wanted);
@@ -128,11 +129,29 @@ Acceptance
 A sans-IO core (`Node`: bytes and time in, frames out) and one thin `async run` over any
 `embedded_io_async::{Read, Write}`. No USB, transport or executor dependency.
 
-- Codec: the `mavlink` crate at the message-struct level only (`serialize_message_data`, `D::deser`,
-  `calculate_crc` with `D::EXTRA_CRC`; `MC/src/lib.rs:211-226, 459, 1155`), with its own deframer. Never the
-  `MavMessage` enum's `ser` / `parse` or the `write_*` helpers: they are the source of the roughly 70 kB
-  flash warning (`MC/src/lib.rs:1412-1414`). Rejected: mavio (a second code generator, two dialect
-  definitions) and a hand-written codec (every new message by hand is the friction the owner ruled out).
+- Codec (amended 2026-11-12 after the lead's build experiments; architect's second decision): the message
+  types come from `marv-dialect`, a small crate in its own repo (`~/Documents/MARV-V2-drivers/marv-dialect`)
+  that runs `mavlink-bindgen` =0.21.0 as a BUILD-dependency (with `mav2-message-extensions`) over
+  `common.xml`, `standard.xml` and `minimal.xml` copied byte-identical from the `mavlink` 0.21.0 package,
+  and depends at run time on `mavlink-core` =0.21.0 (`embedded`; `std` as an additive feature),
+  num-traits, num-derive and bitflags. Why not the stock `mavlink` crate: with `mav2-message-extensions`
+  and no std it does not build, because that feature switches on the optional normal dependency
+  `mavlink-bindgen` (regex, quick-xml; `mavlink-0.21.0/Cargo.toml:129, :251`); without the feature
+  `HIGHRES_IMU` has no `id`, and COMMAND_ACK, GPS_RAW_INT, SCALED_PRESSURE and AUTOPILOT_VERSION lose
+  their extension fields too. The XML is MIT-licensed (https://mavlink.io/en/#license): the repo carries
+  `definitions/LICENSE-MAVLINK`.
+- The device layer uses the same `mavlink-core` items as planned, at the message-struct level only
+  (`serialize_message_data`, `D::deser`, `calculate_crc` with `D::EXTRA_CRC`;
+  `MC/src/lib.rs:211-226, 459, 1155`), with its own deframer. Never the `MavMessage` enum's `ser` /
+  `parse` or the `write_*` helpers: they are the source of the roughly 70 kB flash warning
+  (`MC/src/lib.rs:1412-1414`). Rejected: the stock crate with extension bytes appended by hand (trailing
+  zeros are stripped from the base payload, so the byte lands at the wrong offset); a patched or forked
+  `mavlink`; mavio (a second code generator); a hand-written codec.
+- Lock-step check, in `marv-dialect` (`cargo test --test same_wire`, against the std `mavlink` crate as a
+  dev-dependency): the sha256 of each vendored file; for every message id the name, EXTRA_CRC, ENCODED_LEN
+  and the bytes of a NON-ZERO payload after a round trip (an all-zero payload proves nothing: MAVLink 2
+  strips trailing zeros and the CRC seed leaves extension fields out); and a positive control showing the
+  comparison fails against a `mavlink` built without extension fields.
 - The layer owns: framing, sequence numbers, CRC; HEARTBEAT and presence of the ground station; the
   parameter protocol; commands 511 and 512 and UNSUPPORTED for the rest; the stream scheduler; a
   STATUSTEXT queue of 4.
@@ -154,6 +173,10 @@ impl<'a> Node<'a> {
 }
 ```
 
+Dependencies: `marv-dialect`, embedded-io-async 0.7, embedded-hal-async 1.0, optional defmt; the std
+`mavlink` crate only as a dev-dependency. For the target, `cargo tree -e normal | grep -cE 'mavlink-bindgen|quick-xml|regex|mavlink v'`
+must be 0 (the failed build turned into a check).
+
 Acceptance: host tests (every emitted frame decodes with the std `mavlink` crate; random split points;
 CRC errors counted; a full parameter list through a fake that drops 20 % of frames; set echo, refusal,
 silence for an unknown name; every command case gets its result; HEARTBEAT never delayed by more than one
@@ -166,7 +189,9 @@ REAL32 sets echoed, rates within 5 %, a `.tlog` written, and the ELF has no `Mav
 1. A lower layer never names a higher one (`cargo tree` checks at both ends).
 2. No USB IN packet of 64 bytes or more; `read` never returns `Ok(0)` for a non-empty buffer; no `usb-cdc` call waits while the link is down.
 3. On the flight controller only the link task awaits a `usb-cdc` or `mavlink-device` future. Sensor and control tasks hand values over through non-blocking latest-value cells.
-4. Both ends use `mavlink = "=0.21.0"` with the same features.
+4. Both ends generate from byte-identical MAVLink XML with generator 0.21.0 and extension fields on (the
+   lock-step test in `marv-dialect`; `cargo tree -e features -i mavlink` in the ground station shows
+   v0.21.0 with `mav2-message-extensions`). A version bump is one change across both, gated by that test.
 5. Only INT32 and REAL32 parameters; the set is fixed per boot.
 6. The device layer never arms, never changes a mode, has no failsafe.
 7. Default streams at their fastest stay within 25 % of the measured USB throughput.
@@ -175,7 +200,7 @@ REAL32 sets echoed, rates within 5 %, a `.tlog` written, and the ELF has no `Mav
 
 - Whether this computer holds back a transfer that ends on a full packet: the positive control on the board.
 - Whether ModemManager probes the port, and port permissions: plug the board in and look.
-- Whether `mavlink` 0.21.0 without std builds for thumbv8m and keeps `MavMessage` out of the binary: a stub build and `nm`.
+- Settled 2026-11-12: the stock `mavlink` crate does not build for thumbv8m with extension fields (see section 4). Still open: whether the `MavMessage` enum's `ser` / `parse` stay out of a linked firmware binary: the first firmware link and `nm`.
 - Real throughput with 63-byte packets: measured on the board; it sets invariant 7.
 - Whether a cable pull gives a suspend within 50 ms: one physical unplug.
 
