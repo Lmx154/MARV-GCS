@@ -236,7 +236,7 @@ REAL32 sets echoed, rates within 5 %, a `.tlog` written, and the ELF has no `Mav
 - Settled 2026-11-12: ModemManager did not open the port on this computer (the board recorded no control-line activity before the ground station's own open). Port permissions were no problem for a user in `dialout`.
 - Settled 2026-11-12: the stock `mavlink` crate does not build for thumbv8m with extension fields (see section 4). Still open: whether the `MavMessage` enum's `ser` / `parse` stay out of a linked firmware binary: the first firmware link and `nm`.
 - Real throughput with 63-byte packets: measured on the board; it sets invariant 7.
-- Whether a cable pull gives a suspend within 50 ms: one physical unplug.
+- Settled 2026-11-12: a cable pull with the board on battery power gives a suspend 3.2 ms after the last good write, and the pending write ends 38 us later (one physical unplug; `usb-cdc` README, check F).
 
 ## 7. The owner's to choose
 
