@@ -1302,6 +1302,7 @@ dependencies = [
  "gcs-sim",
  "gcs-transport",
  "png",
+ "serialport",
 ]
 
 [[package]]

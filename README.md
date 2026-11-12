@@ -4,9 +4,12 @@ A desktop ground station for the MARV flight controller, in Rust, speaking MAVLi
 does three things: live sensor data, parameters, and logging. It is built so that the firmware can add
 parameters, settings and messages without the ground station being reworked.
 
-The flight-controller end of the link (a USB crate and a MAVLink device crate, each in its own repo) is
-not built yet. Until it is, the ground station runs against the simulated vehicle in this repo, which
-behaves as `docs/link-contract.md` says the real one will.
+The flight-controller end of the link is three small crates, each in its own repo: `usb-cdc` (bytes
+over USB), `marv-dialect` (the message definitions) and `mavlink-device` (the MAVLink layer, on any byte
+stream). The ground station has been run against the MARV V2 board over its real USB port with a
+demonstration firmware (values computed on the board, parameters in RAM); the real sensors are not wired
+to it yet. Without a board it runs against the simulated vehicle in this repo, which behaves as
+`docs/link-contract.md` says the real one does.
 
 ## Quick start
 
@@ -15,8 +18,9 @@ cargo run -p gcs-sim                                      # simulated vehicle on
 cargo run -p marv-gcs -- --connect tcp:127.0.0.1:5760      # the window, connected to it
 ```
 
-With a board: plug in its USB port, choose `Serial` in the bar at the top, pick the port and press
-Connect, or start with `--connect serial:/dev/ttyACM1`. The baud rate does not matter for a USB port.
+With a board: plug in its USB port, choose `Serial` in the bar at the top, pick the port (it is listed
+with its product name and USB ids) and press Connect, or start with `--connect serial:/dev/ttyACM1`. The
+baud rate does not matter for a USB port. On Linux the user must be in the `dialout` group.
 
 ```
 marv-gcs [--connect <endpoint>] [--log-dir <dir>] [--no-log] [--view <name>]
@@ -62,9 +66,16 @@ Four crates; the dependency graph enforces the layers (`docs/architecture.md`).
 ## Tests
 
 ```
-cargo test --workspace          # about 370 tests, 30 s; needs /usr/bin/socat for the serial tests
+cargo test --workspace          # 388 tests, 30 s; needs /usr/bin/socat for the serial tests
 cargo clippy --workspace --all-targets -- -D warnings
+tools/board_check.sh <dir>      # with the board on its debug probe and its USB port cabled: about 3 minutes
 ```
+
+`tools/board_check.sh` flashes the demonstration firmware from the `mavlink-device` repo (path in
+`MAVLINK_DEVICE_REPO`, default `~/Documents/MARV-V2-drivers/mavlink-device`), runs the board tests
+(`crates/marv-gcs/tests/board.rs`, ignored by `cargo test`), reads the recording with pymavlink when a
+Python that has it is given in `CHECK_PYTHON`, and takes four pictures of the window. It restarts the
+board three times: a normal session, a program that only listens, and one that keeps DTR low.
 
 What the tests stand on:
 - Each protocol state machine is tested with plain calls and a made-up clock: retries, timeouts and
@@ -77,13 +88,23 @@ What the tests stand on:
 - Checked with independent implementations: framing against the `mavlink` crate's own reader and writer
   for all 234 message types; the simulator's output with a hand-written decoder; a recorded log read with
   pymavlink (every frame decoded, same counts, both directions).
+- On the MARV V2 board over USB (`tools/board_check.sh`, 2026-11-12, one Linux computer): connected within
+  20 ms of the open; first byte of the first session after a restart is the start of frame 0, and the
+  first 20 s carry 4343 frames with 0 checksum errors, 0 discarded bytes and 0 lost frames; rates 50.000 to
+  50.002 Hz per IMU instance, 10.000 Hz pressure, 5.000 Hz GPS, 1.000 Hz heartbeat; 13 parameters listed
+  in 20 ms; writes confirmed in 20 ms, a read-only one refused, an out-of-range one answered with the
+  clamped value; a recording of 1100 frames decoded completely by pymavlink; reconnect in 20 ms.
 
 ## Not covered, and known limits
 
 - Not built: missions, a map, joystick input, firmware upload, download of logs stored on the vehicle,
   changing message rates from the ground station. None is needed by the firmware yet.
-- Not yet run against a real board: only against the simulator and a pseudo serial port. The serial line
-  settings and DTR are set but unproven on a device.
+- Run against one board with a demonstration firmware on one Linux computer. Not run: Windows, macOS, a
+  USB-serial adapter or radio in between, sessions longer than a minute, real sensor data.
+- After the board enumerates, Linux hands its port over in terminal mode for about a millisecond of every
+  first open; the board therefore keeps quiet until the port is really open (`docs/link-contract.md`,
+  "The start gate"). A device that does not do this shows a few discarded bytes at the first connect; the
+  ground station carries on.
 - MAVLink 2 only. Signed frames are passed through without checking the signature. One vehicle at a time.
 - Parameters: types of up to 32 bits; no automatic re-fetch after the vehicle was lost and came back
   (press Refresh).

@@ -17,3 +17,4 @@ png.workspace = true
 [dev-dependencies]
 gcs-sim.workspace = true
 egui_kittest.workspace = true
+serialport.workspace = true
