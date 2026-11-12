@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/gcs-transport",
+    "crates/gcs-mavlink",
+    "crates/gcs-sim",
+    "crates/marv-gcs",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# One place for every version. A crate takes a dependency with `name.workspace = true`.
+# The layer rules in docs/architecture.md say which crate may use which of these.
+[workspace.dependencies]
+gcs-transport = { path = "crates/gcs-transport" }
+gcs-mavlink = { path = "crates/gcs-mavlink" }
+gcs-sim = { path = "crates/gcs-sim" }
+
+mavlink = { version = "=0.21.0", default-features = false, features = ["std", "serde", "dialect-common", "mav2-message-extensions"] }
+serialport = "4.10.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+eframe = { version = "=0.37.0", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+egui_plot = "0.38.0"
+egui_extras = "0.37.0"
+egui_kittest = "0.37.0"
+png = "0.18"

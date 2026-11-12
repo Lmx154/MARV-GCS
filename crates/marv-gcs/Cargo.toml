@@ -1,0 +1,19 @@
+[package]
+name = "marv-gcs"
+description = "MARV ground control station: the desktop application."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+gcs-transport.workspace = true
+gcs-mavlink.workspace = true
+eframe.workspace = true
+egui_plot.workspace = true
+egui_extras.workspace = true
+png.workspace = true
+
+[dev-dependencies]
+gcs-sim.workspace = true
+egui_kittest.workspace = true

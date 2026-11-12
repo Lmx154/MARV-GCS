@@ -1,0 +1,10 @@
+[package]
+name = "gcs-transport"
+description = "Byte transports for the ground station: USB serial port and TCP. Bytes only; knows nothing about MAVLink."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serialport.workspace = true

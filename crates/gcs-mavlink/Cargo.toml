@@ -1,0 +1,12 @@
+[package]
+name = "gcs-mavlink"
+description = "MAVLink layer of the ground station: framing, services (heartbeat, parameters, telemetry), vehicle state and telemetry log. Runs on any byte stream; no transport and no GUI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+mavlink.workspace = true
+serde.workspace = true
+serde_json.workspace = true

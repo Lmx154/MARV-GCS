@@ -1,0 +1,6 @@
+target/
+/logs/
+*.tlog
+
+# Local working plan (owner requests and milestones)
+/docs/plan.md
