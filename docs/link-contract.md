@@ -119,6 +119,16 @@ with any HAL that implements embassy-usb-driver and with any executor; it does n
 `usb-device` stack and has no blocking front-end (a USB device must be serviced all the time). Those are
 named exceptions to the drivers' CONTRACT.md (A1, A5, A11).
 
+Two more named exceptions, recorded by the lead after the code review of 2026-11-12:
+- A5 (Send): none of `Tx`, `Rx`, `Link` is `Send`, because embassy-usb's own control state is not `Sync`.
+  They may be used from different executors on the same core (the shared state is lock-protected), never
+  across cores.
+- A8 (interrupt masking): the link state sits behind embassy-sync's critical-section mutex, because the
+  `Handler` callbacks run in the `UsbDevice::run()` task, which a firmware may put on another executor
+  than the link task. The section holds a few compares, counter updates and at most six wakes (an
+  embassy wake only enqueues). Its duration is to be measured on the board. embassy-usb's own CDC state
+  does the same.
+
 Acceptance
 - Host tests against a fake driver: every IN packet at most 63 bytes for write lengths 0-4096 and the bytes unchanged; zero-length packets never give `Ok(0)`; `NotConnected` at once while down and for a pending call on reset, deconfigure or suspend; cancel at every await; partial packet dropped on link down.
 - `cargo tree -e normal` shows no mavlink, embassy-rp or embassy-executor.
