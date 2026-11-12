@@ -24,7 +24,8 @@ Identity and heartbeat
 - Vehicle: system 1, component 1. Ground station: system 255, component 190.
 - Vehicle HEARTBEAT at 1 Hz, not changeable: type GENERIC, autopilot GENERIC, base_mode 0, custom_mode 0,
   system_status set by the firmware (BOOT, then STANDBY), mavlink_version 3.
-- Ground station HEARTBEAT at 1 Hz: type GCS, autopilot INVALID, base_mode 0, status ACTIVE.
+- Ground station HEARTBEAT at 1 Hz: type GCS, autopilot INVALID, base_mode 0, status ACTIVE. The first is
+  sent at once after the port is open and configured.
 - Each end calls the other lost after 5.0 s without its HEARTBEAT. A transport error is lost at once.
 - MAVLink 2 only. The vehicle drops MAVLink 1 frames, frames with any incompat flag, frames with its own
   system id and frames addressed to another target. No signing.
@@ -67,7 +68,8 @@ Sensors (default rate, fastest allowed)
   and NaN points are skipped.
 
 Rates and commands
-- Sent unasked: HEARTBEAT, the default streams from boot, STATUSTEXT.
+- Sent unasked: HEARTBEAT, the default streams and STATUSTEXT, from the moment the link task lets the
+  vehicle transmit: from boot on a link without an open (UART, radio), on USB from the gate in section 3.
 - MAV_CMD_SET_MESSAGE_INTERVAL (511) as COMMAND_LONG: -1 off, 0 default; faster than the stream's minimum,
   slower than 10 s, an id not in the table, HEARTBEAT or param3 != 0 get DENIED. Rates live in RAM and
   return to defaults when the link goes down. MAV_CMD_REQUEST_MESSAGE (512): ACK, then one copy.
@@ -99,8 +101,26 @@ Required behaviour
 - While up with a computer that is not reading, `write` waits; only the calling task waits; a dropped write has sent nothing.
 - No IN packet is longer than 63 bytes (max packet size - 1), so no transfer ever needs a zero-length packet.
 - Zero-length packets from the computer are skipped and counted; `read` never returns `Ok(0)` for a non-empty buffer.
-- A partly read packet is thrown away when the link goes down. DTR is reported and never gates data.
+- A partly read packet is thrown away when the link goes down. DTR is reported; the crate never gates data on it.
 - The firmware builds the `embassy_usb::Builder` with its own identity and runs `UsbDevice::run()` in a task it never cancels; the crate adds the CDC function and one handler.
+- **The start gate (architect, 2026-11-12, after the diagnosis on the board).** The firmware's USB link
+  task writes nothing after each link-up until DTR has held true for 100 ms (checked at most 5 ms apart)
+  or a ground-station HEARTBEAT has arrived, whichever comes first; meanwhile it reads and passes bytes
+  to `Node::receive`. Then it runs the node as before, also into a closed port, until the link goes down.
+  It never falls silent because the ground station is gone. The gate lives in the link task only, built
+  from public pieces (`Link::dtr()`, `Node::receive`, `Node::gcs_present`); neither crate changes.
+  Reason, measured: after every enumeration the computer's tty starts in cooked mode (canonical, echo,
+  signal characters), and cdc_acm starts reading inside `open()`, about 1 ms before the opening program
+  can set raw mode. A board that is already writing has its first bytes (about 117) edited, partly
+  dropped and echoed back to it: the ground station saw 32 to 95 discarded bytes and sometimes one
+  checksum error in its first read, and the start-up text (second frame; its length byte 0x15 is the
+  kill-line character, and the HEARTBEAT before it ends in 0x03, the interrupt character) never arrived.
+  Raw mode lands 0.31 to 0.35 ms after DTR; a ground station's first HEARTBEAT is sent after its `open()`
+  returned. Nothing on the computer removes the window without a kernel change. A later open within the
+  same enumeration is already raw, so there is no new gate then; such a session may begin with the tail
+  of one frame, and the ground station resynchronises. Rejected: DTR alone (silent for a host that never
+  raises it), a received frame alone (silent for a program that only listens), a timeout fallback (brings
+  the damage back when the opener is late), a gate inside the crates.
 
 ```rust
 pub struct State<'d>;
@@ -205,11 +225,15 @@ REAL32 sets echoed, rates within 5 %, a `.tlog` written, and the ELF has no `Mav
 5. Only INT32 and REAL32 parameters; the set is fixed per boot.
 6. The device layer never arms, never changes a mode, has no failsafe.
 7. Default streams at their fastest stay within 25 % of the measured USB throughput.
+8. On USB nothing is written between link-up and the start gate; after an enumeration the first byte a
+   reader gets is the 0xFD of a whole frame. This is a rule of the USB link task, not of the wire: a
+   ground station must still resynchronise at the start of any session (a USB-serial adapter on the
+   computer has the same cooked window and the vehicle cannot see it).
 
 ## 6. Not known yet, and what settles it
 
 - Whether this computer holds back a transfer that ends on a full packet: the positive control on the board.
-- Whether ModemManager probes the port, and port permissions: plug the board in and look.
+- Settled 2026-11-12: ModemManager did not open the port on this computer (the board recorded no control-line activity before the ground station's own open). Port permissions were no problem for a user in `dialout`.
 - Settled 2026-11-12: the stock `mavlink` crate does not build for thumbv8m with extension fields (see section 4). Still open: whether the `MavMessage` enum's `ser` / `parse` stay out of a linked firmware binary: the first firmware link and `nm`.
 - Real throughput with 63-byte packets: measured on the board; it sets invariant 7.
 - Whether a cable pull gives a suspend within 50 ms: one physical unplug.
