@@ -4,9 +4,11 @@ A desktop ground station for the MARV flight controller, in Rust, speaking MAVLi
 does three things: live sensor data, parameters, and logging. It is built so that the firmware can add
 parameters, settings and messages without the ground station being reworked.
 
-The flight-controller end of the link is three small crates, each in its own repo: `usb-cdc` (bytes
-over USB), `marv-dialect` (the message definitions) and `mavlink-device` (the MAVLink layer, on any byte
-stream). The ground station has been run against the MARV V2 board over its real USB port with a
+The flight-controller end of the link is three small crates, each in its own repo:
+[`usb-cdc`](https://github.com/Lmx154/usb-cdc) (bytes over USB),
+[`marv-dialect`](https://github.com/Lmx154/marv-dialect) (the message definitions) and
+[`mavlink-device`](https://github.com/Lmx154/mavlink-device) (the MAVLink layer, on any byte stream). The
+ground station has been run against the MARV V2 board over its real USB port with a
 demonstration firmware (values computed on the board, parameters in RAM); the real sensors are not wired
 to it yet. Without a board it runs against the simulated vehicle in this repo, which behaves as
 `docs/link-contract.md` says the real one does.
@@ -71,8 +73,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 tools/board_check.sh <dir>      # with the board on its debug probe and its USB port cabled: about 3 minutes
 ```
 
-`tools/board_check.sh` flashes the demonstration firmware from the `mavlink-device` repo (path in
-`MAVLINK_DEVICE_REPO`, default `~/Documents/MARV-V2-drivers/mavlink-device`), runs the board tests
+`tools/board_check.sh` flashes the demonstration firmware from a checkout of
+<https://github.com/Lmx154/mavlink-device> (its path in `MAVLINK_DEVICE_REPO`, default
+`~/Documents/MARV-V2-drivers/mavlink-device`; that repo fetches the other two by itself), runs the board tests
 (`crates/marv-gcs/tests/board.rs`, ignored by `cargo test`), reads the recording with pymavlink when a
 Python that has it is given in `CHECK_PYTHON`, and takes four pictures of the window. It restarts the
 board three times: a normal session, a program that only listens, and one that keeps DTR low.

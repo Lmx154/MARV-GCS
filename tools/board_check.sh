@@ -10,7 +10,8 @@
 # Exit status 0 only if every phase passed. No process is left behind on any exit path.
 #
 # Usage: tools/board_check.sh <output directory>
-# Environment: MAVLINK_DEVICE_REPO (default $HOME/Documents/MARV-V2-drivers/mavlink-device),
+# Environment: MAVLINK_DEVICE_REPO (a checkout of https://github.com/Lmx154/mavlink-device, which
+#   takes usb-cdc and marv-dialect from GitHub itself; default $HOME/Documents/MARV-V2-drivers/mavlink-device),
 #   CHECK_PYTHON (a Python that has pymavlink; default python3; without it that one check is skipped),
 #   CHECK_TLOG (the checker script; default tools/check_tlog.py), DISPLAY (default :1).
 set -u
@@ -37,7 +38,6 @@ cargo build -q -p marv-gcs >>"$out/build.out" 2>&1 || { cat "$out/build.out"; ex
 
 # The build folder is shared by the driver repos: make the crates rebuild from their sources.
 touch "$repo/src/lib.rs" "$repo/hil/src/lib.rs" "$repo/hil/src/bin/mavlink_demo.rs"
-[ -f "$repo/../usb-cdc/src/lib.rs" ] && touch "$repo/../usb-cdc/src/lib.rs"
 
 
 dev_pid=""
@@ -79,7 +79,6 @@ start_device() {
   local phase="$1" stamp="$out/stamp-$1" log="" p props
   # The build folder is shared by the driver repos: make the crates rebuild from their sources.
   touch "$repo/src/lib.rs" "$repo/hil/src/lib.rs" "$repo/hil/src/bin/mavlink_demo.rs"
-  [ -f "$repo/../usb-cdc/src/lib.rs" ] && touch "$repo/../usb-cdc/src/lib.rs"
   note "$phase: start the device program"
   mkdir -p "$repo/hil/logs"
   touch "$stamp"

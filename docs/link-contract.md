@@ -87,7 +87,7 @@ TIMESYNC (timestamps must line up with the computer); parameter metadata (descri
 parameter persistence (the first parameter that must survive a reboot; firmware scope); signing (a radio
 link); more parameter types (a value that fits neither INT32 nor REAL32); per-instance rates.
 
-## 3. The USB crate (`usb-cdc`, own repo under `~/Documents/MARV-V2-drivers/`)
+## 3. The USB crate (`usb-cdc`, own repo: https://github.com/Lmx154/usb-cdc)
 
 A thin crate on embassy-usb 0.6 `CdcAcmClass`: a byte pipe through `embedded-io-async` 0.7 plus a link
 state. No queue, no task, no MAVLink. It exists because the bare class has three traps on this HAL:
@@ -154,13 +154,13 @@ Acceptance
 - `cargo tree -e normal` shows no mavlink, embassy-rp or embassy-executor.
 - On the board with a host tool on `serialport`: enumerates within 5 s; 1 MiB echo in random write sizes (forcing 63, 64, 65, 128, 4096) with 0 mismatches; device-to-host throughput at least 250 kB/s; bursts of exactly 64, 128 and 4096 bytes arrive complete within 50 ms, with a positive control (a test build that sends full 64-byte packets must fail this check); port open but not read for 10 s, then closed for 10 s: a 1 kHz tick task misses 0 ticks; 20 close and reopen cycles with 0 errors; 10 soft detaches with a write pending give `NotConnected` within 50 ms and the link comes back; one physical unplug by the owner.
 
-## 4. The MAVLink device layer (`mavlink-device`, own repo, same conventions)
+## 4. The MAVLink device layer (`mavlink-device`, own repo: https://github.com/Lmx154/mavlink-device)
 
 A sans-IO core (`Node`: bytes and time in, frames out) and one thin `async run` over any
 `embedded_io_async::{Read, Write}`. No USB, transport or executor dependency.
 
 - Codec (amended 2026-11-12 after the lead's build experiments; architect's second decision): the message
-  types come from `marv-dialect`, a small crate in its own repo (`~/Documents/MARV-V2-drivers/marv-dialect`)
+  types come from `marv-dialect`, a small crate in its own repo (https://github.com/Lmx154/marv-dialect)
   that runs `mavlink-bindgen` =0.21.0 as a BUILD-dependency (with `mav2-message-extensions`) over
   `common.xml`, `standard.xml` and `minimal.xml` copied byte-identical from the `mavlink` 0.21.0 package,
   and depends at run time on `mavlink-core` =0.21.0 (`embedded`; `std` as an additive feature),
