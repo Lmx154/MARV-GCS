@@ -668,3 +668,58 @@ fn fields_of_empty_flags_is_text() {
     let fields = fields_of(&Message::HEARTBEAT(data));
     assert_eq!(fields[3], text("base_mode", ""));
 }
+
+#[test]
+fn fields_of_marv_test_are_the_four_fields_of_the_message() {
+    let message = Message::MARV_TEST(MARV_TEST_DATA {
+        seq: 41,
+        time_ms: 123_456,
+        value: -7,
+        tag: 2,
+    });
+    assert_fields(
+        &fields_of(&message),
+        &[
+            num("seq", 41.0),
+            num("time_ms", 123_456.0),
+            num("value", -7.0),
+            num("tag", 2.0),
+        ],
+    );
+}
+
+#[test]
+fn marv_test_is_listed_by_name_with_its_fields_and_series() {
+    let mut rig = Rig::new();
+    for (seq, at_us) in [(0u32, 0), (1, 100_000)] {
+        let message = Message::MARV_TEST(MARV_TEST_DATA {
+            seq,
+            time_ms: 1_000 + seq * 100,
+            value: -3,
+            tag: 1,
+        });
+        rig.frame(&known(1, 1, seq as u8, message), at_us);
+    }
+    let store = rig.store();
+    assert_eq!(store.entries.len(), 1);
+    let entry = store.entry("MARV_TEST", 0).unwrap();
+    assert_eq!(entry.name, "MARV_TEST");
+    assert_eq!(entry.label, "MARV_TEST");
+    assert_eq!(entry.count, 2);
+    assert_fields(
+        &entry.fields,
+        &[
+            num("seq", 1.0),
+            num("time_ms", 1_100.0),
+            num("value", -3.0),
+            num("tag", 1.0),
+        ],
+    );
+    assert_eq!(entry.number("seq"), Some(1.0));
+    let seq = store.series("MARV_TEST", 0, "seq").unwrap();
+    assert_eq!(
+        seq.points.iter().map(|p| p[1]).collect::<Vec<_>>(),
+        [0.0, 1.0]
+    );
+    assert!(store.entry("UNKNOWN_42420", 0).is_none());
+}

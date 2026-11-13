@@ -77,10 +77,13 @@ Rates and commands
   when the ground station is lost.
 
 Both ends build the messages from byte-identical MAVLink XML with generator 0.21.0 and extension fields
-on: the ground station through `mavlink = "=0.21.0"` with `mav2-message-extensions`, the device through
-`marv-dialect` (see section 4). `marv-dialect` holds the `common` set only for now; the first message
-outside `common` adds a `marv.xml` to it, and the ground station then switches its `dialect` alias to
-that crate in one line.
+on: the device and the ground station both through `marv-dialect` (see section 4; the station also keeps
+`mavlink = "=0.21.0"` with `mav2-message-extensions` for its framing helpers, and its simulated vehicle
+is written on that crate's `common`). `marv-dialect` holds `common` and, as a second module, `marv`
+(`common` plus `marv.xml`: so far the link test message `MARV_TEST`, id 42420, CRC_EXTRA 100). The ground
+station's `dialect` alias is `marv_dialect::marv` (with the crate's `serde` feature, which the Messages tab
+reads fields through), so it knows `MARV_TEST`: it checks its checksum and shows it with its fields; see
+`docs/extending.md`.
 
 Not now, each with its trigger: SYS_STATUS and battery (battery data exists); ATTITUDE (an estimator);
 TIMESYNC (timestamps must line up with the computer); parameter metadata (descriptions or ranges wanted);

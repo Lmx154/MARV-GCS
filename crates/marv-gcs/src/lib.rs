@@ -9,6 +9,7 @@ use eframe::egui;
 pub mod app;
 pub mod cli;
 pub mod connection;
+pub mod link_test;
 pub mod logfile;
 pub mod screenshot;
 pub mod status;

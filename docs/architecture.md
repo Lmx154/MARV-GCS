@@ -33,7 +33,7 @@ Check: `cargo tree -p gcs-transport | grep -c mavlink` is 0; `cargo tree -p gcs-
 |---|---|
 | A parameter or setting | Nothing here. The firmware declares it; the parameter view lists what the vehicle reports. |
 | A telemetry message from the standard set | Nothing here. It appears in the message list and can be plotted. |
-| A custom message | The dialect: one alias in `gcs-mavlink` (`dialect`). |
+| A custom message | The dialect: add it in `marv-dialect`, bump its rev here; the station reads it through one alias in `gcs-mavlink` (`dialect`, which is `marv_dialect::marv`), see `docs/extending.md`. |
 | A view (tab) | One file in `crates/marv-gcs/src/views/`, plus its `mod` line and its registry line in `views/mod.rs`. |
 | A transport (radio, ...) | One module in `gcs-transport` and one `Endpoint` variant. |
 | A protocol service (missions, log download) | One sans-IO module in `gcs-mavlink/src/services/`, plus its `mod` line and its registry line in `services/mod.rs`; a section in `VehicleState` and a `Command` variant if it shows or takes something. |
@@ -80,7 +80,7 @@ network that dropped) are not link-down, on read or on write: a write is discard
 ### `gcs-mavlink`: framing
 
 ```rust
-pub use mavlink::dialects::common as dialect;   // the one place that names the dialect
+pub use marv_dialect::marv as dialect;   // the one place that names the dialect: `common` plus the project's own messages
 pub type Message = dialect::MavMessage;
 
 pub struct Frame {

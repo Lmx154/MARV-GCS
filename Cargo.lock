@@ -616,6 +616,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-io"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9eb1aa714776b75c7e67e1da744b81a129b3ff919c8712b5e1b32252c1f07cc7"
+
+[[package]]
+name = "embedded-io-async"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2564b9f813c544241430e147d8bc454815ef9ac998878d30cc3055449f7fd4c0"
+dependencies = [
+ "embedded-io",
+]
+
+[[package]]
 name = "enum-map"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -818,6 +833,7 @@ dependencies = [
 name = "gcs-mavlink"
 version = "0.1.0"
 dependencies = [
+ "marv-dialect",
  "mavlink",
  "serde",
  "serde_json",
@@ -1291,6 +1307,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "marv-dialect"
+version = "0.1.0"
+source = "git+https://github.com/Lmx154/marv-dialect.git?rev=f35f3328f472cbdd7d42922ca8fa3ead8c85b891#f35f3328f472cbdd7d42922ca8fa3ead8c85b891"
+dependencies = [
+ "bitflags 2.13.2",
+ "mavlink-bindgen",
+ "mavlink-core",
+ "num-derive",
+ "num-traits",
+ "serde",
+ "serde_arrays",
+]
+
+[[package]]
 name = "marv-gcs"
 version = "0.1.0"
 dependencies = [
@@ -1301,6 +1331,7 @@ dependencies = [
  "gcs-mavlink",
  "gcs-sim",
  "gcs-transport",
+ "marv-dialect",
  "png",
  "serialport",
 ]
@@ -1341,6 +1372,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff9827ded6087bf5adbb2f4d4450c167096888c1a1619b16834fe9bfb9759d0b"
 dependencies = [
  "crc-any",
+ "embedded-io",
+ "embedded-io-async",
  "memchr",
  "serde",
 ]

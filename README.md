@@ -1,8 +1,11 @@
 # MARV ground control station
 
 A desktop ground station for the MARV flight controller, in Rust, speaking MAVLink 2. It is an MVP that
-does three things: live sensor data, parameters, and logging. It is built so that the firmware can add
-parameters, settings and messages without the ground station being reworked.
+does three things: live sensor data, parameters, and logging. The station speaks the project's own `marv`
+dialect (`marv_dialect::marv`: the `common` messages plus the project's own, so far `MARV_TEST`, a link test
+message), so `MARV_TEST` appears in the Messages tab like any other message, with its fields `seq`,
+`time_ms`, `value` and `tag`. It is built so that the firmware can add parameters, settings and messages
+without the ground station being reworked.
 
 The flight-controller end of the link is three small crates, each in its own repo:
 [`usb-cdc`](https://github.com/Lmx154/usb-cdc) (bytes over USB),
@@ -30,6 +33,21 @@ With an ExpressLRS radio: join the WiFi network of the radio's backpack (the rad
 sends MAVLink to port 14550, and the ground station answers to whoever sent last. A USB transmitter
 module is expected to use the serial link instead (`--connect serial:PATH:460800`).
 
+To test the radio link with the project's own test message, without a window:
+
+```
+cargo run --release --bin marv-link-test -- --connect udp:0.0.0.0:14550
+```
+
+It sends the station's heartbeat (system 255, component 190) every second and, after a quiet start,
+`MARV_TEST` messages (tag 2, `seq` 0, 1, 2, ..., `value` = `seq * 3`), and prints once per second and at the
+end what came back: frames per sender and message, the flight controller's `MARV_TEST` (tag 1) counted by
+`seq` (received, first, last, lost, duplicates, restarts), the lost frames by the 8-bit header sequence of
+every sender as a count and a percentage, bytes per second, checksum failures, and `RADIO_STATUS` if any
+arrives. Options: `--count <n>` (default 100), `--rate <hz>` (10), `--duration <s>` (30), `--quiet-start <s>`
+(2). It makes no pass or fail claim; the percentages are read by a person. Over UDP the first frames
+are discarded until the peer has sent something (the peer is whoever sent last).
+
 ```
 marv-gcs [--connect <endpoint>] [--log-dir <dir>] [--no-log] [--view <name>]
          [--screenshot <file.png>] [--after <seconds>]
@@ -39,7 +57,7 @@ marv-gcs [--connect <endpoint>] [--log-dir <dir>] [--no-log] [--view <name>]
 recorded pace) or `tlogfast:PATH`. `--view` picks the tab shown at start. `--screenshot` saves a picture
 of the window after `--after` seconds and exits; it is how the pictures in a report are made.
 
-Building needs Rust 1.95 or newer. On Linux the serial-port crate needs the libudev development package
+Building needs Rust 1.99 or newer (the `rust-version` of `marv-dialect`). On Linux the serial-port crate needs the libudev development package
 (`libudev-dev` on Ubuntu).
 
 ## What it does
@@ -64,7 +82,7 @@ Four crates; the dependency graph enforces the layers (`docs/architecture.md`).
 | `gcs-transport` | Bytes only: USB serial port, TCP and UDP. It never names MAVLink. |
 | `gcs-mavlink` | MAVLink 2 on any reader and writer: framing, one small state machine per sub-protocol (heartbeat, messages, parameters, text, recorder), the vehicle state, the log reader and replay. No transport, no window. |
 | `gcs-sim` | The simulated vehicle (`marv-sim`). Written from the specification and never using `gcs-mavlink`, so the two check each other. |
-| `marv-gcs` | The window: the connection bar and one file per tab. |
+| `marv-gcs` | The window: the connection bar and one file per tab; also the link test tool `marv-link-test` (`src/link_test.rs`, `src/bin/marv_link_test.rs`), which builds `MARV_TEST` with `marv-dialect`. |
 
 - `docs/link-contract.md`: what the flight controller and the ground station must do on the wire, and the
   design of the two crates on the flight-controller side.
@@ -74,7 +92,7 @@ Four crates; the dependency graph enforces the layers (`docs/architecture.md`).
 ## Tests
 
 ```
-cargo test --workspace          # 408 tests, 30 s; needs /usr/bin/socat for the serial tests
+cargo test --workspace          # 417 tests, 35 s; needs /usr/bin/socat for the serial tests
 cargo clippy --workspace --all-targets -- -D warnings
 tools/board_check.sh <dir>      # with the board on its debug probe and its USB port cabled: about 3 minutes
 ```
@@ -108,6 +126,10 @@ What the tests stand on:
 
 - Not built: missions, a map, joystick input, firmware upload, download of logs stored on the vehicle,
   changing message rates from the ground station. None is needed by the firmware yet.
+- `marv-link-test` has been tested on localhost only; neither it nor the UDP link has been run against
+  a real radio. The deframer releases a frame of an id the dialect does not have only when the next frame
+  starts, so a count of such frames can be one frame late until the next frame arrives (`MARV_TEST` is
+  known and is delivered at once); the tool does not flush the last one at the end of the run.
 - Run against one board with a demonstration firmware on one Linux computer. Not run: Windows, macOS, a
   USB-serial adapter or radio in between, sessions longer than a minute, real sensor data.
 - After the board enumerates, Linux hands its port over in terminal mode for about a millisecond of every

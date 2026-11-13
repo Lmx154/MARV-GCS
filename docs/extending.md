@@ -65,13 +65,34 @@ This crate never names MAVLink.
 
 ## A message outside the standard set
 
-Not needed yet. When the first one appears it becomes one small repo (`marv-dialect`: an XML file that
-includes `common.xml`, plus a build script), and the alias `dialect` in `crates/gcs-mavlink/src/lib.rs`
-changes in one line, with the same one-line change in the device crate. See `docs/link-contract.md`.
+The project's own messages live in `marv-dialect` (own repo, https://github.com/Lmx154/marv-dialect): its
+module `marv_dialect::marv` is `common` plus the messages of `definitions/marv.xml`, so far `MARV_TEST`
+(id 42420, CRC_EXTRA 100, fields `seq`, `time_ms`, `value`, `tag`; a link test message).
+
+The station speaks that dialect: `crates/gcs-mavlink/src/lib.rs` has `pub use marv_dialect::marv as
+dialect;`, and `marv-dialect` is a git dependency at one rev, with `features = ["std", "serde"]`, in the
+workspace `Cargo.toml` (`serde` is what the Messages tab needs: `services/messages.rs` reads the fields of
+any message through `serde_json::to_value(message)`). So a message of the dialect is known to the
+deframer (its checksum is checked with its CRC_EXTRA; a wrong one is counted as a checksum failure), is
+decoded, shows in the Messages tab by name with all its fields, can be plotted and is recorded in the
+telemetry log, with no code in the station that names it. `marv-link-test` is the one place that builds
+a `MARV_TEST` (to send it). `gcs-sim` stays on `mavlink::dialects::common` (wire-compatible for the
+common messages). `marv-dialect` asks for Rust 1.99 or newer, which is the station's minimum too.
+
+To add the next message:
+
+1. Add it to `definitions/marv.xml` in `marv-dialect` (see its README), with the lock-step test, and commit
+   it there.
+2. Here, change the one `rev` of `marv-dialect` in the workspace `Cargo.toml` (one rev in the whole
+   workspace: `cargo tree -i marv-dialect` lists one) and run the tests. Nothing else changes for it to
+   appear in the Messages tab.
+3. Add a test in the pattern of the `MARV_TEST` ones: a frame with the right checksum is known
+   (`frame_tests.rs`), one with a wrong checksum is a checksum failure, and the Messages service shows its
+   fields (`services/messages_tests.rs`).
 
 ## What to keep true
 
-- `cargo tree -p gcs-transport | grep -c mavlink` is 0.
+- `cargo tree -p gcs-transport | grep -cE 'mavlink|marv-dialect'` is 0.
 - `cargo tree -p gcs-mavlink | grep -cE 'serialport|egui|eframe|gcs-transport'` is 0.
 - `cargo tree -p gcs-sim | grep -c gcs-mavlink` is 0 (the simulator is written from the specification, so
   the two check each other).

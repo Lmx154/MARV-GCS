@@ -662,3 +662,36 @@ fn ctx_times_are_session_relative_and_wall_clock() {
     }
     drop(session);
 }
+
+#[test]
+fn a_marv_test_frame_is_known_to_the_session_and_a_bad_checksum_is_counted() {
+    let (mut to_session, reader) = pipe();
+    let (writer, _keep_rx) = pipe();
+    let session = Session::start(Box::new(reader), Box::new(writer), config(3000), nop());
+    let message = Message::MARV_TEST(crate::dialect::MARV_TEST_DATA {
+        seq: 5,
+        time_ms: 900,
+        value: 15,
+        tag: 1,
+    });
+    let good = library_frame(1, 0, &message);
+    let mut bad = library_frame(1, 1, &message);
+    let last = bad.len() - 1;
+    bad[last] ^= 0xFF;
+    to_session
+        .write_all(&[good.clone(), bad.clone()].concat())
+        .unwrap();
+    assert!(wait_until(Duration::from_millis(500), || {
+        let rx = session.state().link.rx;
+        rx.frames == 1 && rx.crc_errors == 1
+    }));
+    let state = session.state();
+    assert_eq!(state.link.rx.unknown, 0);
+    assert_eq!(state.link.rx.discarded_bytes, bad.len() as u64);
+    let entry = state.messages.entry("MARV_TEST", 0).expect("listed");
+    assert_eq!(entry.count, 1);
+    assert_eq!(entry.number("seq"), Some(5.0));
+    assert_eq!(entry.number("time_ms"), Some(900.0));
+    assert_eq!(entry.number("value"), Some(15.0));
+    assert_eq!(entry.number("tag"), Some(1.0));
+}

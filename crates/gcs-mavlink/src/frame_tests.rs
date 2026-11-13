@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use mavlink::dialects::common::{
+use crate::dialect::{
     GPS_RAW_INT_DATA, GpsFixType, HEARTBEAT_DATA, MavAutopilot, MavModeFlag, MavParamType,
     MavSeverity, MavState, MavType, PARAM_VALUE_DATA, SCALED_IMU_DATA, STATUSTEXT_DATA,
 };
@@ -620,4 +620,88 @@ fn random_noise_is_bounded_and_does_not_break_decoding() {
     assert!(out.last().is_some_and(|f| f.raw == good));
     assert_eq!(known(out.last().unwrap()), &heartbeat());
     assert!(deframer.peak < 600);
+}
+
+const MARV_TEST_ID: u32 = 42_420;
+const MARV_TEST_CRC_EXTRA: u8 = 100;
+
+fn marv_test() -> Message {
+    Message::MARV_TEST(crate::dialect::MARV_TEST_DATA {
+        seq: 7,
+        time_ms: 1_234,
+        value: -5,
+        tag: 1,
+    })
+}
+
+/// `MARV_TEST` payload by hand: the fields in wire order (the wider ones first), little endian.
+fn marv_test_payload() -> Vec<u8> {
+    [
+        7u32.to_le_bytes().as_slice(),
+        1_234u32.to_le_bytes().as_slice(),
+        (-5i32).to_le_bytes().as_slice(),
+        &[1],
+    ]
+    .concat()
+}
+
+#[test]
+fn marv_test_is_a_known_message_with_crc_extra_100() {
+    assert_eq!(Message::extra_crc(MARV_TEST_ID), MARV_TEST_CRC_EXTRA);
+    assert!(Message::default_message_from_id(MARV_TEST_ID).is_some());
+    assert_eq!(marv_test().message_id(), MARV_TEST_ID);
+    assert_eq!(marv_test().message_name(), "MARV_TEST");
+
+    // Written by hand with CRC_EXTRA 100: known at once (no frame behind it to release it).
+    let by_hand = build_frame(
+        0,
+        3,
+        MARV_TEST_ID,
+        &marv_test_payload(),
+        MARV_TEST_CRC_EXTRA,
+        &[],
+    );
+    let (frames, stats) = deframe(&by_hand);
+    assert_eq!(frames.len(), 1);
+    assert_eq!(known(&frames[0]), &marv_test());
+    assert_eq!(frames[0].message_id, MARV_TEST_ID);
+    assert_eq!(frames[0].raw, by_hand);
+    assert_eq!(
+        (
+            stats.frames,
+            stats.unknown,
+            stats.undecodable,
+            stats.crc_errors
+        ),
+        (1, 0, 0, 0)
+    );
+
+    // Our encoder writes the same payload and the same checksum.
+    let encoded = encode(&marv_test());
+    assert_eq!(
+        encoded[HEADER_LEN..HEADER_LEN + 13],
+        marv_test_payload()[..]
+    );
+    let crc = mavlink::calculate_crc(&encoded[1..HEADER_LEN + 13], MARV_TEST_CRC_EXTRA);
+    assert_eq!(encoded[HEADER_LEN + 13..], crc.to_le_bytes());
+}
+
+#[test]
+fn marv_test_with_a_wrong_checksum_is_a_crc_error_and_is_not_delivered() {
+    // The same frame sealed with another CRC_EXTRA (77), as a dialect that lacks the message does.
+    let wrong = build_frame(0, 3, MARV_TEST_ID, &marv_test_payload(), 77, &[]);
+    let good = encode(&heartbeat());
+    let (frames, stats) = deframe(&[wrong.clone(), good.clone()].concat());
+    assert_eq!(frames.len(), 1);
+    assert_eq!(known(&frames[0]), &heartbeat());
+    assert_eq!(frames[0].raw, good);
+    assert_eq!(stats.crc_errors, 1);
+    assert_eq!(stats.unknown, 0);
+    assert_eq!(stats.frames, 1);
+    assert_eq!(stats.discarded_bytes, wrong.len() as u64);
+
+    // A wrong checksum is not held back as an unknown frame either: alone, it is counted at once.
+    let (frames, stats) = deframe(&wrong);
+    assert!(frames.is_empty());
+    assert_eq!(stats.crc_errors, 1);
 }
