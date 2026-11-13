@@ -13,6 +13,7 @@
 mod endpoint;
 mod serial;
 mod tcp;
+mod udp;
 
 use std::io;
 use std::time::Duration;
@@ -70,6 +71,7 @@ pub fn open(endpoint: &Endpoint) -> Result<Link, OpenError> {
     match endpoint {
         Endpoint::Serial { path, baud } => serial::open(endpoint, path, *baud),
         Endpoint::Tcp { addr } => tcp::open(endpoint, addr),
+        Endpoint::Udp { bind } => udp::open(endpoint, *bind),
     }
 }
 

@@ -47,15 +47,21 @@ simulator (`crates/marv-gcs/tests/e2e*.rs`). When the firmware side of the featu
 into `docs/link-contract.md` first and teach the simulator (`crates/gcs-sim`) to behave that way, so the
 ground station is developed against the real behaviour.
 
-## A new transport (UDP, a telemetry radio)
+## A new transport (a telemetry radio; UDP is the worked example)
 
 1. Add a module to `crates/gcs-transport/src/` that opens the link and returns a reader and a writer that
    follow the reader contract in `docs/architecture.md` (return as soon as a byte is there; `TimedOut`
-   after 100 ms without data; `Ok(0)` or another error when the link is down).
-2. Add a variant to `Endpoint` (with its text form) and an arm in `open`.
-3. Add the choice to the connection bar in `crates/marv-gcs/src/connection.rs`.
+   after 100 ms without data; `Ok(0)` or another error when the link is down). `udp.rs` is the example
+   for a link that is not a stream: it keeps the part of a datagram that did not fit the caller's buffer,
+   skips empty datagrams instead of returning `Ok(0)`, and says in its module doc which error kinds are
+   "nothing yet" and which end the link.
+2. Add a variant to `Endpoint` (with its text form, `udp:ADDR:PORT`) and an arm in `open`.
+3. Add the choice to the connection bar in `crates/marv-gcs/src/connection.rs` (UDP: one text field, the
+   local address to listen on) and its parse test in `cli.rs`.
 
-The MAVLink layer does not change: it takes any reader and writer. This crate never names MAVLink.
+Test it against a plain peer socket (`crates/gcs-transport/tests/udp.rs`), then through a session
+(`crates/marv-gcs/tests/e2e_udp.rs`). The MAVLink layer does not change: it takes any reader and writer.
+This crate never names MAVLink.
 
 ## A message outside the standard set
 

@@ -8,7 +8,7 @@ does not build or shows up in `cargo tree`.
                  /       \
       gcs-transport     gcs-mavlink            gcs-sim (simulated vehicle; dev and tests only)
       bytes only        MAVLink on any         uses the `mavlink` crate directly,
-      USB serial, TCP   Read / Write pair      never gcs-mavlink
+      serial, TCP, UDP  Read / Write pair      never gcs-mavlink
 ```
 
 ## Layer rules
@@ -35,7 +35,7 @@ Check: `cargo tree -p gcs-transport | grep -c mavlink` is 0; `cargo tree -p gcs-
 | A telemetry message from the standard set | Nothing here. It appears in the message list and can be plotted. |
 | A custom message | The dialect: one alias in `gcs-mavlink` (`dialect`). |
 | A view (tab) | One file in `crates/marv-gcs/src/views/`, plus its `mod` line and its registry line in `views/mod.rs`. |
-| A transport (UDP, radio) | One module in `gcs-transport` and one `Endpoint` variant. |
+| A transport (radio, ...) | One module in `gcs-transport` and one `Endpoint` variant. |
 | A protocol service (missions, log download) | One sans-IO module in `gcs-mavlink/src/services/`, plus its `mod` line and its registry line in `services/mod.rs`; a section in `VehicleState` and a `Command` variant if it shows or takes something. |
 
 ## Interfaces between the crates
@@ -46,6 +46,7 @@ Check: `cargo tree -p gcs-transport | grep -c mavlink` is 0; `cargo tree -p gcs-
 pub enum Endpoint {
     Serial { path: String, baud: u32 },   // "serial:/dev/ttyACM0:115200"
     Tcp { addr: String },                 // "tcp:127.0.0.1:5760"
+    Udp { bind: std::net::SocketAddr },   // "udp:0.0.0.0:14550", the local address to listen on
 }
 // Endpoint: FromStr + Display, round-trip exact.
 
@@ -69,6 +70,12 @@ What the layer above relies on, for every transport:
   thread can look at its stop flag. A timeout loses no bytes.
 - `Ok(0)` or any other error means the link is down for good (peer closed, cable pulled).
 - The two halves may be used from two threads at once. Dropping both closes the link.
+
+UDP specifics (`crates/gcs-transport/src/udp.rs`): the peer is the source of the latest datagram; before
+one arrives a write succeeds and discards the bytes; each write is one datagram; the reader returns a
+datagram over several reads when the buffer is small and skips empty datagrams; `ConnectionRefused`,
+`ConnectionReset`, `NetworkUnreachable`, `HostUnreachable` and `NetworkDown` (a peer that went away or a
+network that dropped) are not link-down, on read or on write: a write is discarded and the link stays up.
 
 ### `gcs-mavlink`: framing
 

@@ -10,8 +10,9 @@ use crate::views;
 pub const USAGE: &str = "usage: marv-gcs [--connect <endpoint>] [--log-dir <dir>] [--no-log]
                 [--view <name>] [--screenshot <file.png>] [--after <seconds>]
 
-  --connect <endpoint>      connect at start: tcp:HOST:PORT or serial:PATH[:BAUD], or replay
-                            a log: tlog:PATH (real time) or tlogfast:PATH (as fast as read)
+  --connect <endpoint>      connect at start: tcp:HOST:PORT, serial:PATH[:BAUD] or
+                            udp:ADDR:PORT (the local address to listen on), or replay a log:
+                            tlog:PATH (real time) or tlogfast:PATH (as fast as read)
   --log-dir <dir>           directory for the automatic .tlog recordings (default: logs)
   --no-log                  do not record sessions automatically
   --view <name>             tab shown at start: a tab title, in any case
@@ -250,8 +251,24 @@ mod tests {
 
     #[test]
     fn bad_endpoint_is_an_error() {
-        assert!(parse_strs(&["--connect", "udp:1.2.3.4:5"]).is_err());
         assert!(parse_strs(&["--connect", "tcp:"]).is_err());
+        assert!(parse_strs(&["--connect", "udp:"]).is_err());
+        assert!(parse_strs(&["--connect", "udp:0.0.0.0"]).is_err());
+        assert!(parse_strs(&["--connect", "ftp:1.2.3.4:5"]).is_err());
+    }
+
+    #[test]
+    fn udp_endpoint() {
+        let parsed = parse_strs(&["--connect", "udp:0.0.0.0:14550"]);
+        let Ok(Parsed::Run(cli)) = parsed else {
+            panic!("{parsed:?}")
+        };
+        assert_eq!(
+            cli.connect,
+            Some(Endpoint::Udp {
+                bind: "0.0.0.0:14550".parse().unwrap()
+            })
+        );
     }
 
     #[test]

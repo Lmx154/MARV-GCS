@@ -24,12 +24,18 @@ With a board: plug in its USB port, choose `Serial` in the bar at the top, pick 
 with its product name and USB ids) and press Connect, or start with `--connect serial:/dev/ttyACM1`. The
 baud rate does not matter for a USB port. On Linux the user must be in the `dialout` group.
 
+With an ExpressLRS radio: join the WiFi network of the radio's backpack (the radio is typically at
+`10.0.0.1`, the laptop gets `10.0.0.x`), choose `UDP` in the bar (or start with
+`--connect udp:0.0.0.0:14550`) and press Connect. The address is the local one to listen on; the radio
+sends MAVLink to port 14550, and the ground station answers to whoever sent last. A USB transmitter
+module is expected to use the serial link instead (`--connect serial:PATH:460800`).
+
 ```
 marv-gcs [--connect <endpoint>] [--log-dir <dir>] [--no-log] [--view <name>]
          [--screenshot <file.png>] [--after <seconds>]
 ```
 
-`<endpoint>` is `tcp:HOST:PORT`, `serial:PATH[:BAUD]`, or a recorded log to replay: `tlog:PATH` (at the
+`<endpoint>` is `tcp:HOST:PORT`, `serial:PATH[:BAUD]`, `udp:ADDR:PORT`, or a recorded log to replay: `tlog:PATH` (at the
 recorded pace) or `tlogfast:PATH`. `--view` picks the tab shown at start. `--screenshot` saves a picture
 of the window after `--after` seconds and exits; it is how the pictures in a report are made.
 
@@ -55,7 +61,7 @@ Four crates; the dependency graph enforces the layers (`docs/architecture.md`).
 
 | Crate | What it is |
 |---|---|
-| `gcs-transport` | Bytes only: USB serial port and TCP. It never names MAVLink. |
+| `gcs-transport` | Bytes only: USB serial port, TCP and UDP. It never names MAVLink. |
 | `gcs-mavlink` | MAVLink 2 on any reader and writer: framing, one small state machine per sub-protocol (heartbeat, messages, parameters, text, recorder), the vehicle state, the log reader and replay. No transport, no window. |
 | `gcs-sim` | The simulated vehicle (`marv-sim`). Written from the specification and never using `gcs-mavlink`, so the two check each other. |
 | `marv-gcs` | The window: the connection bar and one file per tab. |
@@ -68,7 +74,7 @@ Four crates; the dependency graph enforces the layers (`docs/architecture.md`).
 ## Tests
 
 ```
-cargo test --workspace          # 388 tests, 30 s; needs /usr/bin/socat for the serial tests
+cargo test --workspace          # 408 tests, 30 s; needs /usr/bin/socat for the serial tests
 cargo clippy --workspace --all-targets -- -D warnings
 tools/board_check.sh <dir>      # with the board on its debug probe and its USB port cabled: about 3 minutes
 ```
@@ -84,7 +90,7 @@ What the tests stand on:
 - Each protocol state machine is tested with plain calls and a made-up clock: retries, timeouts and
   frame loss are exact, not timing dependent.
 - End to end (`crates/marv-gcs/tests/e2e*.rs`): the real transport, MAVLink layer and session against the
-  simulated vehicle over TCP and over a pseudo serial port: connect, loss of the vehicle and recovery,
+  simulated vehicle over TCP and over a pseudo serial port (and, with a hand-played vehicle, over UDP): connect, loss of the vehicle and recovery,
   message rates and values, the full parameter list with 20 % of frames dropped in each direction, writes
   confirmed, refused and unanswered, both parameter encodings, recording and replay.
 - The views are drawn and clicked without a window (`egui_kittest`).
@@ -113,6 +119,10 @@ What the tests stand on:
   (press Refresh).
 - File paths are typed into a text field; there is no file dialog.
 - Opening a TCP address that does not answer blocks the window for up to 2 s.
+- The UDP link has been tested on localhost only, not against a real radio or backpack. Its peer is
+  whoever sent last (no authentication, as usual for MAVLink over UDP). A write while the network is
+  unreachable (the WiFi dropped) is discarded and the link stays up; any other error ends the link.
+  A USB transmitter module is expected to use the serial link at 460800 baud; that is untested.
 - A real-time replay waits out the gaps of the recording, however long.
 - Unbounded on a hostile or very noisy link: the number of distinct message kinds tracked, and data
   queued while a TCP peer stops reading.

@@ -1,15 +1,17 @@
 use std::fmt;
+use std::net::SocketAddr;
 use std::str::FromStr;
 
 /// Baud rate used when a serial endpoint string does not give one.
 pub const DEFAULT_BAUD: u32 = 115_200;
 
 /// Where to connect. Text form: `tcp:127.0.0.1:5760`, `serial:/dev/ttyACM0:115200`,
-/// `serial:COM3` (baud defaults to 115200).
+/// `serial:COM3` (baud defaults to 115200), `udp:0.0.0.0:14550` (the local address to listen on).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Endpoint {
     Serial { path: String, baud: u32 },
     Tcp { addr: String },
+    Udp { bind: SocketAddr },
 }
 
 /// A string that is not a valid [`Endpoint`].
@@ -29,6 +31,7 @@ impl fmt::Display for Endpoint {
         match self {
             Endpoint::Serial { path, baud } => write!(f, "serial:{path}:{baud}"),
             Endpoint::Tcp { addr } => write!(f, "tcp:{addr}"),
+            Endpoint::Udp { bind } => write!(f, "udp:{bind}"),
         }
     }
 }
@@ -45,6 +48,15 @@ impl FromStr for Endpoint {
             return Ok(Endpoint::Tcp {
                 addr: addr.to_string(),
             });
+        }
+        if let Some(addr) = s.strip_prefix("udp:") {
+            let bind: SocketAddr = addr
+                .parse()
+                .map_err(|_| err("expected an address and a port, as udp:ADDR:PORT"))?;
+            if bind.port() == 0 {
+                return Err(err("port must not be 0"));
+            }
+            return Ok(Endpoint::Udp { bind });
         }
         if let Some(rest) = s.strip_prefix("serial:") {
             let (path, baud) = match rest.rsplit_once(':') {
@@ -68,7 +80,9 @@ impl FromStr for Endpoint {
                 baud,
             });
         }
-        Err(err("expected tcp:HOST:PORT or serial:PATH[:BAUD]"))
+        Err(err(
+            "expected tcp:HOST:PORT, udp:ADDR:PORT or serial:PATH[:BAUD]",
+        ))
     }
 }
 
@@ -83,8 +97,16 @@ mod tests {
         }
     }
 
+    fn udp(bind: &str) -> Endpoint {
+        Endpoint::Udp {
+            bind: bind.parse().unwrap(),
+        }
+    }
+
     #[test]
     fn parses_the_documented_forms() {
+        assert_eq!("udp:0.0.0.0:14550".parse(), Ok(udp("0.0.0.0:14550")));
+        assert_eq!(udp("127.0.0.1:14550").to_string(), "udp:127.0.0.1:14550");
         assert_eq!(
             "tcp:127.0.0.1:5760".parse(),
             Ok(Endpoint::Tcp {
@@ -124,6 +146,10 @@ mod tests {
             Endpoint::Tcp {
                 addr: "[::1]:5760".into(),
             },
+            udp("0.0.0.0:14550"),
+            udp("127.0.0.1:14550"),
+            udp("[::1]:14550"),
+            udp("[::]:14550"),
         ] {
             assert_eq!(e.to_string().parse::<Endpoint>(), Ok(e.clone()), "{e}");
         }
@@ -140,7 +166,17 @@ mod tests {
             "serial:/dev/x:",
             "serial:/dev/x:0",
             "serial:/dev/x:99999999999",
-            "udp:127.0.0.1:1",
+            "udp",
+            "udp:",
+            "udp:127.0.0.1",
+            "udp:14550",
+            "udp::14550",
+            "udp:localhost:14550",
+            "udp:300.0.0.1:14550",
+            "udp:0.0.0.0:0",
+            "udp:0.0.0.0:65536",
+            "udp:0.0.0.0:14550:1",
+            "UDP:0.0.0.0:14550",
             "TCP:127.0.0.1:1",
             "/dev/ttyACM0",
             "\u{0}",

@@ -14,6 +14,7 @@ use crate::status;
 enum Transport {
     Serial,
     Tcp,
+    Udp,
     LogFile,
 }
 
@@ -33,6 +34,7 @@ pub struct Bar {
     port: Option<String>,
     baud: String,
     tcp_addr: String,
+    udp_addr: String,
     log_path: String,
     replay_speed: ReplaySpeed,
     /// Shown in red until the next attempt.
@@ -48,6 +50,7 @@ impl Default for Bar {
             port: None,
             baud: DEFAULT_BAUD.to_string(),
             tcp_addr: "127.0.0.1:5760".to_string(),
+            udp_addr: "0.0.0.0:14550".to_string(),
             log_path: String::new(),
             replay_speed: ReplaySpeed::RealTime,
             error: None,
@@ -74,6 +77,10 @@ impl Bar {
                 self.transport = Transport::Tcp;
                 self.tcp_addr = addr.clone();
             }
+            Endpoint::Udp { bind } => {
+                self.transport = Transport::Udp;
+                self.udp_addr = bind.to_string();
+            }
         }
     }
 
@@ -98,7 +105,7 @@ impl Bar {
         }
     }
 
-    /// The endpoint the inputs describe (serial or TCP).
+    /// The endpoint the inputs describe (serial, TCP or UDP).
     fn endpoint(&self) -> Result<Endpoint, String> {
         match self.transport {
             Transport::LogFile => Err("no endpoint for a log file".to_string()),
@@ -122,6 +129,15 @@ impl Bar {
                     addr: addr.to_string(),
                 })
             }
+            Transport::Udp => {
+                let addr = self.udp_addr.trim();
+                if addr.is_empty() {
+                    return Err("missing UDP address".to_string());
+                }
+                format!("udp:{addr}")
+                    .parse::<Endpoint>()
+                    .map_err(|_| format!("invalid UDP address {addr:?}: expected ADDR:PORT"))
+            }
         }
     }
 
@@ -144,6 +160,7 @@ impl Bar {
             ui.add_enabled_ui(!connected, |ui| {
                 ui.selectable_value(&mut self.transport, Transport::Serial, "Serial");
                 ui.selectable_value(&mut self.transport, Transport::Tcp, "TCP");
+                ui.selectable_value(&mut self.transport, Transport::Udp, "UDP");
                 ui.selectable_value(&mut self.transport, Transport::LogFile, "Log file");
                 ui.separator();
                 match self.transport {
@@ -151,6 +168,11 @@ impl Bar {
                     Transport::Tcp => {
                         ui.label("Address");
                         ui.add(egui::TextEdit::singleline(&mut self.tcp_addr).desired_width(150.0));
+                    }
+                    Transport::Udp => {
+                        let label = ui.label("Listen on");
+                        ui.add(egui::TextEdit::singleline(&mut self.udp_addr).desired_width(150.0))
+                            .labelled_by(label.id);
                     }
                     Transport::LogFile => {
                         let label = ui.label("Path");

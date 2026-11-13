@@ -5,7 +5,8 @@ use std::time::Duration;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use gcs_mavlink::{LinkState, LinkStatus, VehicleId, VehicleState};
-use marv_gcs::connection::Bar;
+use gcs_transport::Endpoint;
+use marv_gcs::connection::{Action, Bar};
 use marv_gcs::status;
 use marv_gcs::views::{self, ViewCtx};
 
@@ -132,4 +133,50 @@ fn the_longest_status_stays_on_the_line_of_the_buttons_in_a_1100_pixel_window() 
             "status {status:?} is not on the line of the button {button:?}"
         );
     }
+}
+
+/// Draws the bar, lets `interact` click on it, and returns the action the bar produced.
+fn bar_action(mut bar: Bar, interact: impl FnOnce(&mut Harness<'_>)) -> Option<Action> {
+    let produced = std::cell::RefCell::new(None);
+    {
+        let mut harness = Harness::new_ui(|ui| {
+            if let Some(action) = bar.ui(ui, false, status::not_connected()) {
+                *produced.borrow_mut() = Some(action);
+            }
+        });
+        harness.run();
+        interact(&mut harness);
+    }
+    produced.into_inner()
+}
+
+#[test]
+fn top_bar_selects_udp_and_reads_the_default_endpoint_back() {
+    let action = bar_action(Bar::default(), |harness| {
+        harness.get_by_label("UDP").click();
+        harness.run();
+        harness.get_by_label("Listen on");
+        harness.get_by_label("Connect").click();
+        harness.run();
+    });
+    assert_eq!(
+        action,
+        Some(Action::Connect(Endpoint::Udp {
+            bind: "0.0.0.0:14550".parse().unwrap()
+        }))
+    );
+}
+
+#[test]
+fn top_bar_shows_a_udp_endpoint_from_the_command_line() {
+    let endpoint = Endpoint::Udp {
+        bind: "127.0.0.1:14551".parse().unwrap(),
+    };
+    let mut bar = Bar::default();
+    bar.set_endpoint(&endpoint);
+    let action = bar_action(bar, |harness| {
+        harness.get_by_label("Connect").click();
+        harness.run();
+    });
+    assert_eq!(action, Some(Action::Connect(endpoint)));
 }
