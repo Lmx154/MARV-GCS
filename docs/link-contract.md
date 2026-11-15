@@ -402,18 +402,31 @@ What the station does (`gcs-mavlink`, service `commands`; state in `VehicleState
 
 The cancel (the one exception to "one outstanding command")
 - While a calibration (241 with a non-zero parameter) is outstanding, a `SendCommand` of 241 with all seven
-  parameters 0 is sent although the calibration is outstanding. It has its own send count and timers
-  (the same 1.5 s, 3 sends; after the third a cancel with no answer is recorded and the calibration goes on)
-  and its own state in the calibration's record (`cancel`: waiting, answered with a text, no answer). Only
-  one cancel waits at a time; a second one meanwhile is refused as any other.
+  parameters 0 is sent although the calibration is outstanding. It has its own send count and timers (the
+  same 1.5 s, at most 3 sends) and its own state in the calibration's record (`cancel`: waiting, answered
+  with a text, no answer). Only one cancel is in play at a time; another one meanwhile is refused as any
+  other command.
 - Both are command 241, so the number cannot tell their ACKs apart. The vehicle answers the cancel at once
-  with ACCEPTED (DENIED when no calibration runs) and ends the calibration with a final CANCELLED. The
-  station reads, while a cancel waits for its answer: an ACK of 241 with IN_PROGRESS is the calibration's
-  progress; one with CANCELLED is the calibration's final ACK; any other result is the cancel's answer and
-  the calibration goes on until its own final ACK. Without a waiting cancel every 241 ACK is the
-  calibration's. Known limit: a calibration that ends by itself (ACCEPTED or FAILED) in the short moment
-  the cancel waits is read as the cancel's answer, and the calibration then ends as "no result" after 20 s.
-  When the calibration ends, a cancel still waiting is dropped.
+  with ACCEPTED (DENIED when no calibration runs) and ends a cancelled calibration with a final CANCELLED.
+  The station therefore reads them in order, by this rule:
+  1. From the moment a cancel is sent, the calibration command is never sent again, whatever was or was not
+     acknowledged before (the silence rule of 20 s then runs from the send of the cancel at the latest).
+     Nothing is sent after that except the cancel's own sends (at most 3).
+  2. While a cancel is in play, ACKs for 241 are read in order. IN_PROGRESS is the calibration's progress.
+     CANCELLED means the calibration was cancelled: the record ends "cancelled". The first other result R1
+     is held as "the answer so far" (it is also the cancel's state, `answered`), and the cancel is not sent
+     again. A second other result R2 decides: if R2 is DENIED, the calibration had already finished by
+     itself with R1 (the vehicle had nothing to cancel), and the record ends with R1's text and the note
+     "finished before the cancel" (for example "accepted (finished before the cancel)"); any other R2 ends
+     the record with R2's text.
+  3. If only R1 arrived: 3 s after it, with no CANCELLED and no second result, the record ends. R1 ACCEPTED:
+     "cancel accepted, no final result"; R1 DENIED: "nothing to cancel" (the calibration had ended and its
+     result was lost or came before the cancel); any other R1: R1's text. Progress ACKs do not extend the 3 s.
+  4. If the cancel gets no ACK at all after its 3 sends, its state is "no answer" and the calibration goes
+     on being followed as before (its 20 s rule), still without being sent again; from then on its ACKs are
+     read as without a cancel.
+  5. In every case the record ends and the buttons come back. When the calibration ends, a cancel still
+     waiting is dropped.
 
 The simulator (`gcs-sim`) behaves as the table above: admitted commands get IN_PROGRESS 0 at once,
 IN_PROGRESS with the percentage every 500 ms and ACCEPTED after 2 s (a calibration after 3 s; a cancel ends
