@@ -16,7 +16,7 @@ const MESSAGE: &str = "MARV_DEVICE_STATUS";
 /// `last_sample_age_ms` of a device that has delivered no sample yet.
 const NEVER: u16 = u16::MAX;
 /// A row received more than this long ago is stale (a row received exactly this long ago is not).
-pub const STALE_AFTER: Duration = Duration::from_secs(5);
+pub const STALE_AFTER: Duration = Duration::from_secs(15);
 
 const TITLES: [&str; 15] = [
     "Device",
@@ -464,17 +464,17 @@ mod tests {
     }
 
     #[test]
-    fn a_row_is_stale_after_more_than_five_seconds_and_not_at_five() {
-        assert!(!is_stale(Duration::from_millis(4_999)));
-        assert!(!is_stale(Duration::from_secs(5)));
-        assert!(is_stale(Duration::from_millis(5_001)));
+    fn a_row_is_stale_after_more_than_fifteen_seconds_and_not_at_fifteen() {
+        assert!(!is_stale(Duration::from_millis(14_999)));
+        assert!(!is_stale(Duration::from_secs(15)));
+        assert!(is_stale(Duration::from_millis(15_001)));
         let mut store = MessageStore::default();
         put(&mut store, 1, "IMU1", secs(10.0), &[(10.0, 1, 1)]);
         let at = |now| rows(&store, Some(secs(now)))[0].clone();
-        assert!(!at(15.0).stale);
-        assert_eq!(at(15.0).received, "5.0 s");
-        assert!(at(15.001).stale);
-        assert_eq!(at(16.0).received, "6.0 s (stale)");
+        assert!(!at(25.0).stale);
+        assert_eq!(at(25.0).received, "15.0 s");
+        assert!(at(25.001).stale);
+        assert_eq!(at(26.0).received, "16.0 s (stale)");
         // A stale row stays in the table.
         assert_eq!(rows(&store, Some(secs(600.0))).len(), 1);
         // No session: no age, never stale.

@@ -282,11 +282,10 @@ What the station does with it
     exist, and blank once when `samples` or `time_boot_ms` went backwards (the vehicle restarted, or a
     counter wrapped, which at 4.29 x 10^9 samples is not expected in a session). It is also blank when
     the two rows carry the same `time_boot_ms`.
-  - A row is stale when it was received more than 5 s ago (5.000 s exactly is not stale; this is a
-    decision of the lead, a constant in the view). A stale row is shown as stale and kept, never removed.
-    Consequence to be known: on the radio, with more than 5 devices, each device is refreshed less often
-    than every 5 s, so its row is stale for part of every cycle (11 devices: 6 s in 11). The age column
-    says how old the row really is.
+  - A row is stale when it was received more than 15 s ago (15.000 s exactly is not stale); the
+    threshold is one constant in the view, the same on every link, and it is above the 11 s cycle of
+    11 devices at one row per second on the radio. A stale row is shown as stale and kept, never removed;
+    the Received column says how old the row really is.
 - An unknown value in `device_id` (0, 8 or above 12), `state` (above 5) or `last_error` (above 6) makes
   the frame undecodable with this dialect version: the generated enums refuse a value that is not an
   entry. The checksum is right (the id is known), so the frame is counted in "Undecodable frames" of the

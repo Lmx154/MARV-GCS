@@ -51,7 +51,7 @@ fn the_devices_view_shows_a_row_per_device_and_says_when_there_is_none() {
         let mut cx = ViewCtx {
             state: &state,
             commands: &mut commands,
-            now: Some(Duration::from_secs(20)),
+            now: Some(Duration::from_secs(30)),
         };
         view.ui(ui, &mut cx);
         assert!(commands.is_empty());
@@ -68,7 +68,7 @@ fn the_devices_view_shows_a_row_per_device_and_says_when_there_is_none() {
         let mut cx = ViewCtx {
             state: &state,
             commands: &mut commands,
-            now: Some(Duration::from_secs(20)),
+            now: Some(Duration::from_secs(30)),
         };
         view.ui(ui, &mut cx);
     });
@@ -77,5 +77,5 @@ fn the_devices_view_shows_a_row_per_device_and_says_when_there_is_none() {
     harness.get_by_label("IMU2");
     harness.get_by_label("DEGRADED");
     assert_eq!(harness.get_all_by_label("12345").count(), 2);
-    assert_eq!(harness.get_all_by_label("11.0 s (stale)").count(), 2);
+    assert_eq!(harness.get_all_by_label("21.0 s (stale)").count(), 2);
 }
