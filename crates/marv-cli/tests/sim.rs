@@ -14,8 +14,13 @@ fn last(lines: &[&str]) -> String {
 #[test]
 fn status_shows_the_vehicle() {
     let rig = Rig::start();
-    let r = rig.cli("status");
+    let session = connected(&rig);
+    // A text that certainly arrives: the vehicle says why it refuses a write.
+    let r = on(&session, "param set SYS_UID 5");
+    assert_eq!(r.code, 1, "{r:?}");
+    let r = on(&session, "status");
     assert_eq!(r.code, 0, "{r:?}");
+    assert_eq!(r.err, "", "status shows its texts on stdout only: {r:?}");
     let lines = r.lines();
     assert!(
         lines[0].starts_with("vehicle\tsystem=1 component=1 type="),
@@ -27,7 +32,7 @@ fn status_shows_the_vehicle() {
     assert!(
         lines
             .iter()
-            .any(|l| l.starts_with("text\t") && l.contains("\tINFO\t")),
+            .any(|l| l.starts_with("text\t") && l.ends_with("\tWARNING\tSYS_UID: read only")),
         "{r:?}"
     );
 }

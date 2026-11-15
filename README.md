@@ -110,8 +110,8 @@ and `no heartbeat from a vehicle within N s` without it. Options may stand anywh
 
 Every command also prints, on stderr, each STATUSTEXT the vehicle sends while it runs, one line each as it arrives:
 `text<TAB>SEVERITY<TAB>TEXT` (so `param set` shows the firmware's reason for a refusal, and `device restart` what the
-vehicle says). stdout is not changed by it. `texts` and `watch` print texts on stdout as before, with no second copy on
-stderr. A text belongs to the session, not to the command: one that arrived before the command's own request was sent
+vehicle says). stdout is not changed by it. `texts`, `watch` and `status` print texts on stdout as before, with no second copy on
+stderr (a command whose own stdout shows texts does not echo them). A text belongs to the session, not to the command: one that arrived before the command's own request was sent
 (a boot text, an earlier text of the same session) is shown too.
 
 | Command | What it does and prints |

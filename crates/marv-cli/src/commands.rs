@@ -70,7 +70,10 @@ pub fn execute(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
-    let on = !matches!(invocation.command, Command::Texts | Command::Watch);
+    let on = !matches!(
+        invocation.command,
+        Command::Texts | Command::Watch | Command::Status
+    );
     let mut echo = Echo::new(err, on);
     let result = run_command(invocation, session, access, out, &mut echo);
     echo.pump(session);
@@ -519,7 +522,7 @@ fn text_line(entry: &TextEntry) -> String {
 struct Echo<'a> {
     err: &'a mut dyn Write,
     cursor: TextCursor,
-    /// Off for `texts` and `watch`, which print them on stdout.
+    /// Off for `texts`, `watch` and `status`, which print texts on stdout.
     on: bool,
     printed: usize,
 }
