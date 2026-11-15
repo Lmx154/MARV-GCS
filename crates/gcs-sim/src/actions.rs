@@ -94,6 +94,8 @@ pub struct Action {
     duration_ms: u64,
     /// When the next progress ACK is due.
     next_progress_ms: u64,
+    /// Set when the final ACK has been handed out; nothing is due after it.
+    finished: bool,
 }
 
 /// What the running action owes next.
@@ -118,6 +120,7 @@ impl Action {
             start_ms: now_ms,
             duration_ms,
             next_progress_ms: now_ms + PROGRESS_EVERY_MS,
+            finished: false,
         }
     }
 
@@ -134,8 +137,12 @@ impl Action {
     /// The next ACK due at `now_ms`, if any; progress ACKs are due every 500 ms and the final one at
     /// the end. Called again until `None`.
     pub fn next_due(&mut self, now_ms: u64) -> Option<Due> {
+        if self.finished {
+            return None;
+        }
         let end_ms = self.start_ms + self.duration_ms;
         if now_ms >= end_ms && self.next_progress_ms >= end_ms {
+            self.finished = true;
             return Some(Due::Final);
         }
         if now_ms >= self.next_progress_ms && self.next_progress_ms < end_ms {
