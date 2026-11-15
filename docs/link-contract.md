@@ -296,9 +296,58 @@ What the station does with it
 - A frame of id 42421 with another CRC_EXTRA than 231 is a checksum failure ("Checksum errors" of the
   Link view); it is not delivered.
 
-Not in this feature (a later one): the Operate / Configure access gate, sending `MAV_CMD_MARV_DEVICE`
-(restart, self-test), storage and reboot buttons. The Devices view has no buttons.
+Not in this feature (a later one): sending `MAV_CMD_MARV_DEVICE` (restart, self-test), storage and reboot
+buttons. The Devices view has no buttons. The access gate of section 9 is built.
 
 The simulator (`gcs-sim`) sends `MARV_DEVICE_STATUS` for IMU1, IMU2, BARO, MAG, GNSS, BATT and RC, each
 once per second, with advancing counters (`samples` at the device's nominal rate), state OK, error NONE and
 no flags. It builds the frame from this section, not from `marv-dialect`.
+
+## 9. Access: Operate and Configure
+
+The owner's rule, verbatim: "i don't want the firmware to enforce it. things should be enforced in the GCS
+since that is where we expose the firmware's endpoints for settings and stuff so they can be changed".
+The vehicle does not enforce anything here: it answers every ground station the same way on every link,
+and nothing in the firmware, the wire or this contract changes. The gate is the ground station's alone.
+
+Roles. A session has one `Access`, fixed when it starts (`SessionConfig.access` in `gcs-mavlink`):
+- `Operate`: the station is a telemetry display and controller. It reads and it concerns itself.
+- `Configure`: the station is also the flight controller's configurator.
+
+Which link gives which role (one function in `marv-gcs`, `connection::access_of`, exhaustive over
+`gcs_transport::Endpoint`; the transport knows only bytes and does not hold the mapping):
+
+| Link | Access | Why |
+|---|---|---|
+| Serial | Configure | a cable to the board: the bench |
+| TCP | Configure | today TCP is the simulator; the default, the owner was asked |
+| UDP | Operate | a radio or a network: the field |
+| Log-file replay | Operate | a recording has no vehicle to configure |
+
+Enforcement. `Session::send` is the one choke point, for the window and for a later command line. Every
+`Command` has a class (`Command::access`, one exhaustive `match` with no wildcard arm, so a new variant
+cannot be added without a class). A configure-class command on an Operate session is refused: nothing is
+written to the link (0 bytes) and the refusal is recorded in `VehicleState.link.refused` (what was asked,
+how many times), from where a view or a command line shows "refused: this link is operate-only". Configure
+sessions pass every command.
+
+Classes.
+- Configure-class: every parameter write (`Command::SetParam`); and, reserved for the commands feature, whose
+  variants do not exist yet: sending a MAVLink command to the vehicle (`Command::SendCommand`: ALL of them,
+  an unknown `MAV_CMD` id counts as Configure), storage actions, calibration, device actions (restart,
+  self-test), reboot.
+- Operate-class: everything that only reads or only concerns the station: the heartbeat (a service, not a
+  command), a parameter list request (`Command::RefreshParams`), a single parameter read, log recording
+  (`Command::StartLog`, `Command::StopLog`), link management (connect, disconnect, replay).
+
+Services that run by themselves are not commands and are not gated. They only read: the capability
+request (`MAV_CMD_REQUEST_MESSAGE` for `AUTOPILOT_VERSION`) at connect, the repair reads of a list that is
+being downloaded, and the heartbeat.
+
+Parameters on an Operate session: the list is not downloaded at connect; the Parameters view says so, and
+a Refresh the user asks for is allowed (reads are operate-class). On a Configure session the list is
+downloaded at connect as before.
+
+Views. Every configure control is SHOWN DISABLED, with the reason next to it or as hover text ("Configure
+needs a serial or TCP link; this link is operate-only"), never hidden. The Link view and the connection bar
+say which role the session has.
