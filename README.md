@@ -67,12 +67,31 @@ Building needs Rust 1.99 or newer (the `rust-version` of `marv-dialect`). On Lin
 | Sensors | Live plots of both IMUs, the high-g accelerometer, the magnetometer and the barometer, and one line of GPS. The plots are a table of presets; one row adds a plot. |
 | Messages | Every message that arrives: rate, count, age and all its fields. Any numeric field can be plotted. Nothing here knows a particular message. |
 | Devices | The health of each device of the flight controller (`MARV_DEVICE_STATUS`, `docs/link-contract.md` section 8): one row per device in `device_id` order with its state (coloured), last error, samples and samples per second (computed from two successive rows), age of the last sample, errors, timeouts, recoveries, attempts, overflows, configuration restores, flags (HIL, self-test) and how long ago the row arrived (a row older than 15 s is shown as stale, not removed). Read only. The simulator sends seven devices; no firmware sends the message yet, so it has not been seen from a board. |
-| Parameters | Whatever parameters the vehicle reports: search, group by name prefix, edit, write with confirmation (a refused or unanswered write says so), save to and load from a file. Nothing here knows a particular parameter. |
+| Parameters | Whatever parameters the vehicle reports: search, group by name prefix, edit, write with confirmation (a refused or unanswered write says so), save to and load from a file. Nothing here knows a particular parameter. On an operate-only link the list is not downloaded at connect (press Refresh) and the editing controls are shown disabled with the reason. |
 | Log | The vehicle's text messages, and the recording. Every session is recorded automatically to `logs/<UTC time>.tlog`, the telemetry-log format Mission Planner, QGroundControl and pymavlink read. A log can be opened and replayed through the same tabs. |
-| Link | Connection state and counters: frames received and sent, checksum errors, discarded bytes. |
+| Link | Connection state and counters: frames received and sent, checksum errors, discarded bytes; the session's role (Access) and the last command it refused. |
 
 The status at the top right says `Connecting`, `Connected` (with the vehicle's ids), `Lost` (no heartbeat
-for 5 s) or `Closed` (with the reason).
+for 5 s) or `Closed` (with the reason), then the role of the session.
+
+## Two roles: Operate and Configure
+
+The station is either only a telemetry display and controller (Operate) or also the flight controller's
+configurator (Configure). The ground station enforces it, never the firmware (`docs/link-contract.md`,
+section 9). The link gives the role:
+
+| Link | Role |
+|---|---|
+| Serial | Configure |
+| TCP (today: the simulator) | Configure |
+| UDP | Operate |
+| Log-file replay | Operate |
+
+On an Operate session `Session::send` refuses every configure-class command (parameter writes, and later
+sending a MAVLink command, storage, calibration, device actions, reboot): nothing is written, and the Link
+view shows the refusal. The parameter list is not downloaded at connect (Refresh asks for it), and the
+configure controls are shown disabled with the reason, not hidden. A new `Command` variant is classified
+in `Command::access` (`crates/gcs-mavlink/src/state.rs`); the code does not compile until it is.
 
 ## How it is built
 
@@ -94,7 +113,7 @@ Four crates; the dependency graph enforces the layers (`docs/architecture.md`).
 ## Tests
 
 ```
-cargo test --workspace          # 444 tests, 25 s; needs /usr/bin/socat for the serial tests
+cargo test --workspace          # 461 tests, 25 s; needs /usr/bin/socat for the serial tests
 cargo clippy --workspace --all-targets -- -D warnings
 tools/board_check.sh <dir>      # with the board on its debug probe and its USB port cabled: about 3 minutes
 ```

@@ -24,7 +24,9 @@ Most additions need no change here at all; the rest are one file plus one or two
 1. Create `crates/marv-gcs/src/views/<name>.rs` with a type that implements `View`:
    `name()` is the tab title, `ui()` draws from `cx.state` (read-only, locked for the frame) and pushes
    `Command`s into `cx.commands` for anything the user asks for. `cx.now` is the session time, or `None`
-   when nothing is connected.
+   when nothing is connected. `cx.access` is the session's role: a control that sends a configure-class
+   `Command` is shown disabled with `status::CONFIGURE_BLOCKED` as the reason when `cx.access` is
+   `Operate` (use `status::configure_blocked`), never hidden.
 2. In `crates/marv-gcs/src/views/mod.rs` add `mod <name>;` and one `Box::new(<name>::<Type>),` line in `all()`.
 
 Nothing else changes: the tab row, the command line option `--view` and the tests that draw every view
@@ -39,7 +41,13 @@ give every input widget an accessible name.
    `cx.out`, reads the time from `cx.now`, and sets `cx.changed = true` when it changed the state. No
    socket, thread, clock or file inside it.
 2. If it has something to show, add a section for it to `VehicleState` in `crates/gcs-mavlink/src/state.rs`.
-3. If the user can ask it for something, add a variant to `Command` in the same file.
+3. If the user can ask it for something, add a variant to `Command` in the same file and classify it in
+   `Command::access` (and `Command::name`) there: `Configure` for anything that writes to the vehicle (a
+   parameter write, a MAVLink command, storage, calibration, a device action, reboot), `Operate` for what
+   only reads or only concerns the station. Both are matches with no wildcard arm, so the code does not
+   compile until the variant has its class; add a row for it to the table test in
+   `crates/gcs-mavlink/src/session_tests.rs` (`every_command_has_its_class_in_the_table`). `Session::send`
+   refuses a configure-class command on an Operate session; a service does not check it.
 4. In `crates/gcs-mavlink/src/services/mod.rs` add `pub mod <name>;` and one line in `default_services`.
 
 Test it with plain calls and a made-up `now` (see `services/params_tests.rs`), then end to end against the
@@ -55,7 +63,10 @@ ground station is developed against the real behaviour.
    for a link that is not a stream: it keeps the part of a datagram that did not fit the caller's buffer,
    skips empty datagrams instead of returning `Ok(0)`, and says in its module doc which error kinds are
    "nothing yet" and which end the link.
-2. Add a variant to `Endpoint` (with its text form, `udp:ADDR:PORT`) and an arm in `open`.
+2. Add a variant to `Endpoint` (with its text form, `udp:ADDR:PORT`) and an arm in `open`. Give the link its
+   role in `access_of` in `crates/marv-gcs/src/connection.rs` (Operate or Configure, `docs/link-contract.md`
+   section 9): it is a match over `Endpoint` with no wildcard arm, so the application does not compile
+   until you do. The mapping does not live in `gcs-transport`.
 3. Add the choice to the connection bar in `crates/marv-gcs/src/connection.rs` (UDP: one text field, the
    local address to listen on) and its parse test in `cli.rs`.
 

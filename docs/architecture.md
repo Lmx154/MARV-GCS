@@ -157,7 +157,10 @@ pub struct LinkState {
     pub last_heartbeat: Option<Duration>,    // session time of the last one
     pub rx: RxStats,
     pub tx_frames: u64,
+    pub refused: Option<Refused>,            // the last command `Session::send` refused, and how many
 }
+pub struct Refused { pub command: &'static str, pub count: u64 }
+pub enum Access { Operate, Configure }       // fixed per session; `Command::access` says what a command needs
 pub struct VehicleId { pub system_id: u8, pub component_id: u8, pub mav_type: String, pub autopilot: String }
 
 /// What the window can ask for. One variant per user action; grows with the features.
@@ -184,7 +187,7 @@ pub trait Service: Send {
 /// The registry: the one line to touch when a service is added.
 pub fn default_services(config: &SessionConfig) -> Vec<Box<dyn Service>>;
 
-pub struct SessionConfig { pub system_id: u8 /* 255 */, pub component_id: u8 /* 190 */, pub heartbeat_timeout: Duration /* 5 s */ }
+pub struct SessionConfig { pub system_id: u8 /* 255 */, pub component_id: u8 /* 190 */, pub heartbeat_timeout: Duration /* 5 s */, pub access: Access /* Configure */ }
 
 pub struct Session;
 impl Session {
@@ -196,6 +199,8 @@ impl Session {
         wake: Box<dyn Fn() + Send + Sync>,
     ) -> Session;
     pub fn state(&self) -> std::sync::MutexGuard<'_, VehicleState>;
+    /// The one choke point: a command that needs more `Access` than the session has is refused,
+    /// nothing is written and `link.refused` records it.
     pub fn send(&self, command: Command);
     // Drop stops the threads and closes the link (within 300 ms).
 }
@@ -211,6 +216,7 @@ pub struct ViewCtx<'a> {
     pub state: &'a VehicleState,          // locked for the frame
     pub commands: &'a mut Vec<Command>,   // sent after the frame
     pub now: Option<Duration>,            // session time; `None` when there is no session
+    pub access: Access,                   // the session's role; configure controls are shown disabled on Operate
 }
 pub trait View {
     fn name(&self) -> &'static str;       // tab title
