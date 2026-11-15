@@ -263,7 +263,13 @@ fn denied_unsupported_and_device_commands_get_the_vehicles_answers() {
         ),
     ];
     for (command, params, expected) in cases {
+        let before = rig.state().command.as_ref().map(|r| r.started);
         rig.send(command, params);
+        assert!(
+            rig.wait(2.0, |s| s.command.as_ref().map(|r| r.started) != before)
+                .is_some(),
+            "{command:?} was not started"
+        );
         rig.run_to_end(6.0);
         assert_eq!(rig.record().status, expected, "{command:?}");
         assert_eq!(rig.record().command, command as u32);
