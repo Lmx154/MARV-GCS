@@ -6,10 +6,13 @@ use std::time::Duration;
 
 use eframe::egui::{self, Color32};
 use egui_extras::{Column, TableBuilder};
+use gcs_mavlink::Command;
+use gcs_mavlink::dialect::MavCmd;
 use gcs_mavlink::services::messages::{MessageEntry, MessageKey, MessageStore, SeriesKey};
 
+use super::actions;
 use super::{View, ViewCtx};
-use crate::status::{GREEN, GREY, RED, YELLOW};
+use crate::status::{self, GREEN, GREY, RED, YELLOW};
 
 const ROW_HEIGHT: f32 = 20.0;
 const MESSAGE: &str = "MARV_DEVICE_STATUS";
@@ -45,13 +48,15 @@ impl View for Devices {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx) {
+        let gate = status::command_gate(cx.access, cx.state, cx.now.is_some());
+        calibration_buttons(ui, cx, gate);
         let rows = rows(&cx.state.messages, cx.now);
         if rows.is_empty() {
             ui.label("No device status yet");
             return;
         }
         let mut table = TableBuilder::new(ui).id_salt("devices_table").striped(true);
-        for _ in 0..TITLES.len() - 1 {
+        for _ in 0..TITLES.len() {
             table = table.column(Column::auto().at_least(60.0));
         }
         table
@@ -62,6 +67,9 @@ impl View for Devices {
                         ui.strong(title);
                     });
                 }
+                header.col(|ui| {
+                    ui.strong("Actions");
+                });
             })
             .body(|body| {
                 body.rows(ROW_HEIGHT, rows.len(), |mut row| {
@@ -82,9 +90,67 @@ impl View for Devices {
                             }
                         });
                     }
+                    row.col(|ui| {
+                        ui.horizontal(|ui| {
+                            if can_restart(device.device) && actions::button(ui, "Restart", gate) {
+                                cx.commands.push(device_command(device.device, 1.0));
+                            }
+                            if can_self_test(device.device)
+                                && actions::button(ui, "Self-test", gate)
+                            {
+                                cx.commands.push(device_command(device.device, 2.0));
+                            }
+                        });
+                    });
                 });
             });
     }
+}
+
+/// The devices that can be restarted (`MARV_DEVICE`: IMU1, IMU2, BARO, MAG, GNSS, BATT).
+pub fn can_restart(device: u8) -> bool {
+    matches!(device, 1..=6)
+}
+
+/// The devices that have a self-test (IMU1, IMU2, MAG).
+pub fn can_self_test(device: u8) -> bool {
+    matches!(device, 1 | 2 | 4)
+}
+
+/// `MAV_CMD_MARV_DEVICE`: param1 the device, param2 the action (1 restart, 2 self-test).
+fn device_command(device: u8, action: f32) -> Command {
+    Command::SendCommand {
+        command: MavCmd::MAV_CMD_MARV_DEVICE,
+        params: [f32::from(device), action, 0.0, 0.0, 0.0, 0.0, 0.0],
+    }
+}
+
+/// Above the table: the calibrations, the cancel and the status line of the last command.
+fn calibration_buttons(ui: &mut egui::Ui, cx: &mut ViewCtx, gate: Option<&'static str>) {
+    let calibrate = |params: [f32; 7]| Command::SendCommand {
+        command: MavCmd::MAV_CMD_PREFLIGHT_CALIBRATION,
+        params,
+    };
+    let cancel_gate = status::cancel_gate(cx.access, cx.state, cx.now.is_some());
+    ui.horizontal(|ui| {
+        if actions::button(ui, "Calibrate gyro", gate) {
+            cx.commands
+                .push(calibrate([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]));
+        }
+        if actions::button(ui, "Calibrate accelerometer (level)", gate) {
+            cx.commands
+                .push(calibrate([0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0]));
+        }
+        if actions::button(ui, "Cancel calibration", cancel_gate) {
+            cx.commands.push(calibrate([0.0; 7]));
+        }
+    });
+    if let Some(reason) = gate
+        && cx.access == gcs_mavlink::Access::Configure
+    {
+        ui.colored_label(YELLOW, reason);
+    }
+    actions::status_line(ui, cx.state);
 }
 
 /// One row of the table, every cell as the text shown.

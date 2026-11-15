@@ -1,12 +1,17 @@
 //! Link view: the state of the connection and of the vehicle's identity, as plain numbers.
 
 use eframe::egui;
-use gcs_mavlink::Refused;
+use gcs_mavlink::dialect::MavCmd;
+use gcs_mavlink::{Command, Refused};
 
+use super::actions::{self, Confirm};
 use super::{View, ViewCtx};
 use crate::status;
 
-pub struct Link;
+#[derive(Default)]
+pub struct Link {
+    confirm: Confirm,
+}
 
 impl View for Link {
     fn name(&self) -> &'static str {
@@ -63,6 +68,18 @@ impl View for Link {
                 row(ui, "Discarded bytes", link.rx.discarded_bytes.to_string());
                 row(ui, "Sent frames", link.tx_frames.to_string());
             });
+        ui.add_space(8.0);
+        let gate = status::command_gate(cx.access, cx.state, cx.now.is_some());
+        if self.confirm.button(ui, cx.now, "Reboot vehicle", gate) {
+            cx.commands.push(Command::SendCommand {
+                command: MavCmd::MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
+                params: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            });
+        }
+        if let Some(reason) = gate {
+            ui.colored_label(status::YELLOW, reason);
+        }
+        actions::status_line(ui, cx.state);
     }
 }
 

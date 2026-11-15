@@ -9,9 +9,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use gcs_mavlink::Command;
+use gcs_mavlink::dialect::MavCmd;
 use gcs_mavlink::param_file;
 use gcs_mavlink::services::params::{FetchStatus, ParamTable, ParamValue, WriteStatus};
 
+use super::actions::{self, Confirm};
 use super::{View, ViewCtx};
 use crate::status;
 
@@ -72,6 +74,8 @@ struct State {
     outcome: String,
     /// The problem lines of the last load.
     problems: Vec<String>,
+    /// The second click of the two resets.
+    confirm: Confirm,
 }
 
 impl Default for State {
@@ -84,6 +88,7 @@ impl Default for State {
             path: DEFAULT_PATH.to_string(),
             outcome: String::new(),
             problems: Vec::new(),
+            confirm: Confirm::default(),
         }
     }
 }
@@ -273,6 +278,36 @@ fn state_colour(state: &RowState) -> Option<egui::Color32> {
     }
 }
 
+/// The storage actions of the flight controller (`MAV_CMD_PREFLIGHT_STORAGE`), and the status line
+/// of the last command. The two resets ask for a second click.
+fn storage_buttons(ui: &mut egui::Ui, cx: &mut ViewCtx, confirm: &mut Confirm) {
+    let gate = status::command_gate(cx.access, cx.state, cx.now.is_some());
+    let storage = |action: f32| Command::SendCommand {
+        command: MavCmd::MAV_CMD_PREFLIGHT_STORAGE,
+        params: [action, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    };
+    ui.horizontal(|ui| {
+        if actions::button(ui, "Save to flash", gate) {
+            cx.commands.push(storage(1.0));
+        }
+        if actions::button(ui, "Reload from flash", gate) {
+            cx.commands.push(storage(0.0));
+        }
+        if confirm.button(ui, cx.now, "Reset all to defaults", gate) {
+            cx.commands.push(storage(2.0));
+        }
+        if confirm.button(ui, cx.now, "Reset calibration", gate) {
+            cx.commands.push(storage(3.0));
+        }
+    });
+    if let Some(reason) = gate
+        && cx.access == gcs_mavlink::Access::Configure
+    {
+        ui.colored_label(status::YELLOW, reason);
+    }
+    actions::status_line(ui, cx.state);
+}
+
 fn draw(ui: &mut egui::Ui, cx: &mut ViewCtx, st: &mut State) {
     let table = &cx.state.params;
     let connected = cx.now.is_some();
@@ -312,6 +347,8 @@ fn draw(ui: &mut egui::Ui, cx: &mut ViewCtx, st: &mut State) {
     if connected && let Some(reason) = blocked {
         ui.colored_label(status::YELLOW, reason);
     }
+
+    storage_buttons(ui, cx, &mut st.confirm);
 
     ui.add_enabled_ui(connected, |ui| {
         let all_groups = groups(table);

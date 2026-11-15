@@ -5,6 +5,7 @@ use std::time::Duration;
 use eframe::egui;
 use gcs_mavlink::{Access, Command, VehicleState};
 
+mod actions;
 mod devices;
 mod link;
 mod log;
@@ -40,7 +41,7 @@ pub fn all() -> Vec<Box<dyn View>> {
         Box::<devices::Devices>::default(),
         Box::<params::Params>::default(),
         Box::<log::Log>::default(),
-        Box::new(link::Link),
+        Box::<link::Link>::default(),
         // Box::new(<module>::<View>),
     ]
 }
