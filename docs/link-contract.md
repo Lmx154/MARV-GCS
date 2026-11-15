@@ -340,7 +340,7 @@ Classes.
   an unknown `MAV_CMD` id counts as Configure), storage actions, calibration, device actions (restart,
   self-test), reboot.
 - Operate-class: everything that only reads or only concerns the station: the heartbeat (a service, not a
-  command), a parameter list request (`Command::RefreshParams`), a single parameter read, log recording
+  command), a parameter list request (`Command::RefreshParams`), a single parameter read (reserved: no such `Command` exists yet), log recording
   (`Command::StartLog`, `Command::StopLog`), link management (connect, disconnect, replay).
 
 Services that run by themselves are not commands and are not gated. They only read: the capability
