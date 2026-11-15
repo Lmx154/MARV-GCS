@@ -52,6 +52,7 @@ fn the_devices_view_shows_a_row_per_device_and_says_when_there_is_none() {
             state: &state,
             commands: &mut commands,
             now: Some(Duration::from_secs(30)),
+            access: gcs_mavlink::Access::Configure,
         };
         view.ui(ui, &mut cx);
         assert!(commands.is_empty());
@@ -69,6 +70,7 @@ fn the_devices_view_shows_a_row_per_device_and_says_when_there_is_none() {
             state: &state,
             commands: &mut commands,
             now: Some(Duration::from_secs(30)),
+            access: gcs_mavlink::Access::Configure,
         };
         view.ui(ui, &mut cx);
     });

@@ -3,12 +3,31 @@
 use std::time::Duration;
 
 use eframe::egui::Color32;
-use gcs_mavlink::{LinkState, LinkStatus};
+use gcs_mavlink::{Access, LinkState, LinkStatus};
 
 pub const YELLOW: Color32 = Color32::from_rgb(230, 190, 40);
 pub const GREEN: Color32 = Color32::from_rgb(70, 200, 100);
 pub const RED: Color32 = Color32::from_rgb(235, 80, 80);
 pub const GREY: Color32 = Color32::from_rgb(150, 150, 150);
+
+/// The session's role as shown in the bar and the Link view.
+pub fn role(access: Access) -> &'static str {
+    match access {
+        Access::Operate => "Operate (read only)",
+        Access::Configure => "Configure",
+    }
+}
+
+/// Why a configure control is disabled on an operate-only session; `None` when it is allowed.
+pub fn configure_blocked(access: Access) -> Option<&'static str> {
+    match access {
+        Access::Operate => Some(CONFIGURE_BLOCKED),
+        Access::Configure => None,
+    }
+}
+
+pub const CONFIGURE_BLOCKED: &str =
+    "Configure needs a serial or TCP link; this link is operate-only";
 
 /// What is shown when there is no session.
 pub fn not_connected() -> (String, Color32) {
@@ -65,6 +84,14 @@ mod tests {
             mav_type: "MAV_TYPE_GENERIC".into(),
             autopilot: "MAV_AUTOPILOT_GENERIC".into(),
         }
+    }
+
+    #[test]
+    fn a_role_has_a_name_and_only_operate_blocks_configure() {
+        assert_eq!(role(Access::Operate), "Operate (read only)");
+        assert_eq!(role(Access::Configure), "Configure");
+        assert_eq!(configure_blocked(Access::Operate), Some(CONFIGURE_BLOCKED));
+        assert_eq!(configure_blocked(Access::Configure), None);
     }
 
     #[test]

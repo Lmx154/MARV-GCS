@@ -62,6 +62,7 @@ fn harness<'a>(
             state,
             commands: &mut *commands,
             now,
+            access: gcs_mavlink::Access::Configure,
         };
         view.ui(ui, &mut cx);
     })
@@ -289,6 +290,7 @@ fn a_new_session_drops_the_cleared_marker() {
             state: &state,
             commands: &mut commands,
             now: Some(Duration::from_secs(10)),
+            access: gcs_mavlink::Access::Configure,
         };
         inner.borrow_mut().ui(ui, &mut cx);
     });

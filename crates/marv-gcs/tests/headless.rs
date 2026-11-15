@@ -41,6 +41,7 @@ fn draw_all_views(state: &VehicleState, now: Option<Duration>) {
                 state,
                 commands: &mut commands,
                 now,
+                access: gcs_mavlink::Access::Configure,
             };
             view.ui(ui, &mut cx);
         });
@@ -72,6 +73,7 @@ fn link_view_shows_system_id_and_received_frames() {
             state: &state,
             commands: &mut commands,
             now: Some(Duration::from_secs(10)),
+            access: gcs_mavlink::Access::Configure,
         };
         link.ui(ui, &mut cx);
     });
@@ -80,6 +82,46 @@ fn link_view_shows_system_id_and_received_frames() {
     harness.get_by_label("12345");
     harness.get_by_label("Connected — system 42, component 7, MAV_TYPE_QUADROTOR");
     harness.get_by_label("1.0 s");
+}
+
+fn link_view_harness(state: &VehicleState, access: gcs_mavlink::Access) -> Harness<'static> {
+    let state = state.clone();
+    let mut link = views::all()
+        .into_iter()
+        .find(|v| v.name() == "Link")
+        .expect("Link view is registered");
+    let mut harness = Harness::new_ui(move |ui| {
+        let mut commands = Vec::new();
+        let mut cx = ViewCtx {
+            state: &state,
+            commands: &mut commands,
+            now: Some(Duration::from_secs(10)),
+            access,
+        };
+        link.ui(ui, &mut cx);
+    });
+    harness.run();
+    harness
+}
+
+#[test]
+fn link_view_says_which_role_the_session_has_and_what_it_refused() {
+    let mut state = connected_state();
+    let harness = link_view_harness(&state, gcs_mavlink::Access::Configure);
+    harness.get_by_label("Configure");
+    assert!(harness.query_by_label("Refused").is_none());
+
+    let harness = link_view_harness(&state, gcs_mavlink::Access::Operate);
+    harness.get_by_label("Operate (read only)");
+    assert!(harness.query_by_label("Refused").is_none());
+
+    state.link.refused = Some(gcs_mavlink::Refused {
+        command: "SetParam",
+        count: 2,
+    });
+    let harness = link_view_harness(&state, gcs_mavlink::Access::Operate);
+    harness.get_by_label("Refused");
+    harness.get_by_label("SetParam ×2: refused: this link is operate-only");
 }
 
 #[test]

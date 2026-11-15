@@ -120,6 +120,7 @@ fn run_view(name: &str, state: &VehicleState, now: Option<Duration>) -> Harness<
             state: &state,
             commands: &mut commands,
             now,
+            access: gcs_mavlink::Access::Configure,
         };
         view.ui(ui, &mut cx);
     });
@@ -187,6 +188,7 @@ fn clicking_a_row_shows_its_fields_and_they_can_be_plotted() {
             state: &state,
             commands: &mut commands,
             now: Some(Duration::from_secs(10)),
+            access: gcs_mavlink::Access::Configure,
         };
         view.ui(ui, &mut cx);
     });
@@ -246,6 +248,7 @@ fn a_new_session_drops_the_selection_and_the_ticked_fields() {
             state: &state,
             commands: &mut commands,
             now: Some(Duration::from_secs(10)),
+            access: gcs_mavlink::Access::Configure,
         };
         inner.borrow_mut().ui(ui, &mut cx);
     });

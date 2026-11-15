@@ -1,6 +1,7 @@
 //! Link view: the state of the connection and of the vehicle's identity, as plain numbers.
 
 use eframe::egui;
+use gcs_mavlink::Refused;
 
 use super::{View, ViewCtx};
 use crate::status;
@@ -41,6 +42,15 @@ impl View for Link {
                 ui.label("Status");
                 ui.colored_label(status_colour, status_text);
                 ui.end_row();
+                row(ui, "Access", status::role(cx.access).to_string());
+                if let Some(refused) = &link.refused {
+                    ui.label("Refused");
+                    ui.colored_label(
+                        status::YELLOW,
+                        format!("{} ×{}: {}", refused.command, refused.count, Refused::TEXT),
+                    );
+                    ui.end_row();
+                }
                 row(ui, "System", system);
                 row(ui, "Component", component);
                 row(ui, "Type", mav_type);

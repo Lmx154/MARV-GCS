@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Color32};
 use gcs_mavlink::tlog::{ReplaySpeed, replay};
-use gcs_mavlink::{Session, SessionConfig};
+use gcs_mavlink::{Access, Session, SessionConfig};
 use gcs_transport::{DEFAULT_BAUD, Endpoint, OpenError, PortInfo};
 
 use crate::status;
@@ -274,10 +274,28 @@ pub fn port_label(port: &PortInfo) -> String {
     }
 }
 
-/// Open the endpoint and start a session on it; `wake` repaints the window.
-pub fn start_session(endpoint: &Endpoint, ctx: &egui::Context) -> Result<Session, OpenError> {
+/// The role a link gives the station (docs/link-contract.md, "Access"). The one place that maps a
+/// link to an `Access`, exhaustive over the endpoints: a new link kind does not compile until it has a
+/// role. The transport knows only bytes and does not hold this.
+pub fn access_of(endpoint: &Endpoint) -> Access {
+    match endpoint {
+        Endpoint::Serial { .. } => Access::Configure,
+        Endpoint::Tcp { .. } => Access::Configure,
+        Endpoint::Udp { .. } => Access::Operate,
+    }
+}
+
+/// A log-file replay has no vehicle to configure.
+pub const REPLAY_ACCESS: Access = Access::Operate;
+
+/// Open the endpoint and start a session on it with `access`; `wake` repaints the window.
+pub fn start_session(
+    endpoint: &Endpoint,
+    access: Access,
+    ctx: &egui::Context,
+) -> Result<Session, OpenError> {
     let link = gcs_transport::open(endpoint)?;
-    Ok(start(link.reader, link.writer, ctx))
+    Ok(start(link.reader, link.writer, access, ctx))
 }
 
 /// Open a `.tlog` and start a session that replays it.
@@ -288,19 +306,42 @@ pub fn start_replay(
 ) -> Result<Session, String> {
     let file = File::open(path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
     let (reader, writer) = replay(Box::new(file), speed);
-    Ok(start(reader, writer, ctx))
+    Ok(start(reader, writer, REPLAY_ACCESS, ctx))
 }
 
 fn start(
     reader: Box<dyn std::io::Read + Send>,
     writer: Box<dyn std::io::Write + Send>,
+    access: Access,
     ctx: &egui::Context,
 ) -> Session {
     let ctx = ctx.clone();
     Session::start(
         reader,
         writer,
-        SessionConfig::default(),
+        SessionConfig {
+            access,
+            ..SessionConfig::default()
+        },
         Box::new(move || ctx.request_repaint()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_endpoint_has_its_role() {
+        let cases = [
+            ("serial:/dev/ttyACM0:115200", Access::Configure),
+            ("tcp:127.0.0.1:5760", Access::Configure),
+            ("udp:0.0.0.0:14550", Access::Operate),
+        ];
+        for (text, access) in cases {
+            let endpoint: Endpoint = text.parse().expect("endpoint");
+            assert_eq!(access_of(&endpoint), access, "{text}");
+        }
+        assert_eq!(REPLAY_ACCESS, Access::Operate);
+    }
 }

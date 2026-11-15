@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use eframe::egui;
-use gcs_mavlink::{Command, VehicleState};
+use gcs_mavlink::{Access, Command, VehicleState};
 
 mod devices;
 mod link;
@@ -20,6 +20,8 @@ pub struct ViewCtx<'a> {
     pub commands: &'a mut Vec<Command>,
     /// Time since the session started; `None` when there is no session.
     pub now: Option<Duration>,
+    /// What the session may do; configure controls are shown disabled on `Operate`.
+    pub access: Access,
 }
 
 pub trait View {

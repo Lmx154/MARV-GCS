@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 use gcs_mavlink::tlog::ReplaySpeed;
-use gcs_mavlink::{Command, Session, VehicleState};
+use gcs_mavlink::{Access, Command, Session, VehicleState};
 use gcs_transport::Endpoint;
 
 use crate::cli::Cli;
@@ -23,6 +23,8 @@ pub struct App {
     views: Vec<Box<dyn View>>,
     selected: usize,
     session: Option<Session>,
+    /// The role of the session, from its link; `Operate` while there is none.
+    access: Access,
     /// When the session was started: the session time is measured from here.
     session_started: Instant,
     no_session_state: VehicleState,
@@ -40,6 +42,7 @@ impl App {
             views: views::all(),
             selected: cli.view.unwrap_or(0),
             session: None,
+            access: Access::Operate,
             session_started: Instant::now(),
             no_session_state: VehicleState::default(),
             screenshot: cli.screenshot.map(|path| {
@@ -70,8 +73,10 @@ impl App {
     fn connect(&mut self, endpoint: &Endpoint, ctx: &egui::Context) {
         self.bar.error = None;
         logfile::set_error(ctx, None);
-        match connection::start_session(endpoint, ctx) {
+        let access = connection::access_of(endpoint);
+        match connection::start_session(endpoint, access, ctx) {
             Ok(session) => {
+                self.access = access;
                 self.session_started = Instant::now();
                 self.session = Some(session);
                 self.replaying = false;
@@ -89,6 +94,7 @@ impl App {
         logfile::set_error(ctx, None);
         match connection::start_replay(path, speed, ctx) {
             Ok(session) => {
+                self.access = connection::REPLAY_ACCESS;
                 self.session_started = Instant::now();
                 self.session = Some(session);
                 self.replaying = true;
@@ -134,7 +140,10 @@ impl App {
                 .as_ref()
                 .map(|_| self.session_started.elapsed());
             let status = match now {
-                Some(now) => status::describe_session(&state.link, now, self.replaying),
+                Some(now) => {
+                    let (text, colour) = status::describe_session(&state.link, now, self.replaying);
+                    (format!("{text} — {}", status::role(self.access)), colour)
+                }
                 None => status::not_connected(),
             };
 
@@ -156,6 +165,7 @@ impl App {
                         state,
                         commands: &mut commands,
                         now,
+                        access: self.access,
                     };
                     view.ui(ui, &mut cx);
                 }

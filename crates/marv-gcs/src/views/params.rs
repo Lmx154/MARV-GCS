@@ -276,11 +276,12 @@ fn state_colour(state: &RowState) -> Option<egui::Color32> {
 fn draw(ui: &mut egui::Ui, cx: &mut ViewCtx, st: &mut State) {
     let table = &cx.state.params;
     let connected = cx.now.is_some();
+    let blocked = status::configure_blocked(cx.access);
     st.prune(table);
 
     ui.horizontal(|ui| {
         if connected {
-            fetch_status(ui, table);
+            fetch_status(ui, table, blocked.is_some());
         } else {
             let (text, colour) = status::not_connected();
             ui.colored_label(colour, text);
@@ -291,9 +292,12 @@ fn draw(ui: &mut egui::Ui, cx: &mut ViewCtx, st: &mut State) {
             }
             let sendable = st.sendable(table).len();
             let write = ui.add_enabled(
-                sendable > 0,
+                sendable > 0 && blocked.is_none(),
                 egui::Button::new(format!("Write changes ({sendable})")),
             );
+            if let Some(reason) = blocked {
+                write.clone().on_disabled_hover_text(reason);
+            }
             if write.clicked() {
                 st.write(table, cx.commands);
             }
@@ -305,6 +309,9 @@ fn draw(ui: &mut egui::Ui, cx: &mut ViewCtx, st: &mut State) {
             }
         });
     });
+    if connected && let Some(reason) = blocked {
+        ui.colored_label(status::YELLOW, reason);
+    }
 
     ui.add_enabled_ui(connected, |ui| {
         let all_groups = groups(table);
@@ -339,7 +346,11 @@ fn draw(ui: &mut egui::Ui, cx: &mut ViewCtx, st: &mut State) {
             {
                 st.save(table);
             }
-            if ui.button("Load").clicked() {
+            let load = ui.add_enabled(blocked.is_none(), egui::Button::new("Load"));
+            if let Some(reason) = blocked {
+                load.clone().on_disabled_hover_text(reason);
+            }
+            if load.clicked() {
                 st.load(table);
             }
         });
@@ -398,7 +409,12 @@ fn draw(ui: &mut egui::Ui, cx: &mut ViewCtx, st: &mut State) {
                         if let Some(c) = colour {
                             field = field.text_color(c);
                         }
-                        let response = ui.add(field).accessible_name(format!("value of {name}"));
+                        let response = ui
+                            .add_enabled(blocked.is_none(), field)
+                            .accessible_name(format!("value of {name}"));
+                        if let Some(reason) = blocked {
+                            response.clone().on_disabled_hover_text(reason);
+                        }
                         if response.changed() {
                             st.set(table, name, text);
                         }
@@ -418,8 +434,11 @@ fn draw(ui: &mut egui::Ui, cx: &mut ViewCtx, st: &mut State) {
     });
 }
 
-fn fetch_status(ui: &mut egui::Ui, table: &ParamTable) {
+fn fetch_status(ui: &mut egui::Ui, table: &ParamTable, operate_only: bool) {
     match &table.fetch {
+        FetchStatus::Idle if operate_only => {
+            ui.label("Not loaded: press Refresh to download the list");
+        }
         FetchStatus::Idle => {
             ui.label("Not loaded");
         }

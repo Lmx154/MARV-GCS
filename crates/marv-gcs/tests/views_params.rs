@@ -10,7 +10,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use gcs_mavlink::services::params::{
     FetchStatus, Param, ParamTable, ParamType, ParamValue, WriteStatus,
 };
-use gcs_mavlink::{Command, VehicleState};
+use gcs_mavlink::{Access, Command, VehicleState};
 use marv_gcs::views::{self, View, ViewCtx};
 
 type Commands = Rc<RefCell<Vec<Command>>>;
@@ -61,6 +61,14 @@ impl IntoArray for [u8; 2] {
 }
 
 fn harness(table: ParamTable, now: Option<Duration>) -> (Harness<'static>, Commands) {
+    harness_access(table, now, Access::Configure)
+}
+
+fn harness_access(
+    table: ParamTable,
+    now: Option<Duration>,
+    access: Access,
+) -> (Harness<'static>, Commands) {
     let commands: Commands = Rc::default();
     let sink = commands.clone();
     let state = VehicleState {
@@ -79,6 +87,7 @@ fn harness(table: ParamTable, now: Option<Duration>) -> (Harness<'static>, Comma
                 state: &state,
                 commands: &mut out,
                 now,
+                access,
             };
             view.ui(ui, &mut cx);
         });
@@ -281,6 +290,7 @@ fn a_sent_edit_clears_when_the_table_shows_the_value_and_stays_when_refused() {
                 state: &state,
                 commands: &mut commands,
                 now: Some(Duration::from_secs(1)),
+                access: gcs_mavlink::Access::Configure,
             };
             view.ui(ui, &mut cx);
         });
@@ -331,6 +341,7 @@ fn shared_harness(table: ParamTable) -> (Harness<'static>, Commands, SharedView)
                 state: &state,
                 commands: &mut out,
                 now: Some(Duration::from_secs(1)),
+                access: gcs_mavlink::Access::Configure,
             };
             shared.borrow_mut().ui(ui, &mut cx);
         });
@@ -389,5 +400,68 @@ fn two_clicks_before_the_table_shows_the_write_send_it_once() {
     assert!(matches!(
         &sent[0],
         Command::SetParam { name, value: ParamValue::U8(7) } if name == "AAA_ONE"
+    ));
+}
+
+const REASON: &str = "Configure needs a serial or TCP link; this link is operate-only";
+
+#[test]
+fn on_an_operate_link_every_configure_control_is_shown_disabled_with_the_reason() {
+    let (mut h, commands) = harness_access(
+        complete_table(),
+        Some(Duration::from_secs(1)),
+        Access::Operate,
+    );
+    h.get_by_label(REASON);
+    for label in [
+        "value of AAA_ONE",
+        "value of BBB_ONE",
+        "Write changes (0)",
+        "Load",
+    ] {
+        assert!(
+            h.get_by_label(label).accesskit_node().is_disabled(),
+            "{label} must be shown, and disabled"
+        );
+    }
+    assert!(!h.get_by_label("Refresh").accesskit_node().is_disabled());
+    assert!(!h.get_by_label("Save").accesskit_node().is_disabled());
+    h.get_by_label("Write changes (0)").click();
+    h.get_by_label("Load").click();
+    h.run();
+    assert!(commands.borrow().is_empty());
+}
+
+#[test]
+fn on_a_configure_link_the_configure_controls_are_enabled_and_no_reason_is_shown() {
+    let (mut h, _) = connected(complete_table());
+    assert!(h.query_by_label(REASON).is_none());
+    assert!(
+        !h.get_by_label("value of AAA_ONE")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(!h.get_by_label("Load").accesskit_node().is_disabled());
+    type_into(&mut h, "value of AAA_ONE", "7");
+    assert!(
+        !h.get_by_label("Write changes (1)")
+            .accesskit_node()
+            .is_disabled()
+    );
+}
+
+#[test]
+fn an_operate_link_that_has_not_downloaded_says_so_and_a_refresh_is_allowed() {
+    let (mut h, commands) = harness_access(
+        ParamTable::default(),
+        Some(Duration::from_secs(1)),
+        Access::Operate,
+    );
+    h.get_by_label("Not loaded: press Refresh to download the list");
+    h.get_by_label("Refresh").click();
+    h.run();
+    assert!(matches!(
+        commands.borrow().as_slice(),
+        [Command::RefreshParams]
     ));
 }
