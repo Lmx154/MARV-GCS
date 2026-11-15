@@ -14,6 +14,7 @@ use crate::{LinkStatus, Message};
 fn config(timeout_ms: u64) -> SessionConfig {
     SessionConfig {
         heartbeat_timeout: Duration::from_millis(timeout_ms),
+        access: Access::Configure,
         ..SessionConfig::default()
     }
 }
@@ -809,8 +810,8 @@ mod access {
     }
 
     #[test]
-    fn default_config_is_configure() {
-        assert_eq!(SessionConfig::default().access, Access::Configure);
+    fn default_config_is_operate_so_an_unconfigured_session_cannot_write() {
+        assert_eq!(SessionConfig::default().access, Access::Operate);
     }
 
     #[test]
@@ -927,5 +928,106 @@ mod access {
         assert!(Access::Configure.allows(Access::Operate));
         assert!(Access::Operate.allows(Access::Operate));
         assert!(!Access::Operate.allows(Access::Configure));
+    }
+}
+
+mod replay {
+    use std::io::Cursor;
+
+    use super::*;
+    use crate::dialect::{MavParamType, PARAM_VALUE_DATA};
+    use crate::services::params::FetchStatus;
+    use crate::tlog::{ReplaySpeed, replay};
+    use crate::{Access, Body, Deframer, Encoder};
+
+    const NAMES: [&str; 3] = ["AAA_ONE", "AAA_TWO", "BBB_ONE"];
+
+    /// A recording as a vehicle's session would have made it: a heartbeat, then the whole list.
+    fn recording() -> Vec<u8> {
+        let mut encoder = Encoder::new(1, 1);
+        let mut bytes = Vec::new();
+        let mut time_us = 1_000_000u64;
+        let mut push = |message: Message| {
+            bytes.extend_from_slice(&time_us.to_be_bytes());
+            bytes.extend_from_slice(&encoder.encode(&message));
+            time_us += 1_000;
+        };
+        push(heartbeat(MavType::MAV_TYPE_QUADROTOR));
+        for (index, name) in NAMES.iter().enumerate() {
+            let mut id = [0u8; 16];
+            id[..name.len()].copy_from_slice(name.as_bytes());
+            push(Message::PARAM_VALUE(PARAM_VALUE_DATA {
+                param_value: f32::from_le_bytes([index as u8 + 1, 0, 0, 0]),
+                param_count: NAMES.len() as u16,
+                param_index: index as u16,
+                param_id: id.into(),
+                param_type: MavParamType::MAV_PARAM_TYPE_INT32,
+            }));
+        }
+        bytes
+    }
+
+    #[derive(Clone, Default)]
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A replay of a log: the table fills from the PARAM_VALUE frames the log carries; the session
+    /// asks for no list, reads nothing by index and writes no parameter. The writer is a recording
+    /// one in place of the replay's discarding writer, to see what would go out.
+    #[test]
+    fn a_replay_fills_the_parameter_table_from_the_log_and_requests_nothing() {
+        let (reader, _discard) = replay(Box::new(Cursor::new(recording())), ReplaySpeed::Fast);
+        let sink = Sink::default();
+        let session = Session::start(
+            reader,
+            Box::new(sink.clone()),
+            SessionConfig {
+                access: Access::Operate,
+                ..SessionConfig::default()
+            },
+            nop(),
+        );
+        assert!(
+            wait_until(Duration::from_secs(3), || {
+                session.state().params.fetch == FetchStatus::Complete
+            }),
+            "the replayed list did not fill the table: {:?}",
+            session.state().params
+        );
+        {
+            let state = session.state();
+            assert_eq!(state.params.params.len(), NAMES.len());
+            for name in NAMES {
+                assert!(state.params.params.contains_key(name), "{name}");
+            }
+            assert_eq!(state.link.refused, None);
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        let mut frames = Vec::new();
+        Deframer::new().push(&sink.0.lock().unwrap(), &mut frames);
+        for frame in frames {
+            assert!(
+                !matches!(
+                    frame.body,
+                    Body::Known(
+                        Message::PARAM_REQUEST_LIST(_)
+                            | Message::PARAM_REQUEST_READ(_)
+                            | Message::PARAM_SET(_)
+                    )
+                ),
+                "a replay wrote {:?}",
+                frame.body
+            );
+        }
     }
 }

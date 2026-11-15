@@ -21,7 +21,7 @@ use gcs_mavlink::dialect::{HEARTBEAT_DATA, MavAutopilot, MavModeFlag, MavState, 
 use gcs_mavlink::services::params::{FetchStatus, ParamEncoding, ParamValue, WriteStatus};
 use gcs_mavlink::tlog::{LogSink, TlogReader};
 use gcs_mavlink::{
-    Body, Command, Deframer, Encoder, Frame, LinkStatus, Message, Session, SessionConfig,
+    Access, Body, Command, Deframer, Encoder, Frame, LinkStatus, Message, Session, SessionConfig,
     VehicleState,
 };
 use gcs_transport::{Endpoint, list_serial_ports, open};
@@ -165,7 +165,10 @@ impl Board {
         let session = Session::start(
             link.reader,
             link.writer,
-            SessionConfig::default(),
+            SessionConfig {
+                access: Access::Configure,
+                ..SessionConfig::default()
+            },
             Box::new(|| {}),
         );
         Board {

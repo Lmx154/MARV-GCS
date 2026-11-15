@@ -249,7 +249,10 @@ impl Rig {
             autopilot: autopilot.into(),
         });
         Self {
-            service: Params::new(&SessionConfig::default()),
+            service: Params::new(&SessionConfig {
+                access: crate::Access::Configure,
+                ..SessionConfig::default()
+            }),
             state,
             log: Vec::new(),
             changed: false,

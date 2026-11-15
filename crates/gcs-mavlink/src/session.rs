@@ -35,7 +35,7 @@ impl Default for SessionConfig {
             system_id: 255,
             component_id: 190,
             heartbeat_timeout: Duration::from_secs(5),
-            access: Access::Configure,
+            access: Access::Operate,
         }
     }
 }

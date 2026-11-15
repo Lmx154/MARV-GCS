@@ -324,6 +324,9 @@ Which link gives which role (one function in `marv-gcs`, `connection::access_of`
 | UDP | Operate | a radio or a network: the field |
 | Log-file replay | Operate | a recording has no vehicle to configure |
 
+A session built without an explicit access is `Operate` (`SessionConfig::default()`): the gate fails closed,
+so a session that someone forgot to configure cannot write. Whoever needs to write says `Configure`.
+
 Enforcement. `Session::send` is the one choke point, for the window and for a later command line. Every
 `Command` has a class (`Command::access`, one exhaustive `match` with no wildcard arm, so a new variant
 cannot be added without a class). A configure-class command on an Operate session is refused: nothing is
@@ -346,7 +349,9 @@ being downloaded, and the heartbeat.
 
 Parameters on an Operate session: the list is not downloaded at connect; the Parameters view says so, and
 a Refresh the user asks for is allowed (reads are operate-class). On a Configure session the list is
-downloaded at connect as before.
+downloaded at connect as before. An Operate session
+still shows a `PARAM_VALUE` it did not ask for, so a replayed log fills the table as before: the entry
+is stored and the status follows the count, but no list is requested and no missing entry is read by index.
 
 Views. Every configure control is SHOWN DISABLED, with the reason next to it or as hover text ("Configure
 needs a serial or TCP link; this link is operate-only"), never hidden. The Link view and the connection bar

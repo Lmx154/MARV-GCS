@@ -619,7 +619,19 @@ impl Params {
         let kind = kind_from_wire(v.param_type);
         let (index, count) = (v.param_index, v.param_count);
         match &mut self.fetch {
-            Fetch::Idle => return,
+            Fetch::Idle => {
+                if self.access == Access::Operate {
+                    observe(
+                        &mut cx.state.params,
+                        &name,
+                        (index, count),
+                        kind,
+                        raw,
+                        &mut cx.changed,
+                    );
+                }
+                return;
+            }
             Fetch::Requesting { .. } if count == 0 => {
                 self.restarts = 0;
                 self.fetch = Fetch::Complete { expected: 0 };
@@ -738,6 +750,45 @@ fn store(
     };
     if table.params.get(&name) != Some(&param) {
         table.params.insert(name, param);
+        *changed = true;
+    }
+}
+
+/// What an operate-only session does with a PARAM_VALUE while no download is under way (a replayed log,
+/// or a list another station asked for): it shows the entry, and asks for nothing and repairs nothing.
+fn observe(
+    table: &mut ParamTable,
+    name: &str,
+    (index, count): (u16, u16),
+    kind: Option<ParamType>,
+    raw: [u8; 4],
+    changed: &mut bool,
+) {
+    let Some(kind) = kind else {
+        return;
+    };
+    if count == 0 {
+        if table.fetch != FetchStatus::Complete {
+            table.fetch = FetchStatus::Complete;
+            *changed = true;
+        }
+        return;
+    }
+    if index >= count {
+        return;
+    }
+    store(table, name.to_owned(), index, kind, raw, changed);
+    let received = u16::try_from(table.params.len()).unwrap_or(u16::MAX);
+    let fetch = if received >= count {
+        FetchStatus::Complete
+    } else {
+        FetchStatus::Fetching {
+            received,
+            expected: count,
+        }
+    };
+    if table.fetch != fetch {
+        table.fetch = fetch;
         *changed = true;
     }
 }

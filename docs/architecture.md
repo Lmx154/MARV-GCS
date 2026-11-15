@@ -187,7 +187,7 @@ pub trait Service: Send {
 /// The registry: the one line to touch when a service is added.
 pub fn default_services(config: &SessionConfig) -> Vec<Box<dyn Service>>;
 
-pub struct SessionConfig { pub system_id: u8 /* 255 */, pub component_id: u8 /* 190 */, pub heartbeat_timeout: Duration /* 5 s */, pub access: Access /* Configure */ }
+pub struct SessionConfig { pub system_id: u8 /* 255 */, pub component_id: u8 /* 190 */, pub heartbeat_timeout: Duration /* 5 s */, pub access: Access /* Operate */ }
 
 pub struct Session;
 impl Session {

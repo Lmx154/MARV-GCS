@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use gcs_mavlink::services::texts::Severity;
 use gcs_mavlink::tlog::{LogSink, ReplaySpeed, TlogReader, replay};
-use gcs_mavlink::{Command, LinkStatus, Session, SessionConfig, VehicleState};
+use gcs_mavlink::{Access, Command, LinkStatus, Session, SessionConfig, VehicleState};
 use gcs_sim::{SimConfig, SimVehicle, serve_tcp};
 use gcs_transport::{Endpoint, Link, open};
 
@@ -110,7 +110,15 @@ mod support {
             writer: Box<dyn std::io::Write + Send>,
         ) -> Client {
             let started = Instant::now();
-            let session = Session::start(reader, writer, SessionConfig::default(), Box::new(|| {}));
+            let session = Session::start(
+                reader,
+                writer,
+                SessionConfig {
+                    access: Access::Configure,
+                    ..SessionConfig::default()
+                },
+                Box::new(|| {}),
+            );
             Client { session, started }
         }
 

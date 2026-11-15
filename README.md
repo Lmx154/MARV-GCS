@@ -90,7 +90,7 @@ section 9). The link gives the role:
 On an Operate session `Session::send` refuses every configure-class command (parameter writes, and later
 sending a MAVLink command, storage, calibration, device actions, reboot): nothing is written, and the Link
 view shows the refusal. The parameter list is not downloaded at connect (Refresh asks for it), and the
-configure controls are shown disabled with the reason, not hidden. A new `Command` variant is classified
+configure controls are shown disabled with the reason, not hidden. A session whose access was not set is Operate: the gate fails closed. A new `Command` variant is classified
 in `Command::access` (`crates/gcs-mavlink/src/state.rs`); the code does not compile until it is.
 
 ## How it is built
@@ -113,7 +113,7 @@ Four crates; the dependency graph enforces the layers (`docs/architecture.md`).
 ## Tests
 
 ```
-cargo test --workspace          # 461 tests, 25 s; needs /usr/bin/socat for the serial tests
+cargo test --workspace          # 462 tests, 25 s; needs /usr/bin/socat for the serial tests
 cargo clippy --workspace --all-targets -- -D warnings
 tools/board_check.sh <dir>      # with the board on its debug probe and its USB port cabled: about 3 minutes
 ```
