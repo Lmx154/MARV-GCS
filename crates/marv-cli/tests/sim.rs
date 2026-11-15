@@ -5,7 +5,7 @@ mod common;
 use std::net::TcpListener;
 use std::time::{Duration, Instant};
 
-use common::{Rig, Shared, run};
+use common::{Rig, run};
 
 fn last(lines: &[&str]) -> String {
     lines.last().map(|l| (*l).to_string()).unwrap_or_default()
@@ -52,28 +52,73 @@ fn devices_prints_seven_rows() {
     }
 }
 
+/// A session on the rig's vehicle that has seen the heartbeat.
+fn connected(rig: &Rig) -> gcs_mavlink::Session {
+    let endpoint = format!("tcp:{}", rig.addr).parse().expect("endpoint");
+    let session =
+        gcs_link::start_session(&endpoint, gcs_mavlink::Access::Configure, Box::new(|| {}))
+            .expect("open");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while session.state().link.vehicle.is_none() {
+        assert!(Instant::now() < deadline, "never connected");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    session
+}
+
+/// Runs the command line on a session that exists already.
+fn on(session: &gcs_mavlink::Session, words: &str) -> common::Output {
+    let args: Vec<String> = format!("--connect tcp:127.0.0.1:5760 {words}")
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let Ok(marv_cli::args::Parsed::Run(invocation)) = marv_cli::args::parse(&args) else {
+        panic!("{words}: does not parse");
+    };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = marv_cli::commands::execute(
+        &invocation,
+        session,
+        gcs_mavlink::Access::Configure,
+        &mut out,
+        &mut err,
+    );
+    common::Output {
+        code,
+        out: String::from_utf8_lossy(&out).into_owned(),
+        err: String::from_utf8_lossy(&err).into_owned(),
+    }
+}
+
 #[test]
-fn texts_shows_the_boot_text_and_watch_shows_rows_and_texts() {
+fn texts_and_watch_show_what_the_vehicle_says() {
     let rig = Rig::start();
-    let r = rig.cli("texts --for 1");
+    let session = connected(&rig);
+    // A refused action makes the vehicle say why, in a STATUSTEXT.
+    session.send(gcs_mavlink::Command::SendCommand {
+        command: gcs_mavlink::dialect::MavCmd::MAV_CMD_MARV_DEVICE,
+        params: [7.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    });
+    let r = on(&session, "texts --for 1");
     assert_eq!(r.code, 0, "{r:?}");
-    let line = r.lines()[0].to_string();
-    let cells: Vec<&str> = line.split('\t').collect();
+    assert_eq!(r.lines().len(), 1, "{r:?}");
+    let cells: Vec<&str> = r.lines()[0].split('\t').collect();
     assert_eq!(cells.len(), 3, "{r:?}");
     assert!(
-        cells[0].parse::<f64>().is_ok() && cells[1] == "INFO",
+        cells[0].parse::<f64>().is_ok() && cells[1] == "INFO" && !cells[2].is_empty(),
         "{r:?}"
     );
-    let r = rig.cli("watch --for 2.5");
+    let r = on(&session, "watch --for 2.5");
     assert_eq!(r.code, 0, "{r:?}");
-    let devices = r
-        .lines()
-        .iter()
-        .filter(|l| l.starts_with("device\t"))
-        .count();
+    let lines = r.lines();
+    let devices = lines.iter().filter(|l| l.starts_with("device\t")).count();
     assert_eq!(
         devices, 7,
         "one line per device while nothing changes: {r:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.starts_with("text\t")),
+        "the text is listed again by watch: {r:?}"
     );
 }
 
@@ -169,29 +214,34 @@ fn calibrate_gyro_ends_accepted() {
     assert!(r.out.contains("gyro calibration: 0 %"), "{r:?}");
 }
 
+/// The simulator serves one client at a time, as the board's one USB port does: a calibration
+/// started by one invocation can be cancelled by the next one only after the first has let go of the
+/// link (Ctrl-C), and the vehicle goes on calibrating meanwhile.
 #[test]
-fn calibrate_cancel_during_a_calibration_ends_it_cancelled() {
+fn calibrate_cancel_during_a_calibration_stops_it_and_a_second_cancel_has_nothing_to_cancel() {
     let rig = Rig::start();
-    let shared = Shared::default();
-    let calibration = {
-        let (out, addr) = (shared.clone(), rig.addr.clone());
-        std::thread::spawn(move || {
-            let args: Vec<String> = format!("--connect tcp:{addr} calibrate gyro")
-                .split_whitespace()
-                .map(str::to_string)
-                .collect();
-            let (mut out, mut err) = (out, Vec::new());
-            marv_cli::run(&args, &mut out, &mut err)
-        })
-    };
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !shared.text().contains(" %") {
-        assert!(
-            Instant::now() < deadline,
-            "the calibration never started: {:?}",
-            shared.text()
-        );
-        std::thread::sleep(Duration::from_millis(20));
+    {
+        let endpoint = format!("tcp:{}", rig.addr).parse().expect("endpoint");
+        let session =
+            gcs_link::start_session(&endpoint, gcs_mavlink::Access::Configure, Box::new(|| {}))
+                .expect("open");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while session.state().link.vehicle.is_none() {
+            assert!(Instant::now() < deadline, "never connected");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        session.send(gcs_mavlink::Command::SendCommand {
+            command: gcs_mavlink::dialect::MavCmd::MAV_CMD_PREFLIGHT_CALIBRATION,
+            params: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !matches!(
+            session.state().command.as_ref().map(|r| r.status.clone()),
+            Some(gcs_mavlink::CommandStatus::InProgress { .. })
+        ) {
+            assert!(Instant::now() < deadline, "the calibration never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
     let cancel = rig.cli("calibrate cancel");
     assert_eq!(cancel.code, 0, "{cancel:?}");
@@ -200,13 +250,6 @@ fn calibrate_cancel_during_a_calibration_ends_it_cancelled() {
         "cancel calibration: accepted",
         "{cancel:?}"
     );
-    let code = calibration.join().expect("the calibration thread");
-    assert_eq!(code, 1, "{:?}", shared.text());
-    assert_eq!(
-        last(&shared.text().lines().collect::<Vec<_>>()),
-        "gyro calibration: cancelled"
-    );
-    // With nothing running the vehicle has nothing to cancel.
     let again = rig.cli("calibrate cancel");
     assert_eq!(again.code, 1, "{again:?}");
     assert_eq!(
