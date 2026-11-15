@@ -291,6 +291,65 @@ fn the_status_line_texts() {
 }
 
 #[test]
+fn the_compass_status_texts_and_the_hint_only_while_it_waits_or_runs() {
+    const HINT: &str = "rotate the vehicle through all orientations";
+    let shown = |record: CommandRecord| {
+        let (mut h, _) = harness(
+            "Devices",
+            {
+                let mut s = devices_state();
+                s.command = Some(record);
+                s
+            },
+            Access::Configure,
+        );
+        h.run();
+        h.query_by_label(HINT).is_some()
+    };
+    let compass = |status| record(241, p(1, 1.0), status);
+    assert!(shown(compass(CommandStatus::Waiting)));
+    assert!(shown(compass(CommandStatus::InProgress {
+        percent: Some(40)
+    })));
+    assert!(!shown(compass(CommandStatus::Finished {
+        text: "accepted",
+        accepted: true
+    })));
+    assert!(!shown(compass(CommandStatus::Finished {
+        text: "cancelled",
+        accepted: false
+    })));
+    assert!(!shown(compass(CommandStatus::NoAnswer)));
+    assert!(!shown(record(
+        241,
+        p(0, 1.0),
+        CommandStatus::InProgress { percent: Some(40) }
+    )));
+    assert!(!shown(record(
+        241,
+        [0.0; 7],
+        CommandStatus::InProgress { percent: Some(40) }
+    )));
+    let (mut h, _) = harness("Devices", devices_state(), Access::Configure);
+    h.run();
+    assert!(h.query_by_label(HINT).is_none());
+    drop(h);
+
+    let line = |record: CommandRecord| {
+        let (mut h, _) = harness("Link", with(record), Access::Configure);
+        h.run();
+        h
+    };
+    line(compass(CommandStatus::InProgress { percent: Some(40) }))
+        .get_by_label("Compass calibration: 40 %");
+    line(compass(CommandStatus::Finished {
+        text: "accepted",
+        accepted: true,
+    }))
+    .get_by_label("Compass calibration: accepted");
+}
+
+#[test]
 fn the_status_line_of_a_cancel() {
     let line = |record: CommandRecord| {
         let (mut h, _) = harness("Link", with(record), Access::Configure);
@@ -352,6 +411,7 @@ fn on_operate_the_device_and_calibration_buttons_are_disabled() {
     for label in [
         "Calibrate gyro",
         "Calibrate accelerometer (level)",
+        "Calibrate compass",
         "Cancel calibration",
     ] {
         assert!(
@@ -390,6 +450,8 @@ fn calibration_buttons_send_their_parameters_and_cancel_is_enabled_only_during_a
     h.run();
     h.get_by_label("Calibrate accelerometer (level)").click();
     h.run();
+    h.get_by_label("Calibrate compass").click();
+    h.run();
     {
         let sent = commands.borrow();
         let params: Vec<[f32; 7]> = sent
@@ -402,7 +464,7 @@ fn calibration_buttons_send_their_parameters_and_cancel_is_enabled_only_during_a
                 other => panic!("unexpected {other:?}"),
             })
             .collect();
-        assert_eq!(params, vec![p(0, 1.0), p(4, 4.0)]);
+        assert_eq!(params, vec![p(0, 1.0), p(4, 4.0), p(1, 1.0)]);
     }
     drop(h);
 
@@ -415,7 +477,11 @@ fn calibration_buttons_send_their_parameters_and_cancel_is_enabled_only_during_a
     ));
     let (mut h, commands) = harness("Devices", state.clone(), Access::Configure);
     h.run();
-    for label in ["Calibrate gyro", "Calibrate accelerometer (level)"] {
+    for label in [
+        "Calibrate gyro",
+        "Calibrate accelerometer (level)",
+        "Calibrate compass",
+    ] {
         assert!(
             h.get_by_label(label).accesskit_node().is_disabled(),
             "{label}"

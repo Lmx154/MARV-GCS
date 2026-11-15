@@ -78,6 +78,29 @@ fn is_calibration(record: &CommandRecord) -> bool {
     record.command == 241 && record.params.iter().any(|p| *p != 0.0)
 }
 
+/// What the user does while the compass calibration runs.
+pub const COMPASS_HINT: &str = "rotate the vehicle through all orientations";
+
+/// The hint shown next to the status line: only while the compass calibration is waiting or in
+/// progress.
+pub fn compass_hint(state: &VehicleState) -> Option<&'static str> {
+    state
+        .command
+        .as_ref()
+        .filter(|r| r.outstanding() && is_compass_calibration(r))
+        .map(|_| COMPASS_HINT)
+}
+
+fn is_compass_calibration(record: &CommandRecord) -> bool {
+    record.command == 241
+        && record.params[1] == 1.0
+        && record
+            .params
+            .iter()
+            .enumerate()
+            .all(|(i, p)| i == 1 || *p == 0.0)
+}
+
 /// The names of the `MARV_DEVICE` ids (`docs/link-contract.md` section 8).
 pub fn device_name(id: u32) -> Option<&'static str> {
     Some(match id {
@@ -102,6 +125,7 @@ pub fn command_label(record: &CommandRecord) -> String {
     match record.command {
         241 if p.iter().all(|v| *v == 0.0) => "Cancel calibration".into(),
         241 if p[0] == 1.0 => "Gyro calibration".into(),
+        241 if p[1] == 1.0 => "Compass calibration".into(),
         241 if p[4] == 4.0 => "Accelerometer calibration".into(),
         241 => "Calibration".into(),
         245 => match p[0] as u32 {

@@ -81,8 +81,10 @@ Every button above is a MAVLink command to the flight controller (`docs/link-con
 0, 1, 2), follows `COMMAND_ACK` (IN_PROGRESS with a percentage, then the final result) and gives up after
 20 s of silence. All are Configure-class: on an Operate link they are shown disabled with the reason, and
 while a command is running every command button is disabled ("a command is running"), except Cancel
-calibration during a calibration. The last command, in words ("Gyro calibration: 40 %", "Reboot: no answer
-after 3 sends"), is shown under the buttons of the Parameters, Devices and Link tabs and is
+calibration during a calibration. The Devices tab has Calibrate gyro, Calibrate accelerometer (level) and
+Calibrate compass; while the compass calibration waits or runs it shows "rotate the vehicle through all
+orientations" next to the status line. The last command, in words ("Gyro calibration: 40 %", "Compass
+calibration: accepted", "Reboot: no answer after 3 sends"), is shown under the buttons of the Parameters, Devices and Link tabs and is
 `VehicleState.command`. The simulator answers them as the vehicle will; no firmware does yet.
 
 ## The command line (`marv-cli`)
@@ -117,7 +119,7 @@ and `no heartbeat from a vehicle within N s` without it. Options may stand anywh
 | `param set NAME VALUE` | waits for the vehicle's echo and prints the same line with the value now in effect; if the echo differs from what was asked (the vehicle refused) the line is printed, the reason goes to stderr and the exit status is 1; a value that does not fit the parameter's type is not sent |
 | `param save` / `param reload` | `MAV_CMD_PREFLIGHT_STORAGE` with param1 = 1 / 0 |
 | `param reset-all --yes` / `param reset-calibration --yes` | param1 = 2 / 3; without `--yes` they refuse (exit 2) before connecting |
-| `calibrate gyro` / `accel` / `cancel` | `MAV_CMD_PREFLIGHT_CALIBRATION` (gyro param1 = 1; accelerometer param5 = 4, one position, level; cancel all zeros) |
+| `calibrate gyro` / `accel` / `compass` / `cancel` | `MAV_CMD_PREFLIGHT_CALIBRATION` (gyro param1 = 1; accelerometer param5 = 4, one position, level; compass param2 = 1, 30 s of rotating the vehicle through all orientations, the CLI prints that as its first line; cancel all zeros) |
 | `device restart NAME` / `device selftest NAME` | `MAV_CMD_MARV_DEVICE`; NAME is IMU1, IMU2, BARO, MAG, GNSS, BATT, RC, SD, PSRAM, LED or ESC (any case); every name is sent and the vehicle decides (it denies a restart of RC; the window's buttons offer only the ones it accepts) |
 | `reboot --yes` | `MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN` param1 = 1; without `--yes` it refuses (exit 2) before connecting |
 | `record FILE [--for s]` | records the link to a `.tlog` (the session's own recording) for `--for` (default 60 s), then prints `recorded<TAB>FILE<TAB>N frames<TAB>N bytes`; an existing file is never overwritten (exit 1) |

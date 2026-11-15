@@ -15,6 +15,8 @@ pub const MARV_DEVICE: u16 = 42_430;
 pub const PROGRESS_EVERY_MS: u64 = 500;
 /// How long an action runs: a calibration, and every other action.
 pub const CALIBRATION_MS: u64 = 3_000;
+/// The compass calibration, shortened for the tests (the vehicle gives it 30 s of rotating).
+pub const COMPASS_CALIBRATION_MS: u64 = 4_000;
 pub const ACTION_MS: u64 = 2_000;
 
 /// Devices that can be restarted and devices that have a self-test (`MARV_DEVICE` ids).
@@ -50,6 +52,8 @@ pub fn admit(command: u16, params: &[f32; 7]) -> Admission {
                 Admission::Cancel
             } else if only(params, 0, 1.0) || only(params, 4, 4.0) {
                 run(CALIBRATION_MS)
+            } else if only(params, 1, 1.0) {
+                run(COMPASS_CALIBRATION_MS)
             } else {
                 Admission::Denied("calibration not supported yet")
             }
@@ -191,6 +195,27 @@ mod tests {
     }
 
     #[test]
+    fn a_compass_calibration_runs_4_s_with_progress_every_500_ms() {
+        let mut action = Action::new(
+            PREFLIGHT_CALIBRATION,
+            [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            (255, 190),
+            0,
+            COMPASS_CALIBRATION_MS,
+        );
+        let mut got = Vec::new();
+        for _ in 0..100 {
+            let Some(due) = action.next_due(4_000) else {
+                break;
+            };
+            got.push(due);
+        }
+        assert_eq!(got.len(), 8, "7 progress ACKs and the final one: {got:?}");
+        assert_eq!(got.first(), Some(&Due::Progress(12)));
+        assert_eq!(got.last(), Some(&Due::Final));
+    }
+
+    #[test]
     fn admission_follows_the_table() {
         let p = |i: usize, v: f32| {
             let mut a = [0.0; 7];
@@ -206,7 +231,14 @@ mod tests {
             Admission::Run { duration_ms: 3_000 }
         );
         assert_eq!(admit(241, &[0.0; 7]), Admission::Cancel);
-        assert!(matches!(admit(241, &p(1, 1.0)), Admission::Denied(_)));
+        assert_eq!(
+            admit(241, &p(1, 1.0)),
+            Admission::Run { duration_ms: 4_000 }
+        );
+        let mut both = p(0, 1.0);
+        both[1] = 1.0;
+        assert!(matches!(admit(241, &both), Admission::Denied(_)));
+        assert!(matches!(admit(241, &p(1, 2.0)), Admission::Denied(_)));
         assert!(matches!(admit(245, &p(0, 5.0)), Admission::Denied(_)));
         assert_eq!(
             admit(245, &p(0, 3.0)),

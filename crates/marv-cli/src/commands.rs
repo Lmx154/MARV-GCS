@@ -14,7 +14,8 @@ use gcs_mavlink::{
 };
 
 use crate::args::{
-    Command, DEFAULT_DEVICES, DEFAULT_RECORD, DEFAULT_TEXTS, DEFAULT_WATCH, Invocation, mav_command,
+    Calibration, Command, DEFAULT_DEVICES, DEFAULT_RECORD, DEFAULT_TEXTS, DEFAULT_WATCH,
+    Invocation, mav_command,
 };
 use crate::exit;
 
@@ -23,7 +24,8 @@ const POLL: Duration = Duration::from_millis(10);
 const LIST_DEADLINE: Duration = Duration::from_secs(30);
 /// How long a parameter write waits for the vehicle's echo (the session retries three times).
 const WRITE_DEADLINE: Duration = Duration::from_secs(8);
-/// The longest a command is followed; the session itself ends one by 20 s of silence.
+/// The longest a command is followed (the compass calibration takes up to 40 s on the vehicle); the
+/// session itself ends one by 20 s of silence.
 const COMMAND_DEADLINE: Duration = Duration::from_secs(90);
 const DEVICE_MESSAGE: &str = "MARV_DEVICE_STATUS";
 /// The last texts `status` shows.
@@ -138,6 +140,12 @@ fn run_command(
                     params,
                 },
             )?;
+            if matches!(command, Command::Calibrate(Calibration::Compass)) {
+                writeln!(
+                    out,
+                    "{label}: rotate the vehicle through all orientations for 30 s"
+                )?;
+            }
             follow_command(session, &label, out)
         }
     }

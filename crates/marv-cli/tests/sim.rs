@@ -217,6 +217,78 @@ fn calibrate_gyro_ends_accepted() {
     assert!(r.out.contains("gyro calibration: 0 %"), "{r:?}");
 }
 
+#[test]
+fn calibrate_compass_prints_the_hint_once_and_ends_accepted_with_progress() {
+    let rig = Rig::start();
+    let r = rig.cli("calibrate compass");
+    assert_eq!(r.code, 0, "{r:?}");
+    let lines = r.lines();
+    assert_eq!(last(&lines), "compass calibration: accepted", "{r:?}");
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|l| **l
+                == "compass calibration: rotate the vehicle through all orientations for 30 s")
+            .count(),
+        1,
+        "{r:?}"
+    );
+    assert_eq!(
+        lines.first().copied(),
+        Some("compass calibration: rotate the vehicle through all orientations for 30 s"),
+        "{r:?}"
+    );
+    assert!(r.out.contains("compass calibration: 0 %"), "{r:?}");
+    assert!(
+        lines.iter().any(|l| l.starts_with("compass calibration: ")
+            && l.ends_with(" %")
+            && !l.contains(": 0 %")),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn calibrate_cancel_during_a_compass_calibration_stops_it() {
+    let rig = Rig::start();
+    {
+        let endpoint = format!("tcp:{}", rig.addr).parse().expect("endpoint");
+        let session =
+            gcs_link::start_session(&endpoint, gcs_mavlink::Access::Configure, Box::new(|| {}))
+                .expect("open");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while session.state().link.vehicle.is_none() {
+            assert!(Instant::now() < deadline, "never connected");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        session.send(gcs_mavlink::Command::SendCommand {
+            command: gcs_mavlink::dialect::MavCmd::MAV_CMD_PREFLIGHT_CALIBRATION,
+            params: [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !matches!(
+            session.state().command.as_ref().map(|r| r.status.clone()),
+            Some(gcs_mavlink::CommandStatus::InProgress { .. })
+        ) {
+            assert!(Instant::now() < deadline, "the calibration never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    let cancel = rig.cli("calibrate cancel");
+    assert_eq!(cancel.code, 0, "{cancel:?}");
+    assert_eq!(
+        last(&cancel.lines()),
+        "cancel calibration: accepted",
+        "{cancel:?}"
+    );
+    let again = rig.cli("calibrate cancel");
+    assert_eq!(again.code, 1, "{again:?}");
+    assert_eq!(
+        last(&again.lines()),
+        "cancel calibration: denied",
+        "{again:?}"
+    );
+}
+
 /// The simulator serves one client at a time, as the board's one USB port does: a calibration
 /// started by one invocation can be cancelled by the next one only after the first has let go of the
 /// link (Ctrl-C), and the vehicle goes on calibrating meanwhile.

@@ -371,12 +371,12 @@ What the vehicle answers (binding for the station and for the simulator)
   percentage about twice a second, then ONE final `COMMAND_ACK` (ACCEPTED, FAILED or CANCELLED). Every ACK
   is addressed to the sender: `target_system` and `target_component` are the station's ids.
 - The same command sent again while it runs (a retransmission) gets IN_PROGRESS again, never a rejection.
-- Longest durations on the vehicle: calibration 15 s, storage 3 s, device action 5 s, reboot 3 s.
+- Longest durations on the vehicle: calibration 15 s (the compass calibration 40 s), storage 3 s, device action 5 s, reboot 3 s.
 
 The commands of the first build (`COMMAND_LONG`, `confirmation` as below, parameters not named are 0)
 | Command | Parameters |
 |---|---|
-| 241 `MAV_CMD_PREFLIGHT_CALIBRATION` | param1 = 1: gyro; param5 = 4: accelerometer, one position, level; all seven 0: cancel the running calibration |
+| 241 `MAV_CMD_PREFLIGHT_CALIBRATION` | param1 = 1: gyro; param5 = 4: accelerometer, one position, level; param2 = 1 and all others 0: compass (the user rotates the vehicle through all orientations for 30 s; progress about twice a second; FAILED when an axis saw too little movement); all seven 0: cancel the running calibration |
 | 245 `MAV_CMD_PREFLIGHT_STORAGE` | param1: 0 reload from flash, 1 save, 2 all parameters to defaults, 3 calibration parameters to defaults |
 | 246 `MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN` | param1 = 1: reboot |
 | 42430 `MAV_CMD_MARV_DEVICE` | param1 = device id (`MARV_DEVICE`), param2 = 1 restart, 2 self-test; restart for IMU1, IMU2, BARO, MAG, GNSS, BATT, self-test for IMU1, IMU2, MAG |
@@ -430,9 +430,9 @@ The cancel (the one exception to "one outstanding command")
      waiting is dropped.
 
 The simulator (`gcs-sim`) behaves as the table above: admitted commands get IN_PROGRESS 0 at once,
-IN_PROGRESS with the percentage every 500 ms and ACCEPTED after 2 s (a calibration after 3 s; a cancel ends
-it CANCELLED); one action at a time (another command: TEMPORARILY_REJECTED, the same again: IN_PROGRESS);
-245 with param1 other than 0 to 4, 246 with param1 other than 1, 241 with other parameters, 42430 with a
+IN_PROGRESS with the percentage every 500 ms and ACCEPTED after 2 s (a calibration after 3 s, the compass
+calibration after 4 s; a cancel ends it CANCELLED); one action at a time (another command: TEMPORARILY_REJECTED, the same again: IN_PROGRESS);
+245 with param1 other than 0 to 4, 246 with param1 other than 1, 241 with other parameters (param1 = 1 and param2 = 1 together too), 42430 with a
 device or action not listed: DENIED; any other command except 512 (`MAV_CMD_REQUEST_MESSAGE`, as before): UNSUPPORTED. Two switches of its
 configuration, off by default: drop the first N `COMMAND_LONG`s that are not `MAV_CMD_REQUEST_MESSAGE`, and
 never send the final ACK. The simulator reads and writes 42430 by hand, as it does `MARV_DEVICE_STATUS`.

@@ -424,6 +424,26 @@ fn running_calibration() -> Rig {
 }
 
 #[test]
+fn a_compass_calibration_is_a_calibration_for_the_cancel_rule() {
+    let mut rig = Rig::new();
+    rig.send(CAL, [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0);
+    rig.ack(CAL, MavResult::MAV_RESULT_IN_PROGRESS, 0, 50);
+    rig.ack(CAL, MavResult::MAV_RESULT_IN_PROGRESS, 30, 600);
+    rig.send(CAL, cancel(), 1_000);
+    assert_eq!(rig.sends().len(), 2, "the cancel is sent");
+    assert_eq!(rig.record().cancel, Some(CancelStatus::Waiting));
+    rig.ack(CAL, MavResult::MAV_RESULT_ACCEPTED, 0, 1_050);
+    rig.ack(CAL, MavResult::MAV_RESULT_CANCELLED, 0, 1_200);
+    assert_eq!(
+        rig.status(),
+        CommandStatus::Finished {
+            text: "cancelled",
+            accepted: false
+        }
+    );
+}
+
+#[test]
 fn a_cancel_is_sent_although_the_calibration_is_outstanding() {
     let mut rig = running_calibration();
     rig.send(CAL, cancel(), 1_000);

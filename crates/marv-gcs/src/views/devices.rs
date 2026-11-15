@@ -147,6 +147,10 @@ fn calibration_buttons(ui: &mut egui::Ui, cx: &mut ViewCtx, gate: Option<&'stati
             cx.commands
                 .push(calibrate([0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0]));
         }
+        if actions::button(ui, "Calibrate compass", gate) {
+            cx.commands
+                .push(calibrate([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]));
+        }
         if actions::button(ui, "Cancel calibration", cancel_gate) {
             cx.commands.push(calibrate([0.0; 7]));
         }
@@ -156,7 +160,12 @@ fn calibration_buttons(ui: &mut egui::Ui, cx: &mut ViewCtx, gate: Option<&'stati
     {
         ui.colored_label(YELLOW, reason);
     }
-    actions::status_line(ui, cx.state);
+    ui.horizontal(|ui| {
+        actions::status_line(ui, cx.state);
+        if let Some(hint) = status::compass_hint(cx.state) {
+            ui.colored_label(YELLOW, hint);
+        }
+    });
 }
 
 /// One row of the table, every cell as the text shown.

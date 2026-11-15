@@ -23,7 +23,7 @@ Commands:
   param save | reload              store the parameters / read them back from flash
   param reset-all --yes            all parameters to their defaults
   param reset-calibration --yes    the calibration parameters to their defaults
-  calibrate gyro | accel | cancel
+  calibrate gyro | accel | compass | cancel
   device restart <NAME>            NAME: IMU1 IMU2 BARO MAG GNSS BATT (RC SD PSRAM LED ESC are sent and the vehicle decides)
   device selftest <NAME>
   reboot --yes
@@ -50,6 +50,7 @@ pub const DEFAULT_RECORD: Duration = Duration::from_secs(60);
 pub enum Calibration {
     Gyro,
     Accel,
+    Compass,
     Cancel,
 }
 
@@ -245,10 +246,11 @@ fn command(words: &[&str], yes: bool) -> Result<(Command, bool), String> {
         "calibrate" => match rest {
             ["gyro"] => Ok((Command::Calibrate(Calibration::Gyro), false)),
             ["accel"] => Ok((Command::Calibrate(Calibration::Accel), false)),
+            ["compass"] => Ok((Command::Calibrate(Calibration::Compass), false)),
             ["cancel"] => Ok((Command::Calibrate(Calibration::Cancel), false)),
-            [] => Err("calibrate needs gyro, accel or cancel".to_string()),
+            [] => Err("calibrate needs gyro, accel, compass or cancel".to_string()),
             [other, ..] => Err(format!(
-                "unknown calibration {other:?}: gyro, accel or cancel"
+                "unknown calibration {other:?}: gyro, accel, compass or cancel"
             )),
         },
         "device" => {
@@ -309,6 +311,11 @@ pub fn mav_command(command: &Command) -> Option<(String, MavCmd, [f32; 7])> {
             "accelerometer calibration".into(),
             MavCmd::MAV_CMD_PREFLIGHT_CALIBRATION,
             [0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0],
+        ),
+        Command::Calibrate(Calibration::Compass) => (
+            "compass calibration".into(),
+            MavCmd::MAV_CMD_PREFLIGHT_CALIBRATION,
+            [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         ),
         Command::Calibrate(Calibration::Cancel) => (
             "cancel calibration".into(),

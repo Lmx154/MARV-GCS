@@ -63,6 +63,10 @@ fn every_command_parses() {
         Command::Calibrate(Calibration::Accel)
     );
     assert_eq!(
+        command("calibrate compass"),
+        Command::Calibrate(Calibration::Compass)
+    );
+    assert_eq!(
         command("calibrate cancel"),
         Command::Calibrate(Calibration::Cancel)
     );
@@ -195,6 +199,7 @@ fn the_mavlink_commands_carry_the_contracts_parameters() {
     };
     assert_eq!(of("calibrate gyro").2, p(0, 1.0));
     assert_eq!(of("calibrate accel").2, p(4, 4.0));
+    assert_eq!(of("calibrate compass").2, p(1, 1.0));
     assert_eq!(of("calibrate cancel").2, [0.0; 7]);
     assert_eq!(of("param reload").2, p(0, 0.0));
     assert_eq!(of("param save").2, p(0, 1.0));
