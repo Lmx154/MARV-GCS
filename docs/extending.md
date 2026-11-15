@@ -17,7 +17,7 @@ Most additions need no change here at all; the rest are one file plus one or two
 | To add | Where |
 |---|---|
 | A preset plot on the Sensors tab | One row in `PRESETS` in `crates/marv-gcs/src/views/sensors.rs`: title, message name, instance, field names. |
-| A message that carries several instances (one per sensor) | One row in `INSTANCE_FIELDS` in `crates/gcs-mavlink/src/services/messages.rs`: message name and the field that says which instance. Its instances then get separate rows and separate plot series. |
+| A message that carries several instances (one per sensor) | One row in `INSTANCE_FIELDS` in `crates/gcs-mavlink/src/services/messages.rs`: message name and the field that says which instance. The row gives the instance its `[n]` label (`HIGHRES_IMU[2]`) and, for a number-valued field, the instance itself. If the field is an enum (the store shows it as text), the number cannot be read from the row: add also one arm to `enum_instance` in the same file, which returns it; such a message needs both. Its instances then get separate rows and separate plot series. |
 
 ## A new tab (view)
 
@@ -69,9 +69,9 @@ The project's own messages live in `marv-dialect` (own repo, https://github.com/
 module `marv_dialect::marv` is `common` plus the messages of `definitions/marv.xml`, so far `MARV_TEST`
 (id 42420, CRC_EXTRA 100, fields `seq`, `time_ms`, `value`, `tag`; a link test message) and
 `MARV_DEVICE_STATUS` (id 42421, CRC_EXTRA 231; one message per device; `docs/link-contract.md` section 8).
-`MARV_DEVICE_STATUS` is the one message the station names: its `device_id` is an enum, so the message store
-reads the instance through `enum_instance` in `services/messages.rs` (one row per device), and the Devices
-view (`views/devices.rs`) reads its fields.
+`MARV_DEVICE_STATUS` is the one message the station names: its `device_id` is an enum, so it has a row in
+`INSTANCE_FIELDS` (the `[n]` label) and an arm in `enum_instance` (the instance number, one row per device) in
+`services/messages.rs`, and the Devices view (`views/devices.rs`) reads its fields.
 
 The station speaks that dialect: `crates/gcs-mavlink/src/lib.rs` has `pub use marv_dialect::marv as
 dialect;`, and `marv-dialect` is a git dependency at one rev, with `features = ["std", "serde"]`, in the
@@ -101,4 +101,5 @@ To add the next message:
 - `cargo tree -p gcs-sim | grep -c gcs-mavlink` is 0 (the simulator is written from the specification, so
   the two check each other).
 - No parameter name and no message-specific code outside a view that is about that message (the one
-  exception is `enum_instance` in the message store, for a message whose instance is an enum).
+  exception is `enum_instance` in the message store, for a message whose instance field is an enum: it
+  supplies the instance number, and the message also needs its row in `INSTANCE_FIELDS`, which gives the label).

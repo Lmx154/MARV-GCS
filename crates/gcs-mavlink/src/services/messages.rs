@@ -1,6 +1,9 @@
 //! Message store: every message that arrives, its rate, its decoded fields and the history of every
 //! numeric field. Nothing here is specific to one message, except the table of instance fields and
-//! [`enum_instance`].
+//! [`enum_instance`]. A message with several instances needs a row in [`INSTANCE_FIELDS`] (it names the
+//! instance field and gives the label `NAME[n]`; for a number-valued field it also supplies the
+//! instance). When the instance field is an enum, which [`fields_of`] shows as text, the number comes from
+//! one arm in [`enum_instance`], so that message needs both.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
@@ -16,7 +19,9 @@ pub const HISTORY: Duration = Duration::from_secs(60);
 /// The most points one series keeps.
 pub const MAX_POINTS: usize = 30_000;
 /// Messages that carry several instances, and the field that says which one (link contract).
-/// A message that is not listed here has instance 0.
+/// A message that is not listed here has instance 0 and a label without `[n]`. The row gives the label
+/// and, when the field is a number, the instance; when the field is an enum the instance comes from
+/// [`enum_instance`], which the message then needs as well.
 pub const INSTANCE_FIELDS: &[(&str, &str)] =
     &[("HIGHRES_IMU", "id"), ("MARV_DEVICE_STATUS", "device_id")];
 
