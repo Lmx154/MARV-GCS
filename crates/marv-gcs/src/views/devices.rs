@@ -62,14 +62,16 @@ impl View for Devices {
         table
             .column(Column::remainder())
             .header(ROW_HEIGHT, |mut header| {
-                for title in TITLES {
+                for (i, title) in TITLES.into_iter().enumerate() {
                     header.col(|ui| {
                         ui.strong(title);
                     });
+                    if i == 0 {
+                        header.col(|ui| {
+                            ui.strong("Actions");
+                        });
+                    }
                 }
-                header.col(|ui| {
-                    ui.strong("Actions");
-                });
             })
             .body(|body| {
                 body.rows(ROW_HEIGHT, rows.len(), |mut row| {
@@ -89,19 +91,23 @@ impl View for Devices {
                                 ui.label(text);
                             }
                         });
+                        if i == 0 {
+                            row.col(|ui| {
+                                ui.horizontal(|ui| {
+                                    if can_restart(device.device)
+                                        && actions::button(ui, "Restart", gate)
+                                    {
+                                        cx.commands.push(device_command(device.device, 1.0));
+                                    }
+                                    if can_self_test(device.device)
+                                        && actions::button(ui, "Self-test", gate)
+                                    {
+                                        cx.commands.push(device_command(device.device, 2.0));
+                                    }
+                                });
+                            });
+                        }
                     }
-                    row.col(|ui| {
-                        ui.horizontal(|ui| {
-                            if can_restart(device.device) && actions::button(ui, "Restart", gate) {
-                                cx.commands.push(device_command(device.device, 1.0));
-                            }
-                            if can_self_test(device.device)
-                                && actions::button(ui, "Self-test", gate)
-                            {
-                                cx.commands.push(device_command(device.device, 2.0));
-                            }
-                        });
-                    });
                 });
             });
     }
