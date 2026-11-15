@@ -65,9 +65,11 @@ pub fn cancel_gate(access: Access, state: &VehicleState, connected: bool) -> Opt
         return Some(NOT_CONNECTED);
     }
     match &state.command {
-        Some(r) if r.outstanding() && is_calibration(r) => {
-            (r.cancel == Some(CancelStatus::Waiting)).then_some("the cancel was sent")
-        }
+        Some(r) if r.outstanding() && is_calibration(r) => matches!(
+            r.cancel,
+            Some(CancelStatus::Waiting | CancelStatus::Answered(_))
+        )
+        .then_some("the cancel was sent"),
         _ => Some("no calibration is running"),
     }
 }
@@ -157,10 +159,12 @@ pub fn command_line(record: &CommandRecord) -> (String, Color32) {
         CommandStatus::Refused(why) => (format!("{label}: refused ({why})"), YELLOW),
     };
     match &record.cancel {
-        Some(CancelStatus::Waiting) => text.push_str(" (cancel sent)"),
-        Some(CancelStatus::Answered(answer)) => text.push_str(&format!(" (cancel {answer})")),
+        Some(CancelStatus::Waiting) if record.outstanding() => text.push_str(" (cancel sent)"),
+        Some(CancelStatus::Answered(answer)) if record.outstanding() => {
+            text.push_str(&format!(" (cancel {answer})"));
+        }
         Some(CancelStatus::NoAnswer) => text.push_str(" (cancel: no answer)"),
-        None => {}
+        _ => {}
     }
     if let Some(refused) = &record.refused {
         text.push_str(&format!(

@@ -564,18 +564,197 @@ fn a_second_cancel_while_one_waits_is_refused_and_a_zero_command_alone_is_not_a_
     assert_eq!(rig.record().refused.as_ref().map(|r| r.count), Some(1));
 }
 
+const ACCEPTED: MavResult = MavResult::MAV_RESULT_ACCEPTED;
+const DENIED: MavResult = MavResult::MAV_RESULT_DENIED;
+const FAILED: MavResult = MavResult::MAV_RESULT_FAILED;
+const CANCELLED: MavResult = MavResult::MAV_RESULT_CANCELLED;
+const IN_PROGRESS: MavResult = MavResult::MAV_RESULT_IN_PROGRESS;
+
+fn done(text: &'static str, accepted: bool) -> CommandStatus {
+    CommandStatus::Finished { text, accepted }
+}
+
+/// COMMAND_LONGs of the calibration itself (param1 = 1) that were sent.
+fn calibration_sends(rig: &Rig) -> Vec<u64> {
+    rig.sends()
+        .iter()
+        .filter(|(_, _, _, p1)| *p1 == 1.0)
+        .map(|(t, _, _, _)| *t)
+        .collect()
+}
+
 #[test]
-fn a_calibration_that_ends_while_the_cancel_waits_is_read_as_the_cancels_answer_then_no_result() {
-    // The known limit of section 10: the two ACKs cannot be told apart by number.
+fn d2_a_lost_first_progress_ack_does_not_make_the_calibration_be_sent_again_after_a_cancel() {
+    let mut rig = Rig::new();
+    rig.send(CAL, gyro(), 0);
+    // The calibration's first IN_PROGRESS is lost: it is still waiting. The user presses cancel.
+    rig.send(CAL, cancel(), 1_000);
+    // The vehicle answers the cancel ACCEPTED; its CANCELLED is lost.
+    rig.ack(CAL, ACCEPTED, 0, 1_050);
+    rig.tick_range(1_100, 10_000);
+    assert_eq!(
+        calibration_sends(&rig),
+        vec![0],
+        "the calibration is never sent again"
+    );
+    assert_eq!(
+        rig.sends().len(),
+        2,
+        "only the calibration once and the cancel once"
+    );
+    assert_eq!(
+        rig.status(),
+        done("cancel accepted, no final result", false)
+    );
+    assert_eq!(rig.record().ended, Some(Duration::from_millis(4_050)));
+}
+
+#[test]
+fn a_cancel_that_is_never_answered_does_not_bring_the_calibration_back_either() {
+    let mut rig = Rig::new();
+    rig.send(CAL, gyro(), 0);
+    rig.send(CAL, cancel(), 1_000);
+    rig.tick_range(1_050, 6_000);
+    assert_eq!(calibration_sends(&rig), vec![0]);
+    assert_eq!(rig.record().cancel, Some(CancelStatus::NoAnswer));
+    // Followed as before: its own 20 s rule, counted from the send of the cancel.
+    rig.tick_range(6_050, 21_000);
+    assert_eq!(rig.status(), CommandStatus::NoResult);
+    assert_eq!(calibration_sends(&rig), vec![0]);
+    assert_eq!(
+        rig.sends().len(),
+        4,
+        "the calibration once and the cancel three times"
+    );
+}
+
+#[test]
+fn d1_accepted_then_denied_is_a_calibration_that_finished_before_the_cancel() {
     let mut rig = running_calibration();
     rig.send(CAL, cancel(), 1_000);
-    rig.ack(CAL, MavResult::MAV_RESULT_ACCEPTED, 0, 1_050);
+    // The calibration ends by itself, then the vehicle has nothing to cancel.
+    rig.ack(CAL, ACCEPTED, 0, 1_020);
+    assert!(rig.record().outstanding(), "the answer so far is only held");
+    rig.ack(CAL, DENIED, 0, 1_050);
+    assert_eq!(
+        rig.status(),
+        done("accepted (finished before the cancel)", true)
+    );
+    assert_eq!(rig.record().ended, Some(Duration::from_millis(1_050)));
+}
+
+#[test]
+fn failed_then_denied_is_failed_and_finished_before_the_cancel() {
+    let mut rig = running_calibration();
+    rig.send(CAL, cancel(), 1_000);
+    rig.ack(CAL, FAILED, 0, 1_020);
+    rig.ack(CAL, DENIED, 0, 1_050);
+    assert_eq!(
+        rig.status(),
+        done("failed (finished before the cancel)", false)
+    );
+}
+
+#[test]
+fn accepted_then_cancelled_is_cancelled() {
+    let mut rig = running_calibration();
+    rig.send(CAL, cancel(), 1_000);
+    rig.ack(CAL, ACCEPTED, 0, 1_020);
+    rig.ack(CAL, CANCELLED, 0, 1_050);
+    assert_eq!(rig.status(), done("cancelled", false));
+    rig.tick_range(1_100, 10_000);
+    assert_eq!(rig.status(), done("cancelled", false));
+}
+
+#[test]
+fn cancelled_first_is_cancelled_and_a_late_answer_changes_nothing() {
+    let mut rig = running_calibration();
+    rig.send(CAL, cancel(), 1_000);
+    rig.ack(CAL, CANCELLED, 0, 1_020);
+    assert_eq!(rig.status(), done("cancelled", false));
+    rig.ack(CAL, ACCEPTED, 0, 1_050);
+    assert_eq!(rig.status(), done("cancelled", false));
+}
+
+#[test]
+fn accepted_alone_ends_3_s_later_as_cancel_accepted_without_a_final_result() {
+    let mut rig = running_calibration();
+    rig.send(CAL, cancel(), 1_000);
+    rig.ack(CAL, ACCEPTED, 0, 1_050);
+    rig.tick_range(1_100, 4_000);
+    assert!(rig.record().outstanding());
+    rig.tick(4_050);
+    assert_eq!(
+        rig.status(),
+        done("cancel accepted, no final result", false)
+    );
+    assert_eq!(rig.record().ended, Some(Duration::from_millis(4_050)));
+}
+
+#[test]
+fn denied_alone_ends_3_s_later_as_nothing_to_cancel() {
+    let mut rig = running_calibration();
+    rig.send(CAL, cancel(), 1_000);
+    rig.ack(CAL, DENIED, 0, 1_050);
+    rig.tick_range(1_100, 4_000);
+    assert!(rig.record().outstanding());
+    rig.tick(4_050);
+    assert_eq!(rig.status(), done("nothing to cancel", false));
+}
+
+#[test]
+fn another_result_alone_ends_3_s_later_with_its_own_text() {
+    let mut rig = running_calibration();
+    rig.send(CAL, cancel(), 1_000);
+    rig.ack(CAL, FAILED, 0, 1_050);
+    rig.tick(4_050);
+    assert_eq!(rig.status(), done("failed", false));
+}
+
+#[test]
+fn a_second_result_other_than_denied_ends_with_its_own_text() {
+    let mut rig = running_calibration();
+    rig.send(CAL, cancel(), 1_000);
+    rig.ack(CAL, DENIED, 0, 1_050);
+    rig.ack(CAL, FAILED, 0, 1_100);
+    assert_eq!(rig.status(), done("failed", false));
+}
+
+#[test]
+fn progress_between_the_results_of_a_cancel_stays_progress() {
+    let mut rig = running_calibration();
+    rig.send(CAL, cancel(), 1_000);
+    rig.ack(CAL, IN_PROGRESS, 40, 1_010);
+    assert_eq!(
+        rig.status(),
+        CommandStatus::InProgress { percent: Some(40) }
+    );
+    rig.ack(CAL, ACCEPTED, 0, 1_020);
+    rig.ack(CAL, IN_PROGRESS, 60, 1_030);
+    assert_eq!(
+        rig.status(),
+        CommandStatus::InProgress { percent: Some(60) }
+    );
     assert_eq!(
         rig.record().cancel,
         Some(CancelStatus::Answered("accepted"))
     );
-    rig.tick_range(1_100, 21_000);
-    assert_eq!(rig.status(), CommandStatus::NoResult);
+    rig.ack(CAL, IN_PROGRESS, 80, 1_040);
+    rig.ack(CAL, DENIED, 0, 1_050);
+    assert_eq!(
+        rig.status(),
+        done("accepted (finished before the cancel)", true)
+    );
+    // The hold of 3 s is counted from the first result, progress does not extend it.
+    let mut rig = running_calibration();
+    rig.send(CAL, cancel(), 1_000);
+    rig.ack(CAL, ACCEPTED, 0, 1_020);
+    rig.ack(CAL, IN_PROGRESS, 60, 3_000);
+    rig.tick(4_020);
+    assert_eq!(
+        rig.status(),
+        done("cancel accepted, no final result", false)
+    );
 }
 
 #[test]

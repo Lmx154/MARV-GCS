@@ -16,6 +16,9 @@ pub const SENDS: u8 = 3;
 /// After IN_PROGRESS, this long without a further ACK ends the command as "no result".
 pub const SILENCE: Duration = Duration::from_secs(20);
 
+/// With a cancel answered and nothing more heard for this long, the calibration ends with what is known.
+pub const CANCEL_HOLD: Duration = Duration::from_secs(3);
+
 /// The calibration command, the only one a cancel belongs to.
 const CALIBRATION: MavCmd = MavCmd::MAV_CMD_PREFLIGHT_CALIBRATION;
 /// `progress` of an ACK that gives no percentage.
@@ -45,6 +48,48 @@ struct Sending {
     last_send: Duration,
 }
 
+/// A cancel in play (docs/link-contract.md section 10).
+#[derive(Debug)]
+struct Cancel {
+    sending: Sending,
+    /// The first result other than IN_PROGRESS and CANCELLED, held as "the answer so far", and when.
+    first: Option<(MavResult, Duration)>,
+}
+
+/// What a calibration that finished by itself before the cancel reached the vehicle says.
+fn before_cancel_text(result: MavResult) -> &'static str {
+    match result {
+        MavResult::MAV_RESULT_ACCEPTED => "accepted (finished before the cancel)",
+        MavResult::MAV_RESULT_TEMPORARILY_REJECTED => {
+            "temporarily rejected (finished before the cancel)"
+        }
+        MavResult::MAV_RESULT_DENIED => "denied (finished before the cancel)",
+        MavResult::MAV_RESULT_UNSUPPORTED => "unsupported (finished before the cancel)",
+        MavResult::MAV_RESULT_FAILED => "failed (finished before the cancel)",
+        MavResult::MAV_RESULT_IN_PROGRESS => "in progress (finished before the cancel)",
+        MavResult::MAV_RESULT_CANCELLED => "cancelled (finished before the cancel)",
+        MavResult::MAV_RESULT_COMMAND_LONG_ONLY => {
+            "only as COMMAND_LONG (finished before the cancel)"
+        }
+        MavResult::MAV_RESULT_COMMAND_INT_ONLY => {
+            "only as COMMAND_INT (finished before the cancel)"
+        }
+        MavResult::MAV_RESULT_COMMAND_UNSUPPORTED_MAV_FRAME => {
+            "frame not supported (finished before the cancel)"
+        }
+        MavResult::MAV_RESULT_NOT_IN_CONTROL => "not in control (finished before the cancel)",
+    }
+}
+
+/// How a calibration ends when only the cancel's answer `first` was heard for [`CANCEL_HOLD`].
+fn held_text(first: MavResult) -> &'static str {
+    match first {
+        MavResult::MAV_RESULT_ACCEPTED => "cancel accepted, no final result",
+        MavResult::MAV_RESULT_DENIED => "nothing to cancel",
+        other => result_text(other),
+    }
+}
+
 /// The outstanding command's timers; its state is in `VehicleState.command`.
 #[derive(Debug)]
 struct Track {
@@ -55,8 +100,8 @@ struct Track {
     sending: Sending,
     /// Session time of the last ACK, once there was one: from then on nothing is resent.
     last_ack: Option<Duration>,
-    /// The cancel of a calibration, while it waits for its answer.
-    cancel: Option<Sending>,
+    /// The cancel of a calibration, from its send until the calibration ends or the cancel is given up.
+    cancel: Option<Cancel>,
 }
 
 #[derive(Debug)]
@@ -149,10 +194,15 @@ impl Commands {
             && track.cancel.is_none()
         {
             cx.out.push(Self::long(target, command, &params, 0));
-            track.cancel = Some(Sending {
-                sends: 1,
-                last_send: cx.now,
+            track.cancel = Some(Cancel {
+                sending: Sending {
+                    sends: 1,
+                    last_send: cx.now,
+                },
+                first: None,
             });
+            // From now on the calibration is never sent again: its silence rule starts here.
+            track.last_ack.get_or_insert(cx.now);
             if let Some(record) = cx.state.command.as_mut() {
                 record.cancel = Some(CancelStatus::Waiting);
             }
@@ -182,31 +232,42 @@ impl Commands {
         if ack.command != track.command || !addressed {
             return;
         }
-        let in_progress = ack.result == MavResult::MAV_RESULT_IN_PROGRESS;
-        if track.cancel.is_some() && !in_progress && ack.result != MavResult::MAV_RESULT_CANCELLED {
-            track.cancel = None;
-            if let Some(record) = cx.state.command.as_mut() {
-                record.cancel = Some(CancelStatus::Answered(result_text(ack.result)));
-            }
-            cx.changed = true;
-            return;
-        }
+        let result = ack.result;
         let Some(record) = cx.state.command.as_mut() else {
             return;
         };
-        if in_progress {
+        cx.changed = true;
+        if result == MavResult::MAV_RESULT_IN_PROGRESS {
             track.last_ack = Some(cx.now);
             record.status = CommandStatus::InProgress {
                 percent: (ack.progress != PROGRESS_UNKNOWN).then_some(ack.progress.min(100)),
             };
-        } else {
-            record.status = CommandStatus::Finished {
-                text: result_text(ack.result),
-                accepted: ack.result == MavResult::MAV_RESULT_ACCEPTED,
-            };
-            self.end(cx);
+            return;
         }
-        cx.changed = true;
+        let (text, accepted) = match track.cancel.as_mut() {
+            None => (
+                result_text(result),
+                result == MavResult::MAV_RESULT_ACCEPTED,
+            ),
+            Some(_) if result == MavResult::MAV_RESULT_CANCELLED => ("cancelled", false),
+            Some(cancel) => match cancel.first {
+                None => {
+                    cancel.first = Some((result, cx.now));
+                    record.cancel = Some(CancelStatus::Answered(result_text(result)));
+                    return;
+                }
+                Some((first, _)) if result == MavResult::MAV_RESULT_DENIED => (
+                    before_cancel_text(first),
+                    first == MavResult::MAV_RESULT_ACCEPTED,
+                ),
+                Some(_) => (
+                    result_text(result),
+                    result == MavResult::MAV_RESULT_ACCEPTED,
+                ),
+            },
+        };
+        record.status = CommandStatus::Finished { text, accepted };
+        self.end(cx);
     }
 
     /// The outstanding command ended: record the time, drop its timers and a cancel still waiting.
@@ -227,18 +288,32 @@ impl Commands {
         let Some(cancel) = track.cancel.as_mut() else {
             return;
         };
-        if cx.now.saturating_sub(cancel.last_send) < RESEND {
+        if let Some((first, at)) = cancel.first {
+            if cx.now.saturating_sub(at) >= CANCEL_HOLD {
+                if let Some(record) = cx.state.command.as_mut() {
+                    record.status = CommandStatus::Finished {
+                        text: held_text(first),
+                        accepted: false,
+                    };
+                }
+                self.end(cx);
+                cx.changed = true;
+            }
             return;
         }
-        if cancel.sends < SENDS {
+        let sending = &mut cancel.sending;
+        if cx.now.saturating_sub(sending.last_send) < RESEND {
+            return;
+        }
+        if sending.sends < SENDS {
             cx.out.push(Self::long(
                 track.target,
                 track.command,
                 &[0.0; 7],
-                cancel.sends,
+                sending.sends,
             ));
-            cancel.sends += 1;
-            cancel.last_send = cx.now;
+            sending.sends += 1;
+            sending.last_send = cx.now;
         } else {
             track.cancel = None;
             if let Some(record) = cx.state.command.as_mut() {
