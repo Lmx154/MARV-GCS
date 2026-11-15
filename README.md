@@ -201,7 +201,7 @@ Six crates; the dependency graph enforces the layers (`docs/architecture.md`).
 ## Tests
 
 ```
-cargo test --workspace          # 550 tests, 55 s; needs /usr/bin/socat for the serial tests
+cargo test --workspace          # 560 tests, 55 s; needs /usr/bin/socat for the serial tests
 cargo clippy --workspace --all-targets -- -D warnings
 tools/board_check.sh <dir>      # with the board on its debug probe and its USB port cabled: about 3 minutes
 ```
@@ -220,7 +220,7 @@ What the tests stand on:
   simulated vehicle over TCP and over a pseudo serial port (and, with a hand-played vehicle, over UDP): connect, loss of the vehicle and recovery,
   message rates and values, the full parameter list with 20 % of frames dropped in each direction, writes
   confirmed, refused and unanswered, both parameter encodings, recording and replay.
-- The command line (`crates/marv-cli/tests`, 26 tests): every command and option and every error of the arguments; every command against the simulator over TCP; no vehicle (nothing listening, a silent peer); the negative control, where a counting writer on an Operate session sees no `PARAM_SET` and no `COMMAND_LONG` but the capability request while `devices`, `status` and `param list` work; and the dependency rule (no GUI crate in `cargo tree -p marv-cli`).
+- The command line (`crates/marv-cli/tests`, 29 tests): every command and option and every error of the arguments; every command against the simulator over TCP; no vehicle (nothing listening, a silent peer); the negative control, where a counting writer on an Operate session sees no `PARAM_SET` and no `COMMAND_LONG` but the capability request while `devices`, `status` and `param list` work; and the dependency rule (no GUI crate in `cargo tree -p marv-cli`).
 - The views are drawn and clicked without a window (`egui_kittest`).
 - Checked with independent implementations: framing against the `mavlink` crate's own reader and writer
   for all 234 message types; the simulator's output with a hand-written decoder; a recorded log read with
