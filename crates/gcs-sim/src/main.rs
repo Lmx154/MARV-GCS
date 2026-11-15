@@ -46,7 +46,9 @@ fn main() -> ExitCode {
     let bound = listener.local_addr().map_or(addr, |a| a.to_string());
     println!("marv-sim listening on {bound}");
 
-    let vehicle = Arc::new(Mutex::new(SimVehicle::new(SimConfig::default())));
+    let vehicle = Arc::new(Mutex::new(SimVehicle::new(
+        SimConfig::default().with_device_status(1.0),
+    )));
     serve_tcp(listener, vehicle, Arc::new(AtomicBool::new(false)));
     ExitCode::SUCCESS
 }

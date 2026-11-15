@@ -399,6 +399,36 @@ fn live_data_has_the_contract_rates_and_values() {
 }
 
 #[test]
+fn device_status_gives_one_row_per_device_against_the_simulator() {
+    let server = Server::start(SimConfig::default().with_device_status(1.0));
+    let client = Client::connect(&server.endpoint());
+    assert!(wait_for(secs(2), || connected(&client)), "not connected");
+
+    run_for(secs(3));
+    let state = client.state();
+    let rows: Vec<_> = state
+        .messages
+        .entries
+        .iter()
+        .filter(|(_, entry)| entry.name == "MARV_DEVICE_STATUS")
+        .collect();
+    assert_eq!(rows.len(), 7, "{rows:?}");
+    let instances: Vec<u8> = rows.iter().map(|(key, _)| key.instance).collect();
+    assert_eq!(instances, [1, 2, 3, 4, 5, 6, 7]);
+    for (_, entry) in &rows {
+        assert!(entry.count >= 3, "{entry:?}");
+        assert_eq!(entry.text("state"), Some("MARV_DEVICE_STATE_OK"));
+    }
+    let imu1 = state.messages.entry("MARV_DEVICE_STATUS", 1).unwrap();
+    assert_eq!(imu1.text("device_id"), Some("MARV_DEVICE_IMU1"));
+    let imu2 = state.messages.entry("MARV_DEVICE_STATUS", 2).unwrap();
+    assert!(imu2.number("samples").unwrap() >= 640.0 * 2.0);
+    assert_eq!(state.link.rx.crc_errors, 0, "{:?}", state.link.rx);
+    assert_eq!(state.link.rx.undecodable, 0, "{:?}", state.link.rx);
+    assert_eq!(state.link.rx.unknown, 0, "{:?}", state.link.rx);
+}
+
+#[test]
 fn dropped_frames_are_counted_as_lost() {
     let config = SimConfig {
         drop_tx_percent: 10,

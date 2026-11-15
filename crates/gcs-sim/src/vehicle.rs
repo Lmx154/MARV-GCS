@@ -19,6 +19,7 @@ use mavlink::dialects::common::{
 use mavlink::types::CharArray;
 use mavlink::{MAVLinkV2MessageRaw, MavHeader, MavlinkVersion, Message, MessageData};
 
+use crate::devices;
 use crate::params::{ParamEncoding, ParamValue, SimParam, default_params, other_type_params};
 use crate::signals;
 
@@ -85,6 +86,20 @@ impl SimConfig {
     #[must_use]
     pub fn with_every_param_type(mut self) -> Self {
         self.params.extend(other_type_params());
+        self
+    }
+}
+
+impl SimConfig {
+    /// Adds the stream of `MARV_DEVICE_STATUS` (`docs/link-contract.md`, section 8): at `rate_hz`
+    /// one message for each of IMU1, IMU2, BARO, MAG, GNSS, BATT and RC. Off in the default
+    /// configuration, which is the streams of section 2.
+    #[must_use]
+    pub fn with_device_status(mut self, rate_hz: f32) -> Self {
+        self.streams.push(Stream {
+            message_id: devices::MESSAGE_ID,
+            rate_hz,
+        });
         self
     }
 }
@@ -198,7 +213,10 @@ impl SimVehicle {
             .streams
             .iter()
             .filter(|s| s.rate_hz.is_finite() && s.rate_hz > 0.0)
-            .filter(|s| !signals::messages(s.message_id, 0).is_empty())
+            .filter(|s| {
+                s.message_id == devices::MESSAGE_ID
+                    || !signals::messages(s.message_id, 0).is_empty()
+            })
             .map(|s| Schedule {
                 message_id: s.message_id,
                 period_ms: 1000.0 / f64::from(s.rate_hz),
@@ -291,6 +309,12 @@ impl SimVehicle {
             let Some(i) = next else { break };
             let stamp_ms = self.schedules[i].due_ms().floor() as u64;
             self.schedules[i].count += 1;
+            if self.schedules[i].message_id == devices::MESSAGE_ID {
+                for payload in devices::payloads(stamp_ms) {
+                    self.push_raw(devices::MESSAGE_ID, devices::CRC_EXTRA, &payload, out);
+                }
+                continue;
+            }
             for message in signals::messages(self.schedules[i].message_id, stamp_ms) {
                 self.push_frame(&message, out);
             }
@@ -331,6 +355,32 @@ impl SimVehicle {
             ..STATUSTEXT_DATA::default()
         });
         self.push_frame(&message, out);
+    }
+
+    /// A frame of a message the `common` dialect does not have, built by hand from its id, its
+    /// CRC_EXTRA and its payload; the trailing zero bytes of the payload are cut, but one (MAVLink 2).
+    fn push_raw(&mut self, id: u32, crc_extra: u8, payload: &[u8], out: &mut Vec<u8>) {
+        if self.silent {
+            return;
+        }
+        let used = payload.iter().rposition(|&b| b != 0).map_or(1, |i| i + 1);
+        let mut frame = vec![
+            STX_V2,
+            used as u8,
+            0,
+            0,
+            self.sequence,
+            self.config.system_id,
+            self.config.component_id,
+        ];
+        frame.extend_from_slice(&id.to_le_bytes()[..3]);
+        frame.extend_from_slice(&payload[..used]);
+        let crc = mavlink::calculate_crc(&frame[1..], crc_extra);
+        frame.extend_from_slice(&crc.to_le_bytes());
+        self.sequence = self.sequence.wrapping_add(1);
+        if !self.tx_loss.drops() {
+            out.extend_from_slice(&frame);
+        }
     }
 
     fn push_frame(&mut self, message: &MavMessage, out: &mut Vec<u8>) {
