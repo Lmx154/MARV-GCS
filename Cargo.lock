@@ -1309,7 +1309,7 @@ dependencies = [
 [[package]]
 name = "marv-dialect"
 version = "0.1.0"
-source = "git+https://github.com/Lmx154/marv-dialect.git?rev=f35f3328f472cbdd7d42922ca8fa3ead8c85b891#f35f3328f472cbdd7d42922ca8fa3ead8c85b891"
+source = "git+https://github.com/Lmx154/marv-dialect.git?rev=af6baa107046219dee49cd88c81f9809c134e761#af6baa107046219dee49cd88c81f9809c134e761"
 dependencies = [
  "bitflags 2.13.2",
  "mavlink-bindgen",

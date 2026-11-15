@@ -21,7 +21,7 @@ gcs-mavlink = { path = "crates/gcs-mavlink" }
 gcs-sim = { path = "crates/gcs-sim" }
 
 mavlink = { version = "=0.21.0", default-features = false, features = ["std", "serde", "dialect-common", "mav2-message-extensions"] }
-marv-dialect = { git = "https://github.com/Lmx154/marv-dialect.git", rev = "f35f3328f472cbdd7d42922ca8fa3ead8c85b891", features = ["std", "serde"] }
+marv-dialect = { git = "https://github.com/Lmx154/marv-dialect.git", rev = "af6baa107046219dee49cd88c81f9809c134e761", features = ["std", "serde"] }
 serialport = "4.10.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }

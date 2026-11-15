@@ -80,7 +80,8 @@ Both ends build the messages from byte-identical MAVLink XML with generator 0.21
 on: the device and the ground station both through `marv-dialect` (see section 4; the station also keeps
 `mavlink = "=0.21.0"` with `mav2-message-extensions` for its framing helpers, and its simulated vehicle
 is written on that crate's `common`). `marv-dialect` holds `common` and, as a second module, `marv`
-(`common` plus `marv.xml`: so far the link test message `MARV_TEST`, id 42420, CRC_EXTRA 100). The ground
+(`common` plus `marv.xml`: so far the link test message `MARV_TEST`, id 42420, CRC_EXTRA 100, and the device
+diagnostics message `MARV_DEVICE_STATUS`, section 8). The ground
 station's `dialect` alias is `marv_dialect::marv` (with the crate's `serde` feature, which the Messages tab
 reads fields through), so it knows `MARV_TEST`: it checks its checksum and shows it with its fields; see
 `docs/extending.md`.
@@ -249,3 +250,56 @@ REAL32 sets echoed, rates within 5 %, a `.tlog` written, and the ELF has no `Mav
   number from the chip's unique id.
 - The vehicle type in HEARTBEAT (GENERIC until the airframe is decided).
 - Whether Mission Planner or QGroundControl must also be able to connect to the board (default: no).
+
+## 8. Device diagnostics: `MARV_DEVICE_STATUS`
+
+Written before the code (the design of 2026-11-13, section 8 of `decision-foundation-20261113.md`). The
+message is defined in `marv-dialect` (its README, section `MARV_DEVICE_STATUS`): id 42421, CRC_EXTRA 231,
+a fixed payload of 30 bytes. The station reads it through the dialect only: it names no field or id of
+the message outside the Devices view and the one instance rule of the message store.
+
+What the station expects from the vehicle
+- One message per device, carrying that device's `device_id` (`MARV_DEVICE`: 1 IMU1, 2 IMU2, 3 BARO,
+  4 MAG, 5 GNSS, 6 BATT, 7 RC, 9 SD, 10 PSRAM, 11 LED, 12 ESC). The firmware sends it unasked.
+- Rate: on USB every device at least once a second; on the radio one device per second in turn, so with
+  N devices each device is refreshed every N seconds. The station relies on no exact rate.
+- Sender: the vehicle (system 1, component 1). The station keeps rows per sender, as for any message.
+- Every counter (`samples`, `errors`, `timeouts`, `recoveries`, `attempts`, `overflows`,
+  `config_restored`) counts since boot and wraps. `time_boot_ms` is the vehicle's own clock.
+
+What the station does with it
+- The message store keeps the latest message per (sender, `device_id`): one row per device, each with the
+  time it was received, its count and its rate. A second message of the same device replaces its row; a
+  device is never overwritten by another device. Every other message keeps one row per instance as before
+  (`HIGHRES_IMU` by its `id`, any other message one row).
+- Devices view: one row per device seen, in `device_id` order (the order of the table above), read only.
+  - State, last error and flags are shown as words (`OK`, `DEGRADED`, ...; flags `HIL` and `self-test`,
+    `-` when none).
+  - `last_sample_age_ms` 65535 means no sample yet and is shown as `never`.
+  - Samples per second is computed by the station from the two latest rows of the same device:
+    (`samples` now - `samples` before) / (`time_boot_ms` now - `time_boot_ms` before) x 1000, from the
+    vehicle's own clock, so a late or bunched arrival does not disturb it. It is blank until two rows
+    exist, and blank once when `samples` or `time_boot_ms` went backwards (the vehicle restarted, or a
+    counter wrapped, which at 4.29 x 10^9 samples is not expected in a session). It is also blank when
+    the two rows carry the same `time_boot_ms`.
+  - A row is stale when it was received more than 5 s ago (5.000 s exactly is not stale; this is a
+    decision of the lead, a constant in the view). A stale row is shown as stale and kept, never removed.
+    Consequence to be known: on the radio, with more than 5 devices, each device is refreshed less often
+    than every 5 s, so its row is stale for part of every cycle (11 devices: 6 s in 11). The age column
+    says how old the row really is.
+- An unknown value in `device_id` (0, 8 or above 12), `state` (above 5) or `last_error` (above 6) makes
+  the frame undecodable with this dialect version: the generated enums refuse a value that is not an
+  entry. The checksum is right (the id is known), so the frame is counted in "Undecodable frames" of the
+  Link view (`RxStats.undecodable`), not as a checksum error. The Messages view lists it as
+  `MARV_DEVICE_STATUS[0]` with no fields (the instance cannot be read), and the Devices view does not
+  show it: it shows only rows that decoded. A vehicle with a newer dialect than the station therefore
+  shows its new devices or states as missing, and the Link view counts them.
+- A frame of id 42421 with another CRC_EXTRA than 231 is a checksum failure ("Checksum errors" of the
+  Link view); it is not delivered.
+
+Not in this feature (a later one): the Operate / Configure access gate, sending `MAV_CMD_MARV_DEVICE`
+(restart, self-test), storage and reboot buttons. The Devices view has no buttons.
+
+The simulator (`gcs-sim`) sends `MARV_DEVICE_STATUS` for IMU1, IMU2, BARO, MAG, GNSS, BATT and RC, each
+once per second, with advancing counters (`samples` at the device's nominal rate), state OK, error NONE and
+no flags. It builds the frame from this section, not from `marv-dialect`.
