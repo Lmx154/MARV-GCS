@@ -695,3 +695,54 @@ fn a_marv_test_frame_is_known_to_the_session_and_a_bad_checksum_is_counted() {
     assert_eq!(entry.number("value"), Some(15.0));
     assert_eq!(entry.number("tag"), Some(1.0));
 }
+
+#[test]
+fn marv_device_status_gives_one_row_per_device_and_a_wrong_crc_extra_is_counted() {
+    let (mut to_session, reader) = pipe();
+    let (writer, _keep_rx) = pipe();
+    let session = Session::start(Box::new(reader), Box::new(writer), config(3000), nop());
+    let status = |device_id, samples| {
+        Message::MARV_DEVICE_STATUS(crate::dialect::MARV_DEVICE_STATUS_DATA {
+            time_boot_ms: 9_000,
+            samples,
+            device_id,
+            ..Default::default()
+        })
+    };
+    let imu1 = library_frame(
+        1,
+        0,
+        &status(crate::dialect::MarvDevice::MARV_DEVICE_IMU1, 640),
+    );
+    let baro = library_frame(
+        1,
+        1,
+        &status(crate::dialect::MarvDevice::MARV_DEVICE_BARO, 90),
+    );
+    let mut wrong = library_frame(
+        1,
+        2,
+        &status(crate::dialect::MarvDevice::MARV_DEVICE_MAG, 5),
+    );
+    let end = wrong.len() - 2;
+    let crc = mavlink::calculate_crc(&wrong[1..end], 230);
+    wrong[end..].copy_from_slice(&crc.to_le_bytes());
+    to_session
+        .write_all(&[imu1, baro, wrong.clone()].concat())
+        .unwrap();
+    assert!(wait_until(Duration::from_millis(500), || {
+        let rx = session.state().link.rx;
+        rx.frames == 2 && rx.crc_errors == 1
+    }));
+    let state = session.state();
+    assert_eq!(state.link.rx.undecodable, 0);
+    assert_eq!(state.link.rx.discarded_bytes, wrong.len() as u64);
+    let rows: Vec<_> = state
+        .messages
+        .entries
+        .iter()
+        .filter(|(_, e)| e.name == "MARV_DEVICE_STATUS")
+        .map(|(k, e)| (k.instance, e.number("samples")))
+        .collect();
+    assert_eq!(rows, [(1, Some(640.0)), (3, Some(90.0))]);
+}

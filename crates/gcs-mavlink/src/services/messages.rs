@@ -1,5 +1,6 @@
 //! Message store: every message that arrives, its rate, its decoded fields and the history of every
-//! numeric field. Nothing here is specific to one message, except the table of instance fields.
+//! numeric field. Nothing here is specific to one message, except the table of instance fields and
+//! [`enum_instance`].
 
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
@@ -16,7 +17,8 @@ pub const HISTORY: Duration = Duration::from_secs(60);
 pub const MAX_POINTS: usize = 30_000;
 /// Messages that carry several instances, and the field that says which one (link contract).
 /// A message that is not listed here has instance 0.
-pub const INSTANCE_FIELDS: &[(&str, &str)] = &[("HIGHRES_IMU", "id")];
+pub const INSTANCE_FIELDS: &[(&str, &str)] =
+    &[("HIGHRES_IMU", "id"), ("MARV_DEVICE_STATUS", "device_id")];
 
 /// One kind of message from one sender.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -111,6 +113,15 @@ impl MessageStore {
                 key.instance == instance && key.message == message && key.field == field
             })
             .map(|(_, series)| series)
+    }
+}
+
+/// The instance of a message whose instance field is an enum, which [`fields_of`] shows as text:
+/// its number (`MARV_DEVICE_STATUS.device_id`, the row per device of `docs/link-contract.md`, section 8).
+fn enum_instance(message: &Message) -> Option<u8> {
+    match message {
+        Message::MARV_DEVICE_STATUS(data) => Some(data.device_id as u8),
+        _ => None,
     }
 }
 
@@ -288,6 +299,10 @@ impl Service for Messages {
                     FieldValue::Number(n) if f.name == wanted => Some(*n as u8),
                     _ => None,
                 })
+            })
+            .or(match &frame.body {
+                Body::Known(message) => enum_instance(message),
+                _ => None,
             })
             .unwrap_or(0);
         let key = MessageKey {

@@ -723,3 +723,126 @@ fn marv_test_is_listed_by_name_with_its_fields_and_series() {
     );
     assert!(store.entry("UNKNOWN_42420", 0).is_none());
 }
+
+fn device_status(device: MarvDevice, samples: u32) -> Message {
+    Message::MARV_DEVICE_STATUS(MARV_DEVICE_STATUS_DATA {
+        time_boot_ms: 5_000,
+        samples,
+        errors: 1,
+        last_sample_age_ms: 3,
+        device_id: device,
+        state: MarvDeviceState::MARV_DEVICE_STATE_OK,
+        last_error: MarvDeviceError::MARV_DEVICE_ERROR_NONE,
+        ..Default::default()
+    })
+}
+
+#[test]
+fn marv_device_status_keeps_one_row_per_device() {
+    let mut rig = Rig::new();
+    rig.frame(
+        &known(1, 1, 0, device_status(MarvDevice::MARV_DEVICE_IMU1, 100)),
+        1_000_000,
+    );
+    rig.frame(
+        &known(1, 1, 1, device_status(MarvDevice::MARV_DEVICE_ESC, 7)),
+        1_100_000,
+    );
+    let rows: Vec<_> = rig
+        .store()
+        .entries
+        .iter()
+        .filter(|(_, e)| e.name == "MARV_DEVICE_STATUS")
+        .map(|(k, e)| (k.instance, e.number("samples"), e.count, e.last_seen))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (1, Some(100.0), 1, Duration::from_micros(1_000_000)),
+            (12, Some(7.0), 1, Duration::from_micros(1_100_000)),
+        ]
+    );
+    let imu = rig.store().entry("MARV_DEVICE_STATUS", 1).unwrap();
+    assert_eq!(imu.label, "MARV_DEVICE_STATUS[1]");
+    assert_eq!(imu.text("state"), Some("MARV_DEVICE_STATE_OK"));
+}
+
+#[test]
+fn a_second_marv_device_status_of_one_device_replaces_its_row() {
+    let mut rig = Rig::new();
+    rig.frame(
+        &known(1, 1, 0, device_status(MarvDevice::MARV_DEVICE_BARO, 100)),
+        1_000_000,
+    );
+    rig.frame(
+        &known(1, 1, 1, device_status(MarvDevice::MARV_DEVICE_MAG, 5)),
+        1_500_000,
+    );
+    rig.frame(
+        &known(1, 1, 2, device_status(MarvDevice::MARV_DEVICE_BARO, 740)),
+        2_000_000,
+    );
+    let rows = rig
+        .store()
+        .entries
+        .values()
+        .filter(|e| e.name == "MARV_DEVICE_STATUS")
+        .count();
+    assert_eq!(rows, 2);
+    let baro = rig.store().entry("MARV_DEVICE_STATUS", 3).unwrap();
+    assert_eq!(baro.count, 2);
+    assert_eq!(baro.number("samples"), Some(740.0));
+    assert_eq!(baro.last_seen, Duration::from_secs(2));
+    assert_eq!(
+        rig.store()
+            .entry("MARV_DEVICE_STATUS", 4)
+            .unwrap()
+            .number("samples"),
+        Some(5.0)
+    );
+    // The history of the samples counter is kept per device.
+    let series = rig
+        .store()
+        .series("MARV_DEVICE_STATUS", 3, "samples")
+        .unwrap();
+    assert_eq!(series.points, [[1.0, 100.0], [2.0, 740.0]]);
+}
+
+#[test]
+fn another_message_type_still_has_one_row() {
+    let mut rig = Rig::new();
+    rig.frame(&known(1, 1, 0, heartbeat()), 0);
+    rig.frame(&known(1, 1, 1, heartbeat()), 1_000_000);
+    rig.frame(
+        &known(1, 1, 2, device_status(MarvDevice::MARV_DEVICE_RC, 1)),
+        1_000_000,
+    );
+    let heartbeats: Vec<_> = rig
+        .store()
+        .entries
+        .iter()
+        .filter(|(_, e)| e.name == "HEARTBEAT")
+        .collect();
+    assert_eq!(heartbeats.len(), 1);
+    assert_eq!(heartbeats[0].1.count, 2);
+    assert_eq!(heartbeats[0].1.label, "HEARTBEAT");
+}
+
+#[test]
+fn an_undecodable_marv_device_status_is_a_row_without_fields_on_device_zero() {
+    let mut rig = Rig::new();
+    rig.frame(
+        &Frame {
+            system_id: 1,
+            component_id: 1,
+            sequence: 0,
+            message_id: 42_421,
+            raw: Vec::new(),
+            body: Body::Undecodable("no such MARV_DEVICE".into()),
+        },
+        0,
+    );
+    let row = rig.store().entry("MARV_DEVICE_STATUS", 0).unwrap();
+    assert!(row.fields.is_empty());
+    assert_eq!(row.count, 1);
+}

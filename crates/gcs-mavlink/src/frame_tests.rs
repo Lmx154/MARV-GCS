@@ -705,3 +705,109 @@ fn marv_test_with_a_wrong_checksum_is_a_crc_error_and_is_not_delivered() {
     assert!(frames.is_empty());
     assert_eq!(stats.crc_errors, 1);
 }
+
+const MARV_DEVICE_STATUS_ID: u32 = 42_421;
+const MARV_DEVICE_STATUS_CRC_EXTRA: u8 = 231;
+
+/// `MARV_DEVICE_STATUS` payload by hand (30 bytes, wire order): IMU1, state OK, no error, HIL.
+fn device_status_payload(device_id: u8, state: u8, last_error: u8) -> Vec<u8> {
+    let mut payload = Vec::new();
+    for value in [5_000u32, 1_000, 2, 3] {
+        payload.extend_from_slice(&value.to_le_bytes());
+    }
+    for value in [65_535u16, 4, 5, 6, 7] {
+        payload.extend_from_slice(&value.to_le_bytes());
+    }
+    payload.extend_from_slice(&[device_id, state, last_error, 1]);
+    assert_eq!(payload.len(), 30);
+    payload
+}
+
+#[test]
+fn marv_device_status_is_known_with_crc_extra_231() {
+    assert_eq!(
+        Message::extra_crc(MARV_DEVICE_STATUS_ID),
+        MARV_DEVICE_STATUS_CRC_EXTRA
+    );
+    let frame = build_frame(
+        0,
+        0,
+        MARV_DEVICE_STATUS_ID,
+        &device_status_payload(1, 2, 0),
+        MARV_DEVICE_STATUS_CRC_EXTRA,
+        &[],
+    );
+    let (frames, stats) = deframe(&frame);
+    assert_eq!(frames.len(), 1);
+    let Message::MARV_DEVICE_STATUS(data) = known(&frames[0]) else {
+        panic!("not MARV_DEVICE_STATUS")
+    };
+    assert_eq!(data.samples, 1_000);
+    assert_eq!(data.last_sample_age_ms, 65_535);
+    assert_eq!(data.config_restored, 7);
+    assert_eq!(data.device_id, crate::dialect::MarvDevice::MARV_DEVICE_IMU1);
+    assert_eq!(data.flags, 1);
+    assert_eq!(
+        (
+            stats.frames,
+            stats.unknown,
+            stats.undecodable,
+            stats.crc_errors
+        ),
+        (1, 0, 0, 0)
+    );
+}
+
+#[test]
+fn marv_device_status_with_a_wrong_crc_extra_is_a_checksum_failure() {
+    let wrong = build_frame(
+        0,
+        0,
+        MARV_DEVICE_STATUS_ID,
+        &device_status_payload(1, 2, 0),
+        230,
+        &[],
+    );
+    let (frames, stats) = deframe(&wrong);
+    assert!(frames.is_empty());
+    assert_eq!(
+        (
+            stats.frames,
+            stats.crc_errors,
+            stats.unknown,
+            stats.undecodable
+        ),
+        (0, 1, 0, 0)
+    );
+}
+
+#[test]
+fn marv_device_status_with_a_value_the_enums_refuse_is_undecodable_not_a_checksum_error() {
+    // device 8 is deliberately unused, 13 is past the last device, state 6 and error 7 do not exist.
+    for payload in [
+        device_status_payload(0, 2, 0),
+        device_status_payload(8, 2, 0),
+        device_status_payload(13, 2, 0),
+        device_status_payload(1, 6, 0),
+        device_status_payload(1, 2, 7),
+    ] {
+        let frame = build_frame(
+            0,
+            0,
+            MARV_DEVICE_STATUS_ID,
+            &payload,
+            MARV_DEVICE_STATUS_CRC_EXTRA,
+            &[],
+        );
+        let (frames, stats) = deframe(&frame);
+        assert_eq!(frames.len(), 1, "{payload:?}");
+        assert!(
+            matches!(frames[0].body, Body::Undecodable(_)),
+            "{payload:?}"
+        );
+        assert_eq!(
+            (stats.undecodable, stats.crc_errors, stats.unknown),
+            (1, 0, 0)
+        );
+    }
+}
