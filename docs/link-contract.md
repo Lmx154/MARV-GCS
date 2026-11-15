@@ -419,7 +419,7 @@ The simulator (`gcs-sim`) behaves as the table above: admitted commands get IN_P
 IN_PROGRESS with the percentage every 500 ms and ACCEPTED after 2 s (a calibration after 3 s; a cancel ends
 it CANCELLED); one action at a time (another command: TEMPORARILY_REJECTED, the same again: IN_PROGRESS);
 245 with param1 other than 0 to 4, 246 with param1 other than 1, 241 with other parameters, 42430 with a
-device or action not listed: DENIED; any other command except 511 and 512: UNSUPPORTED. Two switches of its
+device or action not listed: DENIED; any other command except 512 (`MAV_CMD_REQUEST_MESSAGE`, as before): UNSUPPORTED. Two switches of its
 configuration, off by default: drop the first N `COMMAND_LONG`s that are not `MAV_CMD_REQUEST_MESSAGE`, and
 never send the final ACK. The simulator reads and writes 42430 by hand, as it does `MARV_DEVICE_STATUS`.
 

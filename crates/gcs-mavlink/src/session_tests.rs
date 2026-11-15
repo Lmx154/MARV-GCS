@@ -791,6 +791,21 @@ mod access {
         }
     }
 
+    fn save_to_flash() -> Command {
+        Command::SendCommand {
+            command: crate::dialect::MavCmd::MAV_CMD_PREFLIGHT_STORAGE,
+            params: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        }
+    }
+
+    /// COMMAND_LONGs for the storage command that the vehicle fake received.
+    fn storage_commands(rig: &Rig) -> usize {
+        count(rig, |m| {
+            matches!(m, Message::COMMAND_LONG(c)
+                if c.command == crate::dialect::MavCmd::MAV_CMD_PREFLIGHT_STORAGE)
+        })
+    }
+
     fn count(rig: &Rig, wanted: fn(&Message) -> bool) -> usize {
         rig.vehicle
             .received
@@ -852,6 +867,43 @@ mod access {
     }
 
     #[test]
+    fn an_operate_session_refuses_a_send_command_and_writes_nothing() {
+        let mut rig = rig_access(Access::Operate);
+        rig.session.send(save_to_flash());
+        std::thread::sleep(QUIET);
+        assert_eq!(storage_commands(&rig), 0);
+        assert!(rig.session.state().command.is_none());
+        assert_eq!(
+            rig.session.state().link.refused,
+            Some(Refused {
+                command: "SendCommand",
+                count: 1
+            })
+        );
+        rig.vehicle.stop();
+    }
+
+    #[test]
+    fn negative_control_without_the_gate_the_command_goes_out_on_an_operate_session() {
+        let mut rig = rig_access(Access::Operate);
+        rig.session.send_ungated(save_to_flash());
+        assert!(
+            wait_until(LIMIT, || storage_commands(&rig) >= 1),
+            "the ungated command did not go out"
+        );
+        rig.vehicle.stop();
+    }
+
+    #[test]
+    fn a_configure_session_sends_the_command() {
+        let mut rig = rig_access(Access::Configure);
+        rig.session.send(save_to_flash());
+        assert!(wait_until(LIMIT, || storage_commands(&rig) >= 1));
+        assert_eq!(rig.session.state().link.refused, None);
+        rig.vehicle.stop();
+    }
+
+    #[test]
     fn a_configure_session_writes_the_parameter() {
         let mut rig = rig_access(Access::Configure);
         put_param(&rig);
@@ -891,9 +943,10 @@ mod access {
             Command::SetParam { .. } => 1,
             Command::StartLog { .. } => 2,
             Command::StopLog => 3,
+            Command::SendCommand { .. } => 4,
         }
     }
-    const COUNT: usize = 4;
+    const COUNT: usize = 5;
 
     #[test]
     fn every_command_has_its_class_in_the_table() {
@@ -909,6 +962,7 @@ mod access {
                 "StartLog",
             ),
             (Command::StopLog, Access::Operate, "StopLog"),
+            (save_to_flash(), Access::Configure, "SendCommand"),
         ];
         let mut seen = [false; COUNT];
         for (command, access, name) in &rows {

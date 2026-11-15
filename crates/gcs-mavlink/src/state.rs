@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use crate::RxStats;
+use crate::dialect::MavCmd;
 use crate::services::messages::MessageStore;
 use crate::services::params::{ParamTable, ParamValue};
 use crate::services::texts::TextLog;
@@ -16,6 +17,74 @@ pub struct VehicleState {
     pub params: ParamTable,
     pub texts: TextLog,
     pub log: LogState,
+    /// The current or last MAVLink command the user sent; `None` before the first.
+    pub command: Option<CommandRecord>,
+}
+
+/// Where a command stands (docs/link-contract.md, section 10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandStatus {
+    /// Sent, no ACK yet.
+    Waiting,
+    /// The vehicle said IN_PROGRESS; `percent` is `None` when it gave no percentage (255).
+    InProgress { percent: Option<u8> },
+    /// The vehicle's final ACK. `text` is the result in words, `accepted` whether it is ACCEPTED.
+    Finished { text: &'static str, accepted: bool },
+    /// Every send went unanswered.
+    NoAnswer,
+    /// IN_PROGRESS was seen, then the vehicle stopped reporting.
+    NoResult,
+    /// Not sent; the text says why.
+    Refused(String),
+}
+
+/// The state of a cancel sent while a calibration runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CancelStatus {
+    Waiting,
+    /// The vehicle's answer to the cancel, in words.
+    Answered(&'static str),
+    NoAnswer,
+}
+
+/// A `SendCommand` that was refused because another command was outstanding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedCommand {
+    /// The `MAV_CMD` number of the last refused command.
+    pub command: u32,
+    /// How many were refused while this command was outstanding.
+    pub count: u32,
+}
+
+/// The current or last command: what was asked, how often it was sent, how it stands.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommandRecord {
+    /// The `MAV_CMD` number.
+    pub command: u32,
+    /// The dialect's name for it.
+    pub name: Option<String>,
+    pub params: [f32; 7],
+    pub status: CommandStatus,
+    /// COMMAND_LONG frames sent for it (not counting a cancel's).
+    pub sends: u8,
+    /// Session time of the first send.
+    pub started: Duration,
+    /// Session time at which it ended; `None` while it is outstanding.
+    pub ended: Option<Duration>,
+    /// A `SendCommand` refused while this one was outstanding.
+    pub refused: Option<RefusedCommand>,
+    /// A cancel sent while this calibration was outstanding.
+    pub cancel: Option<CancelStatus>,
+}
+
+impl CommandRecord {
+    /// Whether a new command has to wait for this one.
+    pub fn outstanding(&self) -> bool {
+        matches!(
+            self.status,
+            CommandStatus::Waiting | CommandStatus::InProgress { .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -99,6 +168,12 @@ pub enum Command {
         label: String,
     },
     StopLog,
+    /// Send one MAVLink command to the vehicle (`COMMAND_LONG`, docs/link-contract.md section 10).
+    /// The outcome shows in `VehicleState.command`.
+    SendCommand {
+        command: MavCmd,
+        params: [f32; 7],
+    },
 }
 
 impl Command {
@@ -111,6 +186,8 @@ impl Command {
             Command::SetParam { .. } => Access::Configure,
             Command::StartLog { .. } => Access::Operate,
             Command::StopLog => Access::Operate,
+            // Every command id: an unknown one counts as Configure too.
+            Command::SendCommand { .. } => Access::Configure,
         }
     }
 
@@ -121,6 +198,7 @@ impl Command {
             Command::SetParam { .. } => "SetParam",
             Command::StartLog { .. } => "StartLog",
             Command::StopLog => "StopLog",
+            Command::SendCommand { .. } => "SendCommand",
         }
     }
 }
