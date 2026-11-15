@@ -330,7 +330,11 @@ fn param_set(
             format!("{name}: no echo from the vehicle in time"),
         ))
     });
-    if let Some(WriteStatus::Refused { .. }) = session.state().params.writes.get(name) {
+    let refused = matches!(
+        session.state().params.writes.get(name),
+        Some(WriteStatus::Refused { .. })
+    );
+    if refused {
         // The vehicle's reason follows its echo by a frame; give it a moment.
         let printed = echo.printed;
         let end = Instant::now() + REASON_GRACE;
