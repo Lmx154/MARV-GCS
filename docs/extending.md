@@ -51,9 +51,16 @@ give every input widget an accessible name.
 4. In `crates/gcs-mavlink/src/services/mod.rs` add `pub mod <name>;` and one line in `default_services`.
 
 Test it with plain calls and a made-up `now` (see `services/params_tests.rs`), then end to end against the
-simulator (`crates/marv-gcs/tests/e2e*.rs`). When the firmware side of the feature is specified, write it
+simulator (`crates/marv-gcs/tests/e2e*.rs`; every loop that waits for a state or drains an API is bounded). When the firmware side of the feature is specified, write it
 into `docs/link-contract.md` first and teach the simulator (`crates/gcs-sim`) to behave that way, so the
 ground station is developed against the real behaviour.
+
+The command service (`services/commands.rs`) is the worked example of a service that follows a request to
+its result: `Command::SendCommand { command, params }` starts it, `VehicleState.command` shows it. A new
+command button needs no change in the service: the view pushes `Command::SendCommand` (gate it with
+`status::command_gate`, draw it with `views/actions.rs::button` or `Confirm::button` when it is hard to undo),
+`status::command_label` gives it its words in the status line, and the simulator's `actions::admit` its
+answer. The vehicle's side is `docs/link-contract.md` section 10.
 
 ## A new transport (a telemetry radio; UDP is the worked example)
 

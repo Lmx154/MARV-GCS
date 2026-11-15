@@ -66,13 +66,24 @@ Building needs Rust 1.99 or newer (the `rust-version` of `marv-dialect`). On Lin
 |---|---|
 | Sensors | Live plots of both IMUs, the high-g accelerometer, the magnetometer and the barometer, and one line of GPS. The plots are a table of presets; one row adds a plot. |
 | Messages | Every message that arrives: rate, count, age and all its fields. Any numeric field can be plotted. Nothing here knows a particular message. |
-| Devices | The health of each device of the flight controller (`MARV_DEVICE_STATUS`, `docs/link-contract.md` section 8): one row per device in `device_id` order with its state (coloured), last error, samples and samples per second (computed from two successive rows), age of the last sample, errors, timeouts, recoveries, attempts, overflows, configuration restores, flags (HIL, self-test) and how long ago the row arrived (a row older than 15 s is shown as stale, not removed). Read only. The simulator sends seven devices; no firmware sends the message yet, so it has not been seen from a board. |
-| Parameters | Whatever parameters the vehicle reports: search, group by name prefix, edit, write with confirmation (a refused or unanswered write says so), save to and load from a file. Nothing here knows a particular parameter. On an operate-only link the list is not downloaded at connect (press Refresh) and the editing controls are shown disabled with the reason. |
+| Devices | The health of each device of the flight controller (`MARV_DEVICE_STATUS`, `docs/link-contract.md` section 8): one row per device in `device_id` order with its state (coloured), last error, samples and samples per second (computed from two successive rows), age of the last sample, errors, timeouts, recoveries, attempts, overflows, configuration restores, flags (HIL, self-test) and how long ago the row arrived (a row older than 15 s is shown as stale, not removed). The table is read only; above it the buttons Calibrate gyro, Calibrate accelerometer (level) and Cancel calibration, and per row Restart (IMU1, IMU2, BARO, MAG, GNSS, BATT) and Self-test (IMU1, IMU2, MAG), all Configure-only (section "Commands" below). The simulator sends seven devices; no firmware sends the message yet, so it has not been seen from a board. |
+| Parameters | Whatever parameters the vehicle reports: search, group by name prefix, edit, write with confirmation (a refused or unanswered write says so), save to and load from a file; the storage buttons Save to flash, Reload from flash, Reset all to defaults and Reset calibration (the two resets ask for a second click). Nothing here knows a particular parameter. On an operate-only link the list is not downloaded at connect (press Refresh) and the editing controls are shown disabled with the reason. |
 | Log | The vehicle's text messages, and the recording. Every session is recorded automatically to `logs/<UTC time>.tlog`, the telemetry-log format Mission Planner, QGroundControl and pymavlink read. A log can be opened and replayed through the same tabs. |
-| Link | Connection state and counters: frames received and sent, checksum errors, discarded bytes; the session's role (Access) and the last command it refused. |
+| Link | Connection state and counters: frames received and sent, checksum errors, discarded bytes; the session's role (Access) and the last command it refused; the Reboot vehicle button (asks for a second click). |
 
 The status at the top right says `Connecting`, `Connected` (with the vehicle's ids), `Lost` (no heartbeat
 for 5 s) or `Closed` (with the reason), then the role of the session.
+
+## Commands
+
+Every button above is a MAVLink command to the flight controller (`docs/link-contract.md` section 10): the
+`commands` service in `gcs-mavlink` sends one `COMMAND_LONG` at a time (3 sends, 1.5 s apart, `confirmation`
+0, 1, 2), follows `COMMAND_ACK` (IN_PROGRESS with a percentage, then the final result) and gives up after
+20 s of silence. All are Configure-class: on an Operate link they are shown disabled with the reason, and
+while a command is running every command button is disabled ("a command is running"), except Cancel
+calibration during a calibration. The last command, in words ("Gyro calibration: 40 %", "Reboot: no answer
+after 3 sends"), is shown under the buttons of the Parameters, Devices and Link tabs and is
+`VehicleState.command`. The simulator answers them as the vehicle will; no firmware does yet.
 
 ## Two roles: Operate and Configure
 
@@ -100,7 +111,7 @@ Four crates; the dependency graph enforces the layers (`docs/architecture.md`).
 | Crate | What it is |
 |---|---|
 | `gcs-transport` | Bytes only: USB serial port, TCP and UDP. It never names MAVLink. |
-| `gcs-mavlink` | MAVLink 2 on any reader and writer: framing, one small state machine per sub-protocol (heartbeat, messages, parameters, text, recorder), the vehicle state, the log reader and replay. No transport, no window. |
+| `gcs-mavlink` | MAVLink 2 on any reader and writer: framing, one small state machine per sub-protocol (heartbeat, messages, parameters, commands, text, recorder), the vehicle state, the log reader and replay. No transport, no window. |
 | `gcs-sim` | The simulated vehicle (`marv-sim`). Written from the specification and never using `gcs-mavlink`, so the two check each other. |
 | `marv-gcs` | The window: the connection bar and one file per tab; also the link test tool `marv-link-test` (`src/link_test.rs`, `src/bin/marv_link_test.rs`), which builds `MARV_TEST` with `marv-dialect`. |
 
