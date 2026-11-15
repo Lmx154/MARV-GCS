@@ -10,7 +10,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::services::{Ctx, Service, default_services};
-use crate::{Command, Deframer, Encoder, Frame, LinkStatus, RxStats, VehicleState};
+use crate::{
+    Access, Command, Deframer, Encoder, Frame, LinkStatus, Refused, RxStats, VehicleState,
+};
 
 /// The services are ticked at least this often (the contract says every 50 ms).
 const TICK: Duration = Duration::from_millis(20);
@@ -23,6 +25,8 @@ pub struct SessionConfig {
     pub system_id: u8,
     pub component_id: u8,
     pub heartbeat_timeout: Duration,
+    /// What the session may do; `Session::send` refuses what needs more.
+    pub access: Access,
 }
 
 impl Default for SessionConfig {
@@ -31,6 +35,7 @@ impl Default for SessionConfig {
             system_id: 255,
             component_id: 190,
             heartbeat_timeout: Duration::from_secs(5),
+            access: Access::Configure,
         }
     }
 }
@@ -47,6 +52,7 @@ pub struct Session {
     state: Arc<Mutex<VehicleState>>,
     stop: Arc<AtomicBool>,
     input: Sender<Input>,
+    access: Access,
     threads: Vec<JoinHandle<()>>,
 }
 
@@ -71,6 +77,7 @@ impl Session {
     ) -> Session {
         let state = Arc::new(Mutex::new(VehicleState::default()));
         let stop = Arc::new(AtomicBool::new(false));
+        let access = config.access;
         let (input, inbox) = mpsc::channel();
 
         let reader_thread = {
@@ -103,6 +110,7 @@ impl Session {
             state,
             stop,
             input,
+            access,
             threads: vec![reader_thread, session_thread],
         }
     }
@@ -111,9 +119,30 @@ impl Session {
         lock(&self.state)
     }
 
+    /// The one choke point for what the application asks of the session. A command that needs more
+    /// access than the session has is refused: nothing is written and `link.refused` records it.
     pub fn send(&self, command: Command) {
+        if !self.access.allows(command.access()) {
+            let mut state = lock(&self.state);
+            let count = state.link.refused.as_ref().map_or(0, |r| r.count);
+            state.link.refused = Some(Refused {
+                command: command.name(),
+                count: count + 1,
+            });
+            return;
+        }
+        self.send_unchecked(command);
+    }
+
+    fn send_unchecked(&self, command: Command) {
         // The session thread is gone when the link is down: the command has nowhere to go.
         let _ = self.input.send(Input::Command(command));
+    }
+
+    /// Test seam for the negative control: the same send with the gate removed.
+    #[cfg(test)]
+    pub(crate) fn send_ungated(&self, command: Command) {
+        self.send_unchecked(command);
     }
 }
 

@@ -17,6 +17,6 @@ pub use frame::{Body, Deframer, Encoder, Frame, RxStats};
 pub use marv_dialect::marv as dialect;
 pub use services::{Ctx, Service, default_services};
 pub use session::{Session, SessionConfig};
-pub use state::{Command, LinkState, LinkStatus, VehicleId, VehicleState};
+pub use state::{Access, Command, LinkState, LinkStatus, Refused, VehicleId, VehicleState};
 
 pub type Message = dialect::MavMessage;

@@ -13,7 +13,7 @@ use crate::dialect::{
     PARAM_VALUE_DATA,
 };
 use crate::session::SessionConfig;
-use crate::{Body, Command, Frame, LinkStatus, Message};
+use crate::{Access, Body, Command, Frame, LinkStatus, Message};
 
 /// How a vehicle puts a value into the 4-byte value field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -347,6 +347,7 @@ struct WriteTrack {
 /// The service that runs the parameter protocol.
 #[derive(Debug)]
 pub struct Params {
+    access: Access,
     started: bool,
     encoding: EncodingPhase,
     fetch: Fetch,
@@ -355,8 +356,9 @@ pub struct Params {
 }
 
 impl Params {
-    pub fn new(_config: &SessionConfig) -> Self {
+    pub fn new(config: &SessionConfig) -> Self {
         Self {
+            access: config.access,
             started: false,
             encoding: EncodingPhase::Idle,
             fetch: Fetch::Idle,
@@ -380,7 +382,9 @@ impl Params {
                 last_send: cx.now,
             };
             cx.out.push(request_autopilot_version(target));
-            self.begin_fetch(target, cx);
+            if self.access == Access::Configure {
+                self.begin_fetch(target, cx);
+            }
         }
         Some(target)
     }

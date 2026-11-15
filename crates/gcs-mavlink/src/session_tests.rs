@@ -151,14 +151,13 @@ struct Rig {
 }
 
 fn rig(timeout_ms: u64) -> Rig {
+    rig_with(config(timeout_ms))
+}
+
+fn rig_with(config: SessionConfig) -> Rig {
     let (vehicle_tx, session_rx) = pipe();
     let (session_tx, vehicle_rx) = pipe();
-    let session = Session::start(
-        Box::new(session_rx),
-        Box::new(session_tx),
-        config(timeout_ms),
-        nop(),
-    );
+    let session = Session::start(Box::new(session_rx), Box::new(session_tx), config, nop());
     Rig {
         session,
         vehicle: FakeVehicle::spawn(vehicle_tx, vehicle_rx),
@@ -745,4 +744,188 @@ fn marv_device_status_gives_one_row_per_device_and_a_wrong_crc_extra_is_counted(
         .map(|(k, e)| (k.instance, e.number("samples")))
         .collect();
     assert_eq!(rows, [(1, Some(640.0)), (3, Some(90.0))]);
+}
+
+mod access {
+    use super::*;
+    use crate::services::params::{Param, ParamType, ParamValue};
+    use crate::{Access, Command, Refused};
+
+    const LIMIT: Duration = Duration::from_secs(3);
+    const QUIET: Duration = Duration::from_millis(500);
+
+    fn rig_access(access: Access) -> Rig {
+        let rig = rig_with(SessionConfig {
+            access,
+            ..config(5_000)
+        });
+        assert!(
+            wait_until(LIMIT, || rig.session.state().link.status
+                == LinkStatus::Connected),
+            "the vehicle's heartbeat was not seen"
+        );
+        rig
+    }
+
+    /// One parameter known to the table, as after a download; the vehicle fake never serves one.
+    fn put_param(rig: &Rig) {
+        let mut state = rig.session.state();
+        state.params.params.clear();
+        state.params.params.insert(
+            "AAA_ONE".into(),
+            Param {
+                name: "AAA_ONE".into(),
+                index: 0,
+                kind: ParamType::U8,
+                raw: [5, 0, 0, 0],
+            },
+        );
+        state.params.encoding_known = true;
+    }
+
+    fn set_one() -> Command {
+        Command::SetParam {
+            name: "AAA_ONE".into(),
+            value: ParamValue::U8(7),
+        }
+    }
+
+    fn count(rig: &Rig, wanted: fn(&Message) -> bool) -> usize {
+        rig.vehicle
+            .received
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, message)| wanted(message))
+            .count()
+    }
+
+    fn param_sets(rig: &Rig) -> usize {
+        count(rig, |m| matches!(m, Message::PARAM_SET(_)))
+    }
+
+    fn list_requests(rig: &Rig) -> usize {
+        count(rig, |m| matches!(m, Message::PARAM_REQUEST_LIST(_)))
+    }
+
+    #[test]
+    fn default_config_is_configure() {
+        assert_eq!(SessionConfig::default().access, Access::Configure);
+    }
+
+    #[test]
+    fn an_operate_session_refuses_a_parameter_write_and_writes_nothing() {
+        let mut rig = rig_access(Access::Operate);
+        put_param(&rig);
+        rig.session.send(set_one());
+        std::thread::sleep(QUIET);
+        assert_eq!(param_sets(&rig), 0);
+        assert!(rig.session.state().params.writes.is_empty());
+        assert_eq!(
+            rig.session.state().link.refused,
+            Some(Refused {
+                command: "SetParam",
+                count: 1
+            })
+        );
+        rig.session.send(set_one());
+        assert_eq!(rig.session.state().link.refused.as_ref().unwrap().count, 2);
+        assert_eq!(param_sets(&rig), 0);
+        rig.vehicle.stop();
+    }
+
+    #[test]
+    fn negative_control_without_the_gate_the_write_goes_out_on_an_operate_session() {
+        let mut rig = rig_access(Access::Operate);
+        put_param(&rig);
+        rig.session.send_ungated(set_one());
+        assert!(
+            wait_until(LIMIT, || param_sets(&rig) == 1),
+            "the ungated write did not go out"
+        );
+        rig.session.send(set_one());
+        std::thread::sleep(QUIET);
+        assert_eq!(param_sets(&rig), 1, "the gated send must add nothing");
+        assert_eq!(rig.session.state().link.refused.as_ref().unwrap().count, 1);
+        rig.vehicle.stop();
+    }
+
+    #[test]
+    fn a_configure_session_writes_the_parameter() {
+        let mut rig = rig_access(Access::Configure);
+        put_param(&rig);
+        rig.session.send(set_one());
+        assert!(wait_until(LIMIT, || param_sets(&rig) >= 1));
+        assert_eq!(rig.session.state().link.refused, None);
+        rig.vehicle.stop();
+    }
+
+    #[test]
+    fn an_operate_session_does_not_download_the_list_at_connect_but_a_refresh_does() {
+        let mut rig = rig_access(Access::Operate);
+        std::thread::sleep(Duration::from_millis(1_500));
+        assert_eq!(list_requests(&rig), 0);
+        assert_eq!(
+            rig.session.state().params.fetch,
+            crate::services::params::FetchStatus::Idle
+        );
+        rig.session.send(Command::RefreshParams);
+        assert!(wait_until(LIMIT, || list_requests(&rig) >= 1));
+        assert_eq!(rig.session.state().link.refused, None);
+        rig.vehicle.stop();
+    }
+
+    #[test]
+    fn a_configure_session_downloads_the_list_at_connect() {
+        let mut rig = rig_access(Access::Configure);
+        assert!(wait_until(LIMIT, || list_requests(&rig) >= 1));
+        rig.vehicle.stop();
+    }
+
+    /// An index per variant, by a match with no wildcard arm: adding a variant to `Command` fails
+    /// to compile here until it has an index, and `COUNT` then demands a row in the table.
+    fn index(command: &Command) -> usize {
+        match command {
+            Command::RefreshParams => 0,
+            Command::SetParam { .. } => 1,
+            Command::StartLog { .. } => 2,
+            Command::StopLog => 3,
+        }
+    }
+    const COUNT: usize = 4;
+
+    #[test]
+    fn every_command_has_its_class_in_the_table() {
+        let rows: Vec<(Command, Access, &str)> = vec![
+            (Command::RefreshParams, Access::Operate, "RefreshParams"),
+            (set_one(), Access::Configure, "SetParam"),
+            (
+                Command::StartLog {
+                    sink: crate::tlog::LogSink::new(Vec::new()),
+                    label: "x".into(),
+                },
+                Access::Operate,
+                "StartLog",
+            ),
+            (Command::StopLog, Access::Operate, "StopLog"),
+        ];
+        let mut seen = [false; COUNT];
+        for (command, access, name) in &rows {
+            seen[index(command)] = true;
+            assert_eq!(command.access(), *access, "{name}");
+            assert_eq!(command.name(), *name);
+        }
+        assert!(
+            seen.iter().all(|s| *s),
+            "a Command variant has no row in the table"
+        );
+    }
+
+    #[test]
+    fn access_allows_follows_the_two_roles() {
+        assert!(Access::Configure.allows(Access::Configure));
+        assert!(Access::Configure.allows(Access::Operate));
+        assert!(Access::Operate.allows(Access::Operate));
+        assert!(!Access::Operate.allows(Access::Configure));
+    }
 }
