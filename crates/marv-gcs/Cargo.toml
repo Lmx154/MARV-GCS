@@ -13,6 +13,7 @@ path = "src/bin/marv_link_test.rs"
 [dependencies]
 gcs-transport.workspace = true
 gcs-mavlink.workspace = true
+gcs-link.workspace = true
 marv-dialect.workspace = true
 eframe.workspace = true
 egui_plot.workspace = true

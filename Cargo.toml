@@ -3,8 +3,10 @@ resolver = "3"
 members = [
     "crates/gcs-transport",
     "crates/gcs-mavlink",
+    "crates/gcs-link",
     "crates/gcs-sim",
     "crates/marv-gcs",
+    "crates/marv-cli",
 ]
 
 [workspace.package]
@@ -18,6 +20,7 @@ publish = false
 [workspace.dependencies]
 gcs-transport = { path = "crates/gcs-transport" }
 gcs-mavlink = { path = "crates/gcs-mavlink" }
+gcs-link = { path = "crates/gcs-link" }
 gcs-sim = { path = "crates/gcs-sim" }
 
 mavlink = { version = "=0.21.0", default-features = false, features = ["std", "serde", "dialect-common", "mav2-message-extensions"] }

@@ -830,6 +830,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gcs-link"
+version = "0.1.0"
+dependencies = [
+ "gcs-mavlink",
+ "gcs-transport",
+]
+
+[[package]]
 name = "gcs-mavlink"
 version = "0.1.0"
 dependencies = [
@@ -1307,6 +1315,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "marv-cli"
+version = "0.1.0"
+dependencies = [
+ "gcs-link",
+ "gcs-mavlink",
+ "gcs-sim",
+ "gcs-transport",
+]
+
+[[package]]
 name = "marv-dialect"
 version = "0.1.0"
 source = "git+https://github.com/Lmx154/marv-dialect.git?rev=af6baa107046219dee49cd88c81f9809c134e761#af6baa107046219dee49cd88c81f9809c134e761"
@@ -1328,6 +1346,7 @@ dependencies = [
  "egui_extras",
  "egui_kittest",
  "egui_plot",
+ "gcs-link",
  "gcs-mavlink",
  "gcs-sim",
  "gcs-transport",

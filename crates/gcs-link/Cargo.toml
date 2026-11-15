@@ -1,0 +1,11 @@
+[package]
+name = "gcs-link"
+description = "Joins a transport to the MAVLink layer: the role an endpoint gives the station and the start of a session on it. No GUI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+gcs-transport.workspace = true
+gcs-mavlink.workspace = true

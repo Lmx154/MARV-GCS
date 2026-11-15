@@ -73,8 +73,13 @@ impl App {
     fn connect(&mut self, endpoint: &Endpoint, ctx: &egui::Context) {
         self.bar.error = None;
         logfile::set_error(ctx, None);
-        let access = connection::access_of(endpoint);
-        match connection::start_session(endpoint, access, ctx) {
+        let access = gcs_link::access_of(endpoint);
+        let repaint = ctx.clone();
+        match gcs_link::start_session(
+            endpoint,
+            access,
+            Box::new(move || repaint.request_repaint()),
+        ) {
             Ok(session) => {
                 self.access = access;
                 self.session_started = Instant::now();

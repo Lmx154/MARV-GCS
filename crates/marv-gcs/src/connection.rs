@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use eframe::egui::{self, Color32};
 use gcs_mavlink::tlog::{ReplaySpeed, replay};
 use gcs_mavlink::{Access, Session, SessionConfig};
-use gcs_transport::{DEFAULT_BAUD, Endpoint, OpenError, PortInfo};
+use gcs_transport::{DEFAULT_BAUD, Endpoint, PortInfo};
 
 use crate::status;
 
@@ -274,29 +274,8 @@ pub fn port_label(port: &PortInfo) -> String {
     }
 }
 
-/// The role a link gives the station (docs/link-contract.md, "Access"). The one place that maps a
-/// link to an `Access`, exhaustive over the endpoints: a new link kind does not compile until it has a
-/// role. The transport knows only bytes and does not hold this.
-pub fn access_of(endpoint: &Endpoint) -> Access {
-    match endpoint {
-        Endpoint::Serial { .. } => Access::Configure,
-        Endpoint::Tcp { .. } => Access::Configure,
-        Endpoint::Udp { .. } => Access::Operate,
-    }
-}
-
 /// A log-file replay has no vehicle to configure.
 pub const REPLAY_ACCESS: Access = Access::Operate;
-
-/// Open the endpoint and start a session on it with `access`; `wake` repaints the window.
-pub fn start_session(
-    endpoint: &Endpoint,
-    access: Access,
-    ctx: &egui::Context,
-) -> Result<Session, OpenError> {
-    let link = gcs_transport::open(endpoint)?;
-    Ok(start(link.reader, link.writer, access, ctx))
-}
 
 /// Open a `.tlog` and start a session that replays it.
 pub fn start_replay(
@@ -332,16 +311,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_endpoint_has_its_role() {
-        let cases = [
-            ("serial:/dev/ttyACM0:115200", Access::Configure),
-            ("tcp:127.0.0.1:5760", Access::Configure),
-            ("udp:0.0.0.0:14550", Access::Operate),
-        ];
-        for (text, access) in cases {
-            let endpoint: Endpoint = text.parse().expect("endpoint");
-            assert_eq!(access_of(&endpoint), access, "{text}");
-        }
+    fn a_replay_is_operate_only() {
         assert_eq!(REPLAY_ACCESS, Access::Operate);
     }
 }
