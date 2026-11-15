@@ -108,6 +108,12 @@ marv-cli --connect serial:/dev/ttyACM0 calibrate gyro
 Every command first waits for the vehicle's heartbeat (`--timeout`, default 5 s) and fails with exit status 3
 and `no heartbeat from a vehicle within N s` without it. Options may stand anywhere on the line.
 
+Every command also prints, on stderr, each STATUSTEXT the vehicle sends while it runs, one line each as it arrives:
+`text<TAB>SEVERITY<TAB>TEXT` (so `param set` shows the firmware's reason for a refusal, and `device restart` what the
+vehicle says). stdout is not changed by it. `texts` and `watch` print texts on stdout as before, with no second copy on
+stderr. A text belongs to the session, not to the command: one that arrived before the command's own request was sent
+(a boot text, an earlier text of the same session) is shown too.
+
 | Command | What it does and prints |
 |---|---|
 | `status [--for s]` | collects for `--for` (default 2 s), then prints `vehicle<TAB>system=1 component=1 type=...`, `role<TAB>Operate` or `Configure`, `health<TAB>` the sensors SYS_STATUS reports healthy in words (`none`, or `not received`), `devices<TAB>N` (the number of device rows), and the last 3 texts as `text<TAB>TIME<TAB>SEVERITY<TAB>TEXT` |
@@ -116,7 +122,7 @@ and `no heartbeat from a vehicle within N s` without it. Options may stand anywh
 | `watch [--for s]` | until the time is over (default 30 s): `device<TAB>` + a device line when a device appears or its state, last error, errors or timeouts change (samples and the age change all the time and do not count), and `text<TAB>` + a text line |
 | `param list` | `NAME<TAB>VALUE<TAB>TYPE`, one per parameter, by name; waits for the whole list (on a `udp:` link it asks for it: a read) |
 | `param get NAME` | the same line for one parameter; exit 1 for an unknown name |
-| `param set NAME VALUE` | waits for the vehicle's echo and prints the same line with the value now in effect; if the echo differs from what was asked (the vehicle refused) the line is printed, the reason goes to stderr and the exit status is 1; a value that does not fit the parameter's type is not sent |
+| `param set NAME VALUE` | waits for the vehicle's echo and prints the same line with the value now in effect; if the echo differs from what was asked (the vehicle refused, which ends the write at once, with one `PARAM_SET` on the link) the line is printed, the message and the vehicle's own `text` line go to stderr and the exit status is 1; a value that does not fit the parameter's type is not sent |
 | `param save` / `param reload` | `MAV_CMD_PREFLIGHT_STORAGE` with param1 = 1 / 0 |
 | `param reset-all --yes` / `param reset-calibration --yes` | param1 = 2 / 3; without `--yes` they refuse (exit 2) before connecting |
 | `calibrate gyro` / `accel` / `compass` / `cancel` | `MAV_CMD_PREFLIGHT_CALIBRATION` (gyro param1 = 1; accelerometer param5 = 4, one position, level; compass param2 = 1, 30 s of rotating the vehicle through all orientations, the CLI prints that as its first line; cancel all zeros) |

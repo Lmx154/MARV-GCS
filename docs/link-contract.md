@@ -46,12 +46,20 @@ Parameters
   work in progress in `MX/common.xml`).
 - Ground-station timing (the specification gives none): list: no PARAM_VALUE within 1 s, resend the
   request, up to 3 times; 1 s of silence with entries missing, request each missing index (500 ms, 3
-  tries), then report it missing. Read: 500 ms x 3. Set: 3 sends, 500 ms apart; an echo equal in raw
-  bytes confirms at any moment; 500 ms after the third send the write is refused if the vehicle answered
-  with another value (the value in effect is shown), unanswered if it did not answer. A change of
-  param_count means fetch everything again.
-- Amendments by the lead after review (2026-11-12). (1) A different echo does not end a write at once:
-  a stale copy of the old value still in flight would read as a refusal that is false. (2) A write waits
+  tries), then report it missing. Read: 500 ms x 3. Set: a PARAM_VALUE for the written name that arrives
+  after the PARAM_SET went out ends the write at once: equal in raw bytes it confirms, any other value is the
+  vehicle's refusal (the value in effect is shown, nothing is sent again). Only when no PARAM_VALUE for that
+  name arrives at all (a lost frame) it sends again: 3 sends, 500 ms apart, then unanswered 500 ms after the
+  third. While a list download is under way its PARAM_VALUE frames are not answers: a differing value then
+  only notes the value in effect, an equal one still confirms, and the 3 sends / 500 ms rule decides (refused
+  if some differing value was seen, otherwise unanswered). A change of param_count means fetch everything again.
+- Texts: on a refusal (read only, out of range, a setting the device cannot take) the vehicle also sends one
+  STATUSTEXT with the reason, "NAME: reason" (WARNING in the simulator), right after the PARAM_VALUE. An accepted
+  write sends none. A text belongs to the session, not to the command: the command line prints every text that
+  arrives, also one that came before its request.
+- Amendments by the lead after review (2026-11-12). (1) Withdrawn 2026-11-15: a different echo used to be
+  retried (a stale copy of the old value in flight would read as a refusal); the vehicle answers every PARAM_SET
+  with exactly one PARAM_VALUE, so a differing one after the send is the refusal. (2) A write waits
   until the encoding is known, so it is never sent in the wrong encoding. (3) A vehicle with no parameters
   answers the list request with one PARAM_VALUE whose param_count is 0; the ground station shows an empty,
   complete list. The device layer must do this: silence would read as "no answer".
