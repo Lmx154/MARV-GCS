@@ -194,6 +194,74 @@ fn param_set_refused_by_the_vehicle_prints_what_is_in_effect_and_fails() {
 }
 
 #[test]
+fn a_refused_param_set_shows_the_vehicles_reason_as_a_text_line_on_stderr() {
+    let rig = Rig::start();
+    let r = rig.cli("param set SYS_UID 5");
+    assert_eq!(r.code, 1, "{r:?}");
+    assert_eq!(r.out, "SYS_UID\t1592460852\ti32\n", "{r:?}");
+    let lines: Vec<&str> = r.err.lines().collect();
+    assert!(
+        lines.contains(&"text\tWARNING\tSYS_UID: read only"),
+        "{r:?}"
+    );
+    assert_eq!(
+        lines.iter().filter(|l| l.contains("SYS_UID")).count(),
+        2,
+        "one text line and the refusal message, no repeats: {r:?}"
+    );
+    assert!(
+        r.err.contains("asked 5") && r.err.contains("keeps 1592460852"),
+        "{r:?}"
+    );
+    let text_at = lines.iter().position(|l| l.starts_with("text\t")).unwrap();
+    let refusal_at = lines.iter().position(|l| l.contains("asked 5")).unwrap();
+    assert!(text_at < refusal_at, "the reason comes first: {r:?}");
+}
+
+#[test]
+fn an_accepted_param_set_has_no_text_line() {
+    let rig = Rig::start();
+    // The boot text belongs to the first session only.
+    let r = rig.cli("status --for 0.3");
+    assert_eq!(r.code, 0, "{r:?}");
+    let r = rig.cli("param set LOG_RATE_HZ 200");
+    assert_eq!(r.code, 0, "{r:?}");
+    assert_eq!(r.out, "LOG_RATE_HZ\t200\ti32\n", "{r:?}");
+    assert!(
+        !r.err.lines().any(|l| l.starts_with("text\t")),
+        "no text line: {r:?}"
+    );
+}
+
+#[test]
+fn texts_prints_on_stdout_only_and_a_text_before_the_command_is_shown() {
+    let rig = Rig::start();
+    let session = connected(&rig);
+    let r = on(&session, "param set SYS_UID 5");
+    assert_eq!(r.code, 1, "{r:?}");
+    assert!(r.err.contains("text\tWARNING\tSYS_UID: read only"), "{r:?}");
+    let r = on(&session, "texts --for 0.5");
+    assert_eq!(r.code, 0, "{r:?}");
+    assert!(
+        r.out
+            .lines()
+            .any(|l| l.ends_with("\tWARNING\tSYS_UID: read only")),
+        "{r:?}"
+    );
+    assert_eq!(r.err, "", "no second copy on stderr: {r:?}");
+    // Another command on the same session shows the earlier text, as the session's own.
+    let r = on(&session, "devices --for 0.3");
+    assert_eq!(r.code, 0, "{r:?}");
+    assert!(
+        r.err
+            .lines()
+            .any(|l| l == "text\tWARNING\tSYS_UID: read only"),
+        "{r:?}"
+    );
+    assert!(!r.out.contains("SYS_UID"), "stdout is unchanged: {r:?}");
+}
+
+#[test]
 fn param_save_ends_accepted_with_progress_lines() {
     let rig = Rig::start();
     let r = rig.cli("param save");

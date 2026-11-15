@@ -349,6 +349,74 @@ fn refused_write_shows_the_value_in_effect() {
 }
 
 #[test]
+fn a_refused_write_is_one_param_set_one_text_and_refused_within_one_echo() {
+    let rig = Rig::start(SimConfig::default());
+    rig.wait_complete(4.0);
+    let name = "SYS_UID";
+    let sent = Instant::now();
+    rig.session().send(Command::SetParam {
+        name: name.to_owned(),
+        value: ParamValue::I32(5),
+    });
+    let done = rig.wait(3.0, |s| {
+        matches!(s.params.writes.get(name), Some(WriteStatus::Refused { .. }))
+            && s.texts
+                .entries
+                .iter()
+                .any(|e| e.text == "SYS_UID: read only")
+    });
+    let elapsed = sent.elapsed();
+    assert!(
+        done.is_some(),
+        "no Refused and text: {:?}",
+        rig.state().params.writes.get(name)
+    );
+    assert!(
+        elapsed < Duration::from_millis(400),
+        "the refusal took {elapsed:?}"
+    );
+    // Wait past the old retry interval: nothing more is sent.
+    std::thread::sleep(Duration::from_millis(1700));
+    assert_eq!(rig.sim().param_sets_received(), 1);
+    let state = rig.state();
+    let texts: Vec<_> = state
+        .texts
+        .entries
+        .iter()
+        .filter(|e| e.text.starts_with("SYS_UID"))
+        .collect();
+    assert_eq!(texts.len(), 1);
+    assert_eq!(
+        texts[0].severity,
+        gcs_mavlink::services::texts::Severity::Warning
+    );
+}
+
+#[test]
+fn a_write_whose_first_two_echoes_were_lost_succeeds_on_the_third_send() {
+    let rig = Rig::start(SimConfig {
+        drop_first_param_echoes: 2,
+        ..SimConfig::default()
+    });
+    rig.wait_complete(4.0);
+    let name = "LOG_RATE_HZ";
+    rig.session().send(Command::SetParam {
+        name: name.to_owned(),
+        value: ParamValue::I32(7),
+    });
+    let done = rig.wait(4.0, |s| {
+        s.params.value(name) == Some(ParamValue::I32(7)) && !s.params.writes.contains_key(name)
+    });
+    assert!(
+        done.is_some(),
+        "not confirmed: {:?}",
+        rig.state().params.writes.get(name)
+    );
+    assert_eq!(rig.sim().param_sets_received(), 3);
+    assert_eq!(rig.sim_param(name), Some(to_sim(ParamValue::I32(7))));
+}
+
+#[test]
 fn unanswered_write_is_reported_after_three_sends() {
     let rig = Rig::start(SimConfig::default());
     rig.wait_complete(4.0);

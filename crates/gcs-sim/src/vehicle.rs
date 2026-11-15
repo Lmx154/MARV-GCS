@@ -214,6 +214,8 @@ pub struct SimVehicle {
     commands_dropped: u32,
     /// PARAM_VALUE echoes dropped so far for `drop_first_param_echoes`.
     echoes_dropped: u32,
+    /// PARAM_SET frames addressed to this vehicle so far.
+    param_sets_received: u32,
 }
 
 /// A COMMAND_LONG read from its bytes: the command is a number, not a dialect enum.
@@ -286,6 +288,7 @@ impl SimVehicle {
             action: None,
             commands_dropped: 0,
             echoes_dropped: 0,
+            param_sets_received: 0,
         }
     }
 
@@ -326,6 +329,11 @@ impl SimVehicle {
     /// Number of HEARTBEAT frames received from a system other than this vehicle.
     pub fn heartbeats_received(&self) -> u32 {
         self.heartbeats_received
+    }
+
+    /// Number of PARAM_SET frames addressed to this vehicle that arrived, for a known name or not.
+    pub fn param_sets_received(&self) -> u32 {
+        self.param_sets_received
     }
 
     /// System and component id of the sender of the last counted HEARTBEAT.
@@ -519,6 +527,7 @@ impl SimVehicle {
                 }
             }
             MavMessage::PARAM_SET(d) if self.is_addressed(d.target_system, d.target_component) => {
+                self.param_sets_received += 1;
                 let Some(index) = self.find_param(&d.param_id[..]) else {
                     return;
                 };
