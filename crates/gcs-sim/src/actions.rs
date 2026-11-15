@@ -180,10 +180,13 @@ mod tests {
             CALIBRATION_MS,
         );
         let mut got = Vec::new();
-        while let Some(due) = action.next_due(3_000) {
+        for _ in 0..100 {
+            let Some(due) = action.next_due(3_000) else {
+                break;
+            };
             got.push(due);
         }
-        assert_eq!(got.len(), 6);
+        assert_eq!(got.len(), 6, "the action must run dry: {got:?}");
         assert_eq!(got.last(), Some(&Due::Final));
     }
 
