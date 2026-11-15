@@ -291,6 +291,32 @@ fn the_status_line_texts() {
 }
 
 #[test]
+fn the_status_line_of_a_cancel() {
+    let line = |record: CommandRecord| {
+        let (mut h, _) = harness("Link", with(record), Access::Configure);
+        h.run();
+        h
+    };
+    let ended = |text: &'static str, accepted: bool| {
+        let mut r = record(241, p(0, 1.0), CommandStatus::Finished { text, accepted });
+        r.cancel = Some(CancelStatus::Answered("accepted"));
+        r
+    };
+    line(ended("accepted (finished before the cancel)", true))
+        .get_by_label("Gyro calibration: accepted (finished before the cancel)");
+    line(ended("cancel accepted, no final result", false))
+        .get_by_label("Gyro calibration: cancel accepted, no final result");
+    line(ended("nothing to cancel", false)).get_by_label("Gyro calibration: nothing to cancel");
+    let mut running = record(
+        241,
+        p(0, 1.0),
+        CommandStatus::InProgress { percent: Some(40) },
+    );
+    running.cancel = Some(CancelStatus::Waiting);
+    line(running).get_by_label("Gyro calibration: 40 % (cancel sent)");
+}
+
+#[test]
 fn the_device_buttons_appear_only_for_the_devices_that_have_the_action() {
     let (mut h, commands) = harness("Devices", devices_state(), Access::Configure);
     h.run();
