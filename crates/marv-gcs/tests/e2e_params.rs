@@ -291,11 +291,8 @@ fn writes_are_confirmed_and_reach_the_vehicle() {
             name: name.to_owned(),
             value,
         });
-        let text = format!("{name} set");
         let done = rig.wait(3.0, |s| {
-            s.params.value(name) == Some(value)
-                && !s.params.writes.contains_key(name)
-                && s.texts.entries.iter().any(|e| e.text == text)
+            s.params.value(name) == Some(value) && !s.params.writes.contains_key(name)
         });
         let state = rig.state();
         assert!(

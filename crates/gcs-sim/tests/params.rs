@@ -438,7 +438,7 @@ fn read_of_unknown_name_or_index_gets_no_reply() {
 }
 
 #[test]
-fn set_stores_the_value_replies_and_says_so() {
+fn set_stores_the_value_and_replies_without_a_text() {
     for encoding in [ParamEncoding::Bytewise, ParamEncoding::CCast] {
         let mut vehicle = vehicle_with(encoding);
         vehicle.step(0, &[]);
@@ -454,13 +454,7 @@ fn set_stores_the_value_replies_and_says_so() {
         assert_eq!((got[0].param_index, got[0].param_count), (0, 13));
         assert_eq!(read_value(&got[0], encoding), ParamValue::Int32(1600));
         assert_eq!(got[0].param_type, MavParamType::MAV_PARAM_TYPE_INT32);
-        assert_eq!(
-            texts(&bytes),
-            [(
-                MavSeverity::MAV_SEVERITY_INFO,
-                "IMU_RATE_HZ set".to_string()
-            )]
-        );
+        assert!(texts(&bytes).is_empty(), "an accepted write sends no text");
         // The new value is what a later read returns.
         let again = values(&vehicle.step(2, &request_read(-1, "IMU_RATE_HZ")));
         assert_eq!(read_value(&again[0], encoding), ParamValue::Int32(1600));
@@ -503,7 +497,7 @@ fn set_with_a_16_character_name_and_other_types() {
         Some(ParamValue::Real32(2.25))
     );
     assert_eq!(values(&bytes)[0].param_value, 2.25);
-    assert_eq!(texts(&bytes)[0].1, "NAV_TEST_16CHARS set");
+    assert!(texts(&bytes).is_empty());
 
     let field = ParamValue::Int32(-100).to_field_for_test(ParamEncoding::Bytewise);
     let bytes = vehicle.step(
@@ -521,7 +515,7 @@ fn set_with_a_16_character_name_and_other_types() {
 }
 
 #[test]
-fn refused_sets_reply_with_the_current_value_and_no_text() {
+fn refused_sets_reply_with_the_current_value_and_a_warning_text() {
     let mut vehicle = booted(SimConfig::default());
     // Read-only.
     let bytes = vehicle.step(
@@ -540,7 +534,13 @@ fn refused_sets_reply_with_the_current_value_and_no_text() {
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].param_value.to_bits(), 1_592_460_852);
     assert_eq!(got[0].param_index, 11);
-    assert!(texts(&bytes).is_empty());
+    assert_eq!(
+        texts(&bytes),
+        [(
+            MavSeverity::MAV_SEVERITY_WARNING,
+            "SYS_UID: read only".to_string()
+        )]
+    );
 
     // Wrong type.
     let bytes = vehicle.step(
@@ -552,7 +552,33 @@ fn refused_sets_reply_with_the_current_value_and_no_text() {
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].param_value.to_bits(), 800);
     assert_eq!(got[0].param_type, MavParamType::MAV_PARAM_TYPE_INT32);
-    assert!(texts(&bytes).is_empty());
+    assert_eq!(
+        texts(&bytes),
+        [(
+            MavSeverity::MAV_SEVERITY_WARNING,
+            "IMU_RATE_HZ: out of range".to_string()
+        )]
+    );
+}
+
+#[test]
+fn the_first_echoes_can_be_dropped_while_the_writes_are_applied() {
+    let mut vehicle = booted(SimConfig {
+        drop_first_param_echoes: 2,
+        ..SimConfig::default()
+    });
+    let write = |vehicle: &mut SimVehicle, t: u64| {
+        let field = ParamValue::Int32(1600).to_field_for_test(ParamEncoding::Bytewise);
+        vehicle.step(
+            t,
+            &set("IMU_RATE_HZ", field, MavParamType::MAV_PARAM_TYPE_INT32),
+        )
+    };
+    assert!(values(&write(&mut vehicle, 1)).is_empty());
+    assert_eq!(vehicle.param("IMU_RATE_HZ"), Some(ParamValue::Int32(1600)));
+    assert!(values(&write(&mut vehicle, 2)).is_empty());
+    assert_eq!(values(&write(&mut vehicle, 3)).len(), 1);
+    assert_eq!(values(&write(&mut vehicle, 4)).len(), 1);
 }
 
 #[test]

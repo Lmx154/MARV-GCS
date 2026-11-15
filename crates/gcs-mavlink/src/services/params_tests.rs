@@ -1276,17 +1276,12 @@ fn the_echo_is_matched_on_raw_bytes_not_on_decoded_numbers() {
         ),
         20,
     );
-    assert_eq!(
-        rig.table().writes["U"],
-        WriteStatus::Pending {
-            value: ParamValue::U8(200)
-        }
-    );
-    rig.tick_range(50, 1550);
     assert!(matches!(
         rig.table().writes["U"],
         WriteStatus::Refused { .. }
     ));
+    rig.tick_range(50, 1550);
+    assert_eq!(rig.set_times(), vec![10]);
 }
 
 #[test]
@@ -1387,60 +1382,132 @@ fn unrelated_commands_are_ignored() {
 }
 
 #[test]
-fn a_stale_copy_of_the_old_value_is_not_a_refusal_and_the_real_echo_confirms() {
+fn a_differing_echo_after_the_send_is_the_refusal_at_once_and_nothing_is_sent_again() {
     let mut rig = complete_rig(2);
     rig.command(&set("P0", ParamValue::I32(9)), 1000);
-    rig.deliver(i32_pv("P0", 0, 2, -3), 1100);
-    // The table shows what the vehicle reported; the write is still pending.
-    assert_eq!(rig.table().value("P0"), Some(ParamValue::I32(-3)));
-    assert_eq!(
-        rig.table().writes["P0"],
-        WriteStatus::Pending {
-            value: ParamValue::I32(9)
-        }
-    );
-    rig.deliver(i32_pv("P0", 0, 2, 9), 1200);
-    assert!(rig.table().writes.is_empty());
-    assert_eq!(rig.table().value("P0"), Some(ParamValue::I32(9)));
-    rig.tick_range(1250, 5000);
     assert_eq!(rig.set_times(), vec![1000]);
-    assert!(rig.table().writes.is_empty());
-}
-
-#[test]
-fn a_differing_echo_to_each_send_ends_as_refused_with_the_last_value_in_effect() {
-    let mut rig = complete_rig(2);
-    rig.command(&set("P0", ParamValue::I32(9)), 1000);
-    rig.deliver(i32_pv("P0", 0, 2, 4), 1010);
-    rig.tick_range(1050, 1450);
-    rig.tick(1500);
-    rig.deliver(i32_pv("P0", 0, 2, 5), 1510);
-    rig.tick_range(1550, 1950);
-    rig.tick(2000);
-    rig.deliver(i32_pv("P0", 0, 2, 6), 2010);
-    rig.tick_range(2050, 2450);
-    assert_eq!(
-        rig.table().writes["P0"],
-        WriteStatus::Pending {
-            value: ParamValue::I32(9)
-        }
-    );
-    rig.tick(2500);
+    rig.deliver(i32_pv("P0", 0, 2, -3), 1010);
     assert!(rig.changed);
     assert_eq!(
         rig.table().writes["P0"],
         WriteStatus::Refused {
             value: ParamValue::I32(9),
-            in_effect: ParamValue::I32(6)
+            in_effect: ParamValue::I32(-3)
         }
     );
-    assert_eq!(rig.table().value("P0"), Some(ParamValue::I32(6)));
-    rig.tick_range(2550, 8000);
-    assert_eq!(rig.set_times(), vec![1000, 1500, 2000]);
+    assert_eq!(rig.table().value("P0"), Some(ParamValue::I32(-3)));
+    rig.tick_range(1050, 8000);
+    assert_eq!(rig.set_times(), vec![1000]);
+    assert_eq!(
+        sets(&rig.log.iter().map(|(_, m)| m.clone()).collect::<Vec<_>>()).len(),
+        1
+    );
     assert!(matches!(
         rig.table().writes["P0"],
         WriteStatus::Refused { .. }
     ));
+}
+
+#[test]
+fn a_matching_echo_is_success_with_one_send() {
+    let mut rig = complete_rig(2);
+    rig.command(&set("P0", ParamValue::I32(9)), 1000);
+    rig.deliver(i32_pv("P0", 0, 2, 9), 1010);
+    assert!(rig.table().writes.is_empty());
+    assert_eq!(rig.table().value("P0"), Some(ParamValue::I32(9)));
+    rig.tick_range(1050, 8000);
+    assert_eq!(rig.set_times(), vec![1000]);
+    assert!(rig.table().writes.is_empty());
+}
+
+#[test]
+fn a_value_for_another_parameter_changes_nothing_about_the_write() {
+    let mut rig = complete_rig(2);
+    rig.command(&set("P0", ParamValue::I32(9)), 1000);
+    rig.deliver(i32_pv("P1", 1, 2, 77), 1010);
+    assert_eq!(rig.table().value("P1"), Some(ParamValue::I32(77)));
+    assert_eq!(
+        rig.table().writes["P0"],
+        WriteStatus::Pending {
+            value: ParamValue::I32(9)
+        }
+    );
+    rig.tick_range(1050, 1999);
+    assert_eq!(rig.set_times(), vec![1000, 1500]);
+    rig.deliver(i32_pv("P0", 0, 2, 9), 2000);
+    assert!(rig.table().writes.is_empty());
+}
+
+#[test]
+fn a_differing_value_before_the_param_set_was_sent_is_not_a_refusal() {
+    let mut rig = Rig::new();
+    rig.connect(0);
+    rig.deliver(i32_pv("P0", 0, 1, -3), 5);
+    rig.command(&set("P0", ParamValue::I32(9)), 10);
+    assert!(rig.set_times().is_empty());
+    rig.deliver(i32_pv("P0", 0, 1, -3), 20);
+    assert_eq!(
+        rig.table().writes["P0"],
+        WriteStatus::Pending {
+            value: ParamValue::I32(9)
+        }
+    );
+    rig.deliver(version(CAP_BYTEWISE), 30);
+    assert_eq!(rig.set_times(), vec![30]);
+    assert_eq!(
+        rig.table().writes["P0"],
+        WriteStatus::Pending {
+            value: ParamValue::I32(9)
+        }
+    );
+}
+
+#[test]
+fn during_a_list_download_a_differing_value_is_not_a_refusal_and_the_resend_rule_decides() {
+    let mut rig = Rig::new();
+    rig.connect(0);
+    rig.deliver(version(CAP_BYTEWISE | CAP_MAVLINK2), 10);
+    rig.deliver(i32_pv("P0", 0, 3, -3), 20);
+    assert!(matches!(
+        rig.table().fetch,
+        FetchStatus::Fetching { received: 1, .. }
+    ));
+    rig.command(&set("P0", ParamValue::I32(9)), 30);
+    // A list frame carrying the old value.
+    rig.deliver(i32_pv("P0", 0, 3, -3), 40);
+    assert_eq!(
+        rig.table().writes["P0"],
+        WriteStatus::Pending {
+            value: ParamValue::I32(9)
+        }
+    );
+    rig.tick_range(50, 529);
+    assert_eq!(rig.set_times(), vec![30]);
+    rig.tick(530);
+    rig.tick(1030);
+    assert_eq!(rig.set_times(), vec![30, 530, 1030]);
+    rig.tick(1530);
+    assert_eq!(
+        rig.table().writes["P0"],
+        WriteStatus::Refused {
+            value: ParamValue::I32(9),
+            in_effect: ParamValue::I32(-3)
+        }
+    );
+    assert_eq!(rig.set_times(), vec![30, 530, 1030]);
+}
+
+#[test]
+fn during_a_list_download_the_equal_echo_still_confirms() {
+    let mut rig = Rig::new();
+    rig.connect(0);
+    rig.deliver(version(CAP_BYTEWISE | CAP_MAVLINK2), 10);
+    rig.deliver(i32_pv("P0", 0, 3, -3), 20);
+    rig.command(&set("P0", ParamValue::I32(9)), 30);
+    rig.deliver(i32_pv("P0", 0, 3, -3), 40);
+    rig.deliver(i32_pv("P0", 0, 3, 9), 50);
+    assert!(rig.table().writes.is_empty());
+    assert_eq!(rig.set_times(), vec![30]);
 }
 
 #[test]
@@ -1874,7 +1941,7 @@ fn fake_a_refused_write_shows_the_value_the_vehicle_kept() {
         }
     );
     assert_eq!(rig.table().value("B_4"), Some(ParamValue::U8(4)));
-    assert_eq!(rig.set_times(), vec![402, 902, 1402]);
+    assert_eq!(rig.set_times(), vec![402]);
 }
 
 #[test]

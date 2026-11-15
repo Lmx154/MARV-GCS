@@ -618,6 +618,10 @@ impl Params {
         let raw = v.param_value.to_le_bytes();
         let kind = kind_from_wire(v.param_type);
         let (index, count) = (v.param_index, v.param_count);
+        let downloading = matches!(
+            self.fetch,
+            Fetch::Requesting { .. } | Fetch::Receiving { .. }
+        );
         match &mut self.fetch {
             Fetch::Idle => {
                 if self.access == Access::Operate {
@@ -711,10 +715,21 @@ impl Params {
                 }
             }
         }
-        self.resolve_write(&name, raw, kind, cx);
+        self.resolve_write(&name, raw, kind, downloading, cx);
     }
 
-    fn resolve_write(&mut self, name: &str, raw: [u8; 4], kind: Option<ParamType>, cx: &mut Ctx) {
+    /// An echo for a written name. Equal bytes confirm the write. A differing value after the
+    /// PARAM_SET went out is the vehicle's refusal (it answers every PARAM_SET with exactly one
+    /// PARAM_VALUE): the write ends at once and nothing is sent again. While a list download is
+    /// under way its frames are not answers, so the value is only noted and the resend rule decides.
+    fn resolve_write(
+        &mut self,
+        name: &str,
+        raw: [u8; 4],
+        kind: Option<ParamType>,
+        downloading: bool,
+        cx: &mut Ctx,
+    ) {
         let (Some(kind), Some(track)) = (kind, self.writes.get_mut(name)) else {
             return;
         };
@@ -729,7 +744,19 @@ impl Params {
             self.writes.remove(name);
             cx.changed = true;
         } else {
-            track.differing = Some(decode(kind, raw, cx.state.params.encoding));
+            let in_effect = decode(kind, raw, cx.state.params.encoding);
+            track.differing = Some(in_effect);
+            if !downloading && !track.ended {
+                track.ended = true;
+                cx.state.params.writes.insert(
+                    name.to_owned(),
+                    WriteStatus::Refused {
+                        value: track.value,
+                        in_effect,
+                    },
+                );
+                cx.changed = true;
+            }
         }
     }
 }

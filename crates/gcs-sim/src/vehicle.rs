@@ -77,6 +77,10 @@ pub struct SimConfig {
     /// An admitted action gets its IN_PROGRESS ACKs but never its final ACK (it still ends on the
     /// vehicle), to test a ground station's "no result".
     pub never_final_ack: bool,
+    /// The first this many PARAM_VALUE echoes of a PARAM_SET are not sent (the write itself is
+    /// applied, and a refusal's STATUSTEXT is still sent), to test a ground station's resend of a
+    /// write whose echo was lost. 0 is none.
+    pub drop_first_param_echoes: u32,
 }
 
 impl SimConfig {
@@ -139,6 +143,7 @@ impl Default for SimConfig {
             answer_version_request: true,
             drop_first_commands: 0,
             never_final_ack: false,
+            drop_first_param_echoes: 0,
         }
     }
 }
@@ -207,6 +212,8 @@ pub struct SimVehicle {
     action: Option<Action>,
     /// COMMAND_LONGs dropped so far for `drop_first_commands`.
     commands_dropped: u32,
+    /// PARAM_VALUE echoes dropped so far for `drop_first_param_echoes`.
+    echoes_dropped: u32,
 }
 
 /// A COMMAND_LONG read from its bytes: the command is a number, not a dialect enum.
@@ -278,6 +285,7 @@ impl SimVehicle {
             list_due_ms: 0,
             action: None,
             commands_dropped: 0,
+            echoes_dropped: 0,
         }
     }
 
@@ -389,8 +397,12 @@ impl SimVehicle {
     }
 
     fn push_text(&mut self, text: &str, out: &mut Vec<u8>) {
+        self.push_text_with(MavSeverity::MAV_SEVERITY_INFO, text, out);
+    }
+
+    fn push_text_with(&mut self, severity: MavSeverity, text: &str, out: &mut Vec<u8>) {
         let message = MavMessage::STATUSTEXT(STATUSTEXT_DATA {
-            severity: MavSeverity::MAV_SEVERITY_INFO,
+            severity,
             text: CharArray::from(text),
             ..STATUSTEXT_DATA::default()
         });
@@ -511,15 +523,26 @@ impl SimVehicle {
                     return;
                 };
                 let param = &mut self.config.params[index];
-                if !param.read_only && d.param_type == param.value.param_type() {
+                let reason = if param.read_only {
+                    Some("read only")
+                } else if d.param_type != param.value.param_type() {
+                    Some("out of range")
+                } else {
+                    None
+                };
+                let refusal = reason.map(|reason| format!("{}: {reason}", param.name));
+                if reason.is_none() {
                     param.value = param
                         .value
                         .same_type_from_field(d.param_value, self.config.param_encoding);
-                    let text = format!("{} set", param.name);
-                    self.push_param_value(index, out);
-                    self.push_text(&text, out);
+                }
+                if self.echoes_dropped < self.config.drop_first_param_echoes {
+                    self.echoes_dropped += 1;
                 } else {
                     self.push_param_value(index, out);
+                }
+                if let Some(text) = refusal {
+                    self.push_text_with(MavSeverity::MAV_SEVERITY_WARNING, &text, out);
                 }
             }
             _ => {}
