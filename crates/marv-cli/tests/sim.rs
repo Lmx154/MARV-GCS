@@ -101,13 +101,16 @@ fn texts_and_watch_show_what_the_vehicle_says() {
     });
     let r = on(&session, "texts --for 1");
     assert_eq!(r.code, 0, "{r:?}");
-    assert_eq!(r.lines().len(), 1, "{r:?}");
-    let cells: Vec<&str> = r.lines()[0].split('\t').collect();
-    assert_eq!(cells.len(), 3, "{r:?}");
-    assert!(
-        cells[0].parse::<f64>().is_ok() && cells[1] == "INFO" && !cells[2].is_empty(),
-        "{r:?}"
-    );
+    // The vehicle's boot text may or may not have reached this first connection: one line or two.
+    assert!(!r.lines().is_empty() && r.lines().len() <= 2, "{r:?}");
+    for line in r.lines() {
+        let cells: Vec<&str> = line.split('\t').collect();
+        assert_eq!(cells.len(), 3, "{r:?}");
+        assert!(
+            cells[0].parse::<f64>().is_ok() && cells[1] == "INFO" && !cells[2].is_empty(),
+            "{r:?}"
+        );
+    }
     let r = on(&session, "watch --for 2.5");
     assert_eq!(r.code, 0, "{r:?}");
     let lines = r.lines();
