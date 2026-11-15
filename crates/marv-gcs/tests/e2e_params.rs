@@ -2,8 +2,9 @@
 //! simulated vehicle, over a real TCP socket (docs/link-contract.md, "Parameters"). Nothing is
 //! mocked: `gcs_transport::open` -> `gcs_mavlink::Session` <-> `gcs_sim::serve_tcp`.
 
+use std::io::Write;
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -12,11 +13,36 @@ use gcs_mavlink::param_file;
 use gcs_mavlink::services::params::{
     FetchStatus, ParamEncoding, ParamTable, ParamValue, WriteStatus,
 };
-use gcs_mavlink::{Command, Session, SessionConfig, VehicleState};
+use gcs_mavlink::{Access, Body, Command, Deframer, Message, Session, SessionConfig, VehicleState};
 use gcs_sim::{SimConfig, SimVehicle};
 use gcs_transport::Endpoint;
 
 const POLL: Duration = Duration::from_millis(20);
+
+/// Counts the PARAM_REQUEST_LIST frames that leave the station, as the simulator receives them.
+struct CountingWriter {
+    inner: Box<dyn Write + Send>,
+    deframer: Deframer,
+    list_requests: Arc<AtomicUsize>,
+}
+
+impl Write for CountingWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        let mut frames = Vec::new();
+        self.deframer.push(&buf[..written], &mut frames);
+        for frame in frames {
+            if matches!(frame.body, Body::Known(Message::PARAM_REQUEST_LIST(_))) {
+                self.list_requests.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
 
 /// A simulator behind a TCP listener, and a ground-station session connected to it.
 struct Rig {
@@ -26,10 +52,15 @@ struct Rig {
     server: Option<JoinHandle<()>>,
     session: Option<Session>,
     connected_at: Instant,
+    list_requests: Arc<AtomicUsize>,
 }
 
 impl Rig {
     fn start(config: SimConfig) -> Rig {
+        Rig::start_with_access(config, Access::Configure)
+    }
+
+    fn start_with_access(config: SimConfig, access: Access) -> Rig {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind 127.0.0.1:0");
         let addr = listener.local_addr().expect("local address").to_string();
         let names = config.params.iter().map(|p| p.name.clone()).collect();
@@ -47,13 +78,22 @@ impl Rig {
             server: Some(server),
             session: None,
             connected_at: Instant::now(),
+            list_requests: Arc::default(),
         };
         let link = gcs_transport::open(&Endpoint::Tcp { addr }).expect("open the TCP link");
         rig.connected_at = Instant::now();
+        let writer = CountingWriter {
+            inner: link.writer,
+            deframer: Deframer::new(),
+            list_requests: Arc::clone(&rig.list_requests),
+        };
         rig.session = Some(Session::start(
             link.reader,
-            link.writer,
-            SessionConfig::default(),
+            Box::new(writer),
+            SessionConfig {
+                access,
+                ..SessionConfig::default()
+            },
             Box::new(|| {}),
         ));
         rig
@@ -410,6 +450,56 @@ fn every_type_ccast() {
         Some(ParamValue::U32(3_735_928_559_u32 as f32 as u32))
     );
     assert_eq!(state.params.value("TYPE_I8"), Some(ParamValue::I8(-3)));
+}
+
+#[test]
+fn an_operate_session_downloads_nothing_at_connect_and_a_refresh_brings_the_list() {
+    let rig = Rig::start_with_access(SimConfig::default(), Access::Operate);
+    assert!(
+        rig.wait(4.0, |s| s.link.status == gcs_mavlink::LinkStatus::Connected)
+            .is_some(),
+        "never connected"
+    );
+    std::thread::sleep(Duration::from_millis(2_500));
+    assert_eq!(rig.list_requests.load(Ordering::Relaxed), 0);
+    {
+        let state = rig.state();
+        assert_eq!(state.params.fetch, FetchStatus::Idle);
+        assert!(state.params.params.is_empty());
+    }
+    rig.session().send(Command::RefreshParams);
+    rig.wait_complete(6.0);
+    assert_eq!(rig.list_requests.load(Ordering::Relaxed), 1);
+    assert!(!rig.state().params.params.is_empty());
+    assert_eq!(rig.state().link.refused, None);
+}
+
+#[test]
+fn an_operate_session_cannot_write_a_parameter_but_a_configure_session_can() {
+    let rig = Rig::start_with_access(SimConfig::default(), Access::Operate);
+    rig.wait(4.0, |s| s.link.status == gcs_mavlink::LinkStatus::Connected)
+        .expect("connected");
+    rig.session().send(Command::RefreshParams);
+    rig.wait_complete(6.0);
+    let name = rig.names[0].clone();
+    let before = rig.sim_param(&name).expect("sim has it");
+    let value = rig.state().params.value(&name).expect("in the table");
+    rig.session().send(Command::SetParam {
+        name: name.clone(),
+        value,
+    });
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(rig.sim_param(&name), Some(before));
+    let state = rig.state();
+    assert!(state.params.writes.is_empty());
+    assert_eq!(state.link.refused.as_ref().map(|r| r.count), Some(1));
+}
+
+#[test]
+fn a_configure_session_still_downloads_at_connect() {
+    let rig = Rig::start_with_access(SimConfig::default(), Access::Configure);
+    rig.wait_complete(4.0);
+    assert_eq!(rig.list_requests.load(Ordering::Relaxed), 1);
 }
 
 #[test]
