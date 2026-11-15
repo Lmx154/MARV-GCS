@@ -296,8 +296,8 @@ What the station does with it
 - A frame of id 42421 with another CRC_EXTRA than 231 is a checksum failure ("Checksum errors" of the
   Link view); it is not delivered.
 
-Not in this feature (a later one): sending `MAV_CMD_MARV_DEVICE` (restart, self-test), storage and reboot
-buttons. The Devices view has no buttons. The access gate of section 9 is built.
+The Devices view also has the restart and self-test buttons and the calibration buttons of section 10; the
+table itself is read only. The access gate of section 9 is built.
 
 The simulator (`gcs-sim`) sends `MARV_DEVICE_STATUS` for IMU1, IMU2, BARO, MAG, GNSS, BATT and RC, each
 once per second, with advancing counters (`samples` at the device's nominal rate), state OK, error NONE and
@@ -335,10 +335,9 @@ how many times), from where a view or a command line shows "refused: this link i
 sessions pass every command.
 
 Classes.
-- Configure-class: every parameter write (`Command::SetParam`); and, reserved for the commands feature, whose
-  variants do not exist yet: sending a MAVLink command to the vehicle (`Command::SendCommand`: ALL of them,
-  an unknown `MAV_CMD` id counts as Configure), storage actions, calibration, device actions (restart,
-  self-test), reboot.
+- Configure-class: every parameter write (`Command::SetParam`); and sending a MAVLink command to the vehicle
+  (`Command::SendCommand`: ALL of them, an unknown `MAV_CMD` id counts as Configure, so storage actions,
+  calibration, device actions (restart, self-test) and reboot are all Configure; section 10).
 - Operate-class: everything that only reads or only concerns the station: the heartbeat (a service, not a
   command), a parameter list request (`Command::RefreshParams`), a single parameter read (reserved: no such `Command` exists yet), log recording
   (`Command::StartLog`, `Command::StopLog`), link management (connect, disconnect, replay).
@@ -356,3 +355,72 @@ is stored and the status follows the count, but no list is requested and no miss
 Views. Every configure control is SHOWN DISABLED, with the reason next to it or as hover text ("Configure
 needs a serial or TCP link; this link is operate-only"), never hidden. The Link view and the connection bar
 say which role the session has.
+
+## 10. Commands
+
+Written before the code (the design of 2026-11-13, `decision-foundation-20261113.md`, sections 5 and 8). The
+station sends a MAVLink command only when the user presses a button; it never sends one by itself (the
+capability request of section 9 is a read, not a command of this section). Every `Command::SendCommand`
+is Configure-class: on an Operate session it writes 0 bytes and is recorded in `link.refused`.
+
+What the vehicle answers (binding for the station and for the simulator)
+- A `COMMAND_LONG` it does not know: `COMMAND_ACK` UNSUPPORTED. Refused by its parameters: DENIED (a
+  STATUSTEXT gives the reason). Armed, or another action running: TEMPORARILY_REJECTED.
+- An admitted action: `COMMAND_ACK` IN_PROGRESS with `progress` 0 at once, then IN_PROGRESS with a
+  percentage about twice a second, then ONE final `COMMAND_ACK` (ACCEPTED, FAILED or CANCELLED). Every ACK
+  is addressed to the sender: `target_system` and `target_component` are the station's ids.
+- The same command sent again while it runs (a retransmission) gets IN_PROGRESS again, never a rejection.
+- Longest durations on the vehicle: calibration 15 s, storage 3 s, device action 5 s, reboot 3 s.
+
+The commands of the first build (`COMMAND_LONG`, `confirmation` as below, parameters not named are 0)
+| Command | Parameters |
+|---|---|
+| 241 `MAV_CMD_PREFLIGHT_CALIBRATION` | param1 = 1: gyro; param5 = 4: accelerometer, one position, level; all seven 0: cancel the running calibration |
+| 245 `MAV_CMD_PREFLIGHT_STORAGE` | param1: 0 reload from flash, 1 save, 2 all parameters to defaults, 3 calibration parameters to defaults |
+| 246 `MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN` | param1 = 1: reboot |
+| 42430 `MAV_CMD_MARV_DEVICE` | param1 = device id (`MARV_DEVICE`), param2 = 1 restart, 2 self-test; restart for IMU1, IMU2, BARO, MAG, GNSS, BATT, self-test for IMU1, IMU2, MAG |
+
+What the station does (`gcs-mavlink`, service `commands`; state in `VehicleState.command`)
+- One outstanding command at a time. A second `SendCommand` while one is outstanding is refused: nothing is
+  sent and the outstanding command's record counts it (`refused`: the refused command number and how many);
+  the outstanding command goes on. The one exception is the cancel below. A `SendCommand` while no vehicle
+  is connected is refused too (the record's state is `Refused` with the reason).
+- Send: `COMMAND_LONG` to the vehicle's system and component, `confirmation` 0. Without any ACK for that
+  command it is sent again after 1.5 s with `confirmation` 1, and after another 1.5 s with 2: three sends
+  in all, at 0, 1.5 s and 3.0 s. 1.5 s after the third send, with still no ACK, the result is "no answer"
+  (at 4.5 s) and nothing more is sent.
+- An ACK counts when its `command` is the outstanding command's number and it is addressed to the station
+  (`target_system` 0 or the station's id, `target_component` 0 or the station's), from the vehicle's
+  system. Any other ACK is ignored: it changes nothing.
+- IN_PROGRESS stops the retransmission. The state then follows `progress` (0 to 100; 255 is unknown). If no
+  further ACK arrives for 20 s (counted from the last one) the result is "no result (the vehicle stopped
+  reporting)". An IN_PROGRESS never ends a command.
+- Any other result ends the command with that result: ACCEPTED, TEMPORARILY_REJECTED, DENIED, UNSUPPORTED,
+  FAILED, CANCELLED, COMMAND_LONG_ONLY, COMMAND_INT_ONLY, COMMAND_UNSUPPORTED_MAV_FRAME, NOT_IN_CONTROL;
+  each has its own text. An ACK after the end is ignored. The last command stays in `VehicleState.command`
+  (number, name, parameters, state, number of sends, when it started and ended) until the next one.
+
+The cancel (the one exception to "one outstanding command")
+- While a calibration (241 with a non-zero parameter) is outstanding, a `SendCommand` of 241 with all seven
+  parameters 0 is sent although the calibration is outstanding. It has its own send count and timers
+  (the same 1.5 s, 3 sends; after the third a cancel with no answer is recorded and the calibration goes on)
+  and its own state in the calibration's record (`cancel`: waiting, answered with a text, no answer). Only
+  one cancel waits at a time; a second one meanwhile is refused as any other.
+- Both are command 241, so the number cannot tell their ACKs apart. The vehicle answers the cancel at once
+  with ACCEPTED (DENIED when no calibration runs) and ends the calibration with a final CANCELLED. The
+  station reads, while a cancel waits for its answer: an ACK of 241 with IN_PROGRESS is the calibration's
+  progress; one with CANCELLED is the calibration's final ACK; any other result is the cancel's answer and
+  the calibration goes on until its own final ACK. Without a waiting cancel every 241 ACK is the
+  calibration's. Known limit: a calibration that ends by itself (ACCEPTED or FAILED) in the short moment
+  the cancel waits is read as the cancel's answer, and the calibration then ends as "no result" after 20 s.
+  When the calibration ends, a cancel still waiting is dropped.
+
+The simulator (`gcs-sim`) behaves as the table above: admitted commands get IN_PROGRESS 0 at once,
+IN_PROGRESS with the percentage every 500 ms and ACCEPTED after 2 s (a calibration after 3 s; a cancel ends
+it CANCELLED); one action at a time (another command: TEMPORARILY_REJECTED, the same again: IN_PROGRESS);
+245 with param1 other than 0 to 4, 246 with param1 other than 1, 241 with other parameters, 42430 with a
+device or action not listed: DENIED; any other command except 511 and 512: UNSUPPORTED. Two switches of its
+configuration, off by default: drop the first N `COMMAND_LONG`s that are not `MAV_CMD_REQUEST_MESSAGE`, and
+never send the final ACK. The simulator reads and writes 42430 by hand, as it does `MARV_DEVICE_STATUS`.
+
+Not in this feature: `COMMAND_INT`, a queue of commands, arming, flight commands, automatic commands.
