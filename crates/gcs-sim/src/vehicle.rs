@@ -219,7 +219,7 @@ struct RawCommand {
 
 /// What `decode_frame` makes of a valid frame.
 enum Incoming {
-    Message(MavMessage),
+    Message(Box<MavMessage>),
     Command(RawCommand),
 }
 
@@ -772,5 +772,9 @@ fn decode_frame(frame: &[u8]) -> Option<(u8, u8, Incoming)> {
         return Some((system_id, raw.component_id(), Incoming::Command(command)));
     }
     let message = MavMessage::parse(MavlinkVersion::V2, raw.message_id(), raw.payload()).ok()?;
-    Some((system_id, raw.component_id(), Incoming::Message(message)))
+    Some((
+        system_id,
+        raw.component_id(),
+        Incoming::Message(Box::new(message)),
+    ))
 }

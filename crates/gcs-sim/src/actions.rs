@@ -69,8 +69,8 @@ pub fn admit(command: u16, params: &[f32; 7]) -> Admission {
             let device = params[0];
             let listed = |list: &[u8]| list.iter().any(|d| f32::from(*d) == device);
             let ok = match params[1] {
-                a if a == 1.0 => listed(&RESTART),
-                a if a == 2.0 => listed(&SELF_TEST),
+                1.0 => listed(&RESTART),
+                2.0 => listed(&SELF_TEST),
                 _ => false,
             };
             if ok {
