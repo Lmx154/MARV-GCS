@@ -3,8 +3,8 @@
 A desktop ground station for the MARV flight controller, in Rust, speaking MAVLink 2. It is an MVP that
 does three things: live sensor data, parameters, and logging. The station speaks the project's own `marv`
 dialect (`marv_dialect::marv`: the `common` messages plus the project's own, so far `MARV_TEST`, a link test
-message), so `MARV_TEST` appears in the Messages tab like any other message, with its fields `seq`,
-`time_ms`, `value` and `tag`. It is built so that the firmware can add parameters, settings and messages
+message, and `MARV_DEVICE_STATUS`, the health of one device of the flight controller), so both appear in the
+Messages tab like any other message, with all their fields. It is built so that the firmware can add parameters, settings and messages
 without the ground station being reworked.
 
 The flight-controller end of the link is three small crates, each in its own repo:
@@ -66,6 +66,7 @@ Building needs Rust 1.99 or newer (the `rust-version` of `marv-dialect`). On Lin
 |---|---|
 | Sensors | Live plots of both IMUs, the high-g accelerometer, the magnetometer and the barometer, and one line of GPS. The plots are a table of presets; one row adds a plot. |
 | Messages | Every message that arrives: rate, count, age and all its fields. Any numeric field can be plotted. Nothing here knows a particular message. |
+| Devices | The health of each device of the flight controller (`MARV_DEVICE_STATUS`, `docs/link-contract.md` section 8): one row per device in `device_id` order with its state (coloured), last error, samples and samples per second (computed from two successive rows), age of the last sample, errors, timeouts, recoveries, attempts, overflows, configuration restores, flags (HIL, self-test) and how long ago the row arrived (a row older than 5 s is shown as stale, not removed). Read only. The simulator sends seven devices; no firmware sends the message yet, so it has not been seen from a board. |
 | Parameters | Whatever parameters the vehicle reports: search, group by name prefix, edit, write with confirmation (a refused or unanswered write says so), save to and load from a file. Nothing here knows a particular parameter. |
 | Log | The vehicle's text messages, and the recording. Every session is recorded automatically to `logs/<UTC time>.tlog`, the telemetry-log format Mission Planner, QGroundControl and pymavlink read. A log can be opened and replayed through the same tabs. |
 | Link | Connection state and counters: frames received and sent, checksum errors, discarded bytes. |
@@ -84,15 +85,16 @@ Four crates; the dependency graph enforces the layers (`docs/architecture.md`).
 | `gcs-sim` | The simulated vehicle (`marv-sim`). Written from the specification and never using `gcs-mavlink`, so the two check each other. |
 | `marv-gcs` | The window: the connection bar and one file per tab; also the link test tool `marv-link-test` (`src/link_test.rs`, `src/bin/marv_link_test.rs`), which builds `MARV_TEST` with `marv-dialect`. |
 
-- `docs/link-contract.md`: what the flight controller and the ground station must do on the wire, and the
-  design of the two crates on the flight-controller side.
+- `docs/link-contract.md`: what the flight controller and the ground station must do on the wire (the
+  device diagnostics message and the Devices view are its section 8), and the design of the two crates on
+  the flight-controller side.
 - `docs/extending.md`: how to add a tab, a service, a transport, a preset plot. A new parameter or a new
   standard message needs no change here.
 
 ## Tests
 
 ```
-cargo test --workspace          # 417 tests, 35 s; needs /usr/bin/socat for the serial tests
+cargo test --workspace          # 444 tests, 25 s; needs /usr/bin/socat for the serial tests
 cargo clippy --workspace --all-targets -- -D warnings
 tools/board_check.sh <dir>      # with the board on its debug probe and its USB port cabled: about 3 minutes
 ```

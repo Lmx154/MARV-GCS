@@ -67,7 +67,11 @@ This crate never names MAVLink.
 
 The project's own messages live in `marv-dialect` (own repo, https://github.com/Lmx154/marv-dialect): its
 module `marv_dialect::marv` is `common` plus the messages of `definitions/marv.xml`, so far `MARV_TEST`
-(id 42420, CRC_EXTRA 100, fields `seq`, `time_ms`, `value`, `tag`; a link test message).
+(id 42420, CRC_EXTRA 100, fields `seq`, `time_ms`, `value`, `tag`; a link test message) and
+`MARV_DEVICE_STATUS` (id 42421, CRC_EXTRA 231; one message per device; `docs/link-contract.md` section 8).
+`MARV_DEVICE_STATUS` is the one message the station names: its `device_id` is an enum, so the message store
+reads the instance through `enum_instance` in `services/messages.rs` (one row per device), and the Devices
+view (`views/devices.rs`) reads its fields.
 
 The station speaks that dialect: `crates/gcs-mavlink/src/lib.rs` has `pub use marv_dialect::marv as
 dialect;`, and `marv-dialect` is a git dependency at one rev, with `features = ["std", "serde"]`, in the
@@ -77,7 +81,7 @@ deframer (its checksum is checked with its CRC_EXTRA; a wrong one is counted as 
 decoded, shows in the Messages tab by name with all its fields, can be plotted and is recorded in the
 telemetry log, with no code in the station that names it. `marv-link-test` is the one place that builds
 a `MARV_TEST` (to send it). `gcs-sim` stays on `mavlink::dialects::common` (wire-compatible for the
-common messages). `marv-dialect` asks for Rust 1.99 or newer, which is the station's minimum too.
+common messages); it builds `MARV_DEVICE_STATUS` by hand from its definition (`crates/gcs-sim/src/devices.rs`). `marv-dialect` asks for Rust 1.99 or newer, which is the station's minimum too.
 
 To add the next message:
 
@@ -96,4 +100,5 @@ To add the next message:
 - `cargo tree -p gcs-mavlink | grep -cE 'serialport|egui|eframe|gcs-transport'` is 0.
 - `cargo tree -p gcs-sim | grep -c gcs-mavlink` is 0 (the simulator is written from the specification, so
   the two check each other).
-- No parameter name and no message-specific code outside a view that is about that message.
+- No parameter name and no message-specific code outside a view that is about that message (the one
+  exception is `enum_instance` in the message store, for a message whose instance is an enum).

@@ -179,7 +179,7 @@ fn row(
         flags: entry
             .number("flags")
             .map_or_else(String::new, |flags| flags_text(flags as u8)),
-        received: age.map_or_else(|| "—".to_string(), |age| received_text(age)),
+        received: age.map_or_else(|| "—".to_string(), received_text),
         sender: format!("{}/{}", key.system_id, key.component_id),
         stale: age.is_some_and(is_stale),
     }
