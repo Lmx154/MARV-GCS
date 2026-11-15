@@ -48,7 +48,9 @@ Parameters
   request, up to 3 times; 1 s of silence with entries missing, request each missing index (500 ms, 3
   tries), then report it missing. Read: 500 ms x 3. Set: a PARAM_VALUE for the written name that arrives
   after the PARAM_SET went out ends the write at once: equal in raw bytes it confirms, any other value is the
-  vehicle's refusal (the value in effect is shown, nothing is sent again). Only when no PARAM_VALUE for that
+  vehicle's refusal (the value in effect is shown, nothing is sent again); caveat: a stale PARAM_VALUE of the old value
+  that was already in flight and arrives after the send is read as a refusal too, the accepting echo that follows clears
+  it (the station's views heal), and the command line waits 300 ms for exactly this before it reports a refusal. Only when no PARAM_VALUE for that
   name arrives at all (a lost frame) it sends again: 3 sends, 500 ms apart, then unanswered 500 ms after the
   third. While a list download is under way its PARAM_VALUE frames are not answers: a differing value then
   only notes the value in effect, an equal one still confirms, and the 3 sends / 500 ms rule decides (refused

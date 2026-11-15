@@ -223,6 +223,26 @@ fn a_refused_param_set_shows_the_vehicles_reason_as_a_text_line_on_stderr() {
     assert!(text_at < refusal_at, "the reason comes first: {r:?}");
 }
 
+/// The simulator's `stale_echo_delay_ms` makes the order: a PARAM_VALUE with the OLD value right
+/// after the PARAM_SET (read by the service as a refusal), the accepting echo 50 ms later.
+#[test]
+fn a_stale_old_value_before_the_accepting_echo_is_not_reported_as_a_refusal() {
+    let rig = Rig::with(gcs_sim::SimConfig {
+        stale_echo_delay_ms: 50,
+        ..gcs_sim::SimConfig::default()
+    });
+    let r = rig.cli("param set LOG_RATE_HZ 200");
+    assert_eq!(r.code, 0, "{r:?}");
+    assert_eq!(r.out, "LOG_RATE_HZ\t200\ti32\n", "{r:?}");
+    assert!(!r.err.contains("keeps"), "{r:?}");
+    let r = rig.cli("param get LOG_RATE_HZ");
+    assert_eq!(r.out, "LOG_RATE_HZ\t200\ti32\n", "{r:?}");
+    // The plain refusal is still a refusal.
+    let r = rig.cli("param set SYS_UID 5");
+    assert_eq!(r.code, 1, "{r:?}");
+    assert_eq!(r.out, "SYS_UID\t1592460852\ti32\n", "{r:?}");
+}
+
 #[test]
 fn an_accepted_param_set_has_no_text_line() {
     let rig = Rig::start();

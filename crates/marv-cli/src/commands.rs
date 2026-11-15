@@ -327,7 +327,7 @@ fn param_set(
         },
         &mut || echo.pump(session),
     );
-    let result = result.unwrap_or_else(|| {
+    let mut result = result.unwrap_or_else(|| {
         Err(Fail::new(
             exit::FAILED,
             format!("{name}: no echo from the vehicle in time"),
@@ -338,11 +338,24 @@ fn param_set(
         Some(WriteStatus::Refused { .. })
     );
     if refused {
-        // The vehicle's reason follows its echo by a frame; give it a moment.
+        // The vehicle's reason follows its echo by a frame; give it a moment. A stale copy of the
+        // old value can also have read as a refusal: the accepting echo that follows clears it.
         let printed = echo.printed;
         let end = Instant::now() + REASON_GRACE;
-        while echo.printed == printed && Instant::now() < end {
+        while Instant::now() < end {
             echo.pump(session);
+            let confirmed = {
+                let state = session.state();
+                !state.params.writes.contains_key(name)
+                    && state.params.value(name).is_some_and(|now| now == value)
+            };
+            if confirmed {
+                result = Ok(());
+                break;
+            }
+            if echo.printed != printed {
+                break;
+            }
             std::thread::sleep(POLL);
         }
     }

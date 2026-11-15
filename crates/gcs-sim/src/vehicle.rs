@@ -81,6 +81,11 @@ pub struct SimConfig {
     /// applied, and a refusal's STATUSTEXT is still sent), to test a ground station's resend of a
     /// write whose echo was lost. 0 is none.
     pub drop_first_param_echoes: u32,
+    /// When not 0, an accepted PARAM_SET is first answered with a PARAM_VALUE carrying the OLD
+    /// value (a stale copy in flight) and the real echo with the new value follows this many
+    /// milliseconds later, to test a ground station that must not read the stale copy as a
+    /// refusal. 0 is off.
+    pub stale_echo_delay_ms: u64,
 }
 
 impl SimConfig {
@@ -144,6 +149,7 @@ impl Default for SimConfig {
             drop_first_commands: 0,
             never_final_ack: false,
             drop_first_param_echoes: 0,
+            stale_echo_delay_ms: 0,
         }
     }
 }
@@ -214,6 +220,8 @@ pub struct SimVehicle {
     commands_dropped: u32,
     /// PARAM_VALUE echoes dropped so far for `drop_first_param_echoes`.
     echoes_dropped: u32,
+    /// The real echo held back by `stale_echo_delay_ms`: parameter index and when it is due.
+    held_echo: Option<(usize, u64)>,
     /// PARAM_SET frames addressed to this vehicle so far.
     param_sets_received: u32,
 }
@@ -288,6 +296,7 @@ impl SimVehicle {
             action: None,
             commands_dropped: 0,
             echoes_dropped: 0,
+            held_echo: None,
             param_sets_received: 0,
         }
     }
@@ -321,6 +330,7 @@ impl SimVehicle {
         }
         self.ingest(received, &mut out);
         self.emit_params(&mut out);
+        self.emit_held_echo(&mut out);
         self.emit_action(now_ms, &mut out);
         self.emit_due(now_ms, &mut out);
         out
@@ -378,6 +388,15 @@ impl SimVehicle {
     }
 
     /// Sends the parameters of a PARAM_REQUEST_LIST in index order, one per millisecond.
+    fn emit_held_echo(&mut self, out: &mut Vec<u8>) {
+        if let Some((index, due_ms)) = self.held_echo
+            && due_ms <= self.now_ms
+        {
+            self.held_echo = None;
+            self.push_param_value(index, out);
+        }
+    }
+
     fn emit_params(&mut self, out: &mut Vec<u8>) {
         while let Some(index) = self.list_next {
             if index >= self.config.params.len() {
@@ -540,12 +559,19 @@ impl SimVehicle {
                     None
                 };
                 let refusal = reason.map(|reason| format!("{}: {reason}", param.name));
+                let stale = reason.is_none() && self.config.stale_echo_delay_ms > 0;
+                if stale {
+                    self.push_param_value(index, out);
+                    self.held_echo = Some((index, self.now_ms + self.config.stale_echo_delay_ms));
+                }
+                let param = &mut self.config.params[index];
                 if reason.is_none() {
                     param.value = param
                         .value
                         .same_type_from_field(d.param_value, self.config.param_encoding);
                 }
-                if self.echoes_dropped < self.config.drop_first_param_echoes {
+                if stale {
+                } else if self.echoes_dropped < self.config.drop_first_param_echoes {
                     self.echoes_dropped += 1;
                 } else {
                     self.push_param_value(index, out);
