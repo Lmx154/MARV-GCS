@@ -60,7 +60,7 @@ impl View for Devices {
             table = table.column(Column::auto().at_least(60.0));
         }
         table
-            .column(Column::remainder())
+            .column(Column::remainder().at_least(60.0))
             .header(ROW_HEIGHT, |mut header| {
                 for (i, title) in TITLES.into_iter().enumerate() {
                     header.col(|ui| {
