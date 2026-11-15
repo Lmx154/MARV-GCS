@@ -9,16 +9,20 @@
 //! [`SimConfig::answer_version_request`] is off) and for the id of any configured stream. Every
 //! other command, MAV_CMD_SET_MESSAGE_INTERVAL (511) included, gets UNSUPPORTED:
 //! MAV_CMD_SET_MESSAGE_INTERVAL is not implemented in the simulator yet, although the real
-//! vehicle will implement it.
+//! vehicle will implement it. The actions of `docs/link-contract.md` section 10 (241, 245, 246 and
+//! 42430) are answered as the vehicle does: see [`SimVehicle`] and the [`actions`] module. A
+//! COMMAND_LONG is read by hand from its bytes (its `command` may be a number the `common` dialect
+//! does not have, 42430).
 
 use mavlink::dialects::common::{
-    AUTOPILOT_VERSION_DATA, COMMAND_ACK_DATA, COMMAND_LONG_DATA, GPS_RAW_INT_DATA, HEARTBEAT_DATA,
-    HIGHRES_IMU_DATA, MavCmd, MavMessage, MavProtocolCapability, MavResult, MavSeverity,
-    PARAM_VALUE_DATA, SCALED_PRESSURE_DATA, STATUSTEXT_DATA,
+    AUTOPILOT_VERSION_DATA, COMMAND_ACK_DATA, GPS_RAW_INT_DATA, HEARTBEAT_DATA, HIGHRES_IMU_DATA,
+    MavMessage, MavProtocolCapability, MavResult, MavSeverity, PARAM_VALUE_DATA,
+    SCALED_PRESSURE_DATA, STATUSTEXT_DATA,
 };
 use mavlink::types::CharArray;
 use mavlink::{MAVLinkV2MessageRaw, MavHeader, MavlinkVersion, Message, MessageData};
 
+use crate::actions::{self, Action, Admission};
 use crate::devices;
 use crate::params::{ParamEncoding, ParamValue, SimParam, default_params, other_type_params};
 use crate::signals;
@@ -31,6 +35,8 @@ const V2_CHECKSUM: usize = 2;
 const V2_SIGNATURE: usize = 13;
 /// Incompatibility flag of a signed frame: it makes the frame 13 bytes longer.
 const IFLAG_SIGNED: u8 = 0x01;
+/// MAV_CMD_REQUEST_MESSAGE.
+const MAV_CMD_REQUEST_MESSAGE: u16 = 512;
 /// The message AUTOPILOT_VERSION, requested with MAV_CMD_REQUEST_MESSAGE.
 const AUTOPILOT_VERSION_ID: u32 = 148;
 /// A step further ahead than this does not catch up: the vehicle carries on from the new time.
@@ -65,6 +71,12 @@ pub struct SimConfig {
     /// Whether MAV_CMD_REQUEST_MESSAGE for AUTOPILOT_VERSION is answered. When false the vehicle
     /// sends neither the COMMAND_ACK nor the message, to test a ground station's fallback.
     pub answer_version_request: bool,
+    /// The first this many COMMAND_LONGs other than MAV_CMD_REQUEST_MESSAGE are dropped unanswered,
+    /// to test a ground station's retransmission. 0 is none.
+    pub drop_first_commands: u32,
+    /// An admitted action gets its IN_PROGRESS ACKs but never its final ACK (it still ends on the
+    /// vehicle), to test a ground station's "no result".
+    pub never_final_ack: bool,
 }
 
 impl SimConfig {
@@ -125,6 +137,8 @@ impl Default for SimConfig {
             drop_rx_percent: 0,
             seed: 1,
             answer_version_request: true,
+            drop_first_commands: 0,
+            never_final_ack: false,
         }
     }
 }
@@ -189,7 +203,30 @@ pub struct SimVehicle {
     /// Next parameter index to send after PARAM_REQUEST_LIST, while a list is being sent.
     list_next: Option<usize>,
     list_due_ms: u64,
+    /// The one action that runs, if any.
+    action: Option<Action>,
+    /// COMMAND_LONGs dropped so far for `drop_first_commands`.
+    commands_dropped: u32,
 }
+
+/// A COMMAND_LONG read from its bytes: the command is a number, not a dialect enum.
+struct RawCommand {
+    command: u16,
+    params: [f32; 7],
+    target_system: u8,
+    target_component: u8,
+}
+
+/// What `decode_frame` makes of a valid frame.
+enum Incoming {
+    Message(MavMessage),
+    Command(RawCommand),
+}
+
+/// MAVLink message id of COMMAND_LONG.
+const COMMAND_LONG_ID: u32 = 76;
+/// Payload length of a COMMAND_LONG with no trailing zero cut.
+const COMMAND_LONG_LEN: usize = 33;
 
 impl SimVehicle {
     /// # Panics
@@ -239,6 +276,8 @@ impl SimVehicle {
             silent: false,
             list_next: None,
             list_due_ms: 0,
+            action: None,
+            commands_dropped: 0,
         }
     }
 
@@ -271,6 +310,7 @@ impl SimVehicle {
         }
         self.ingest(received, &mut out);
         self.emit_params(&mut out);
+        self.emit_action(now_ms, &mut out);
         self.emit_due(now_ms, &mut out);
         out
     }
@@ -415,10 +455,17 @@ impl SimVehicle {
             let rest = &self.rx[pos..];
             match frame_len(rest) {
                 Some(total) if rest.len() >= total => match decode_frame(&rest[..total]) {
-                    Some((system_id, component_id, message)) => {
+                    Some((system_id, component_id, incoming)) => {
                         pos += total;
                         if !self.rx_loss.drops() {
-                            self.handle(system_id, component_id, &message, out);
+                            match incoming {
+                                Incoming::Message(message) => {
+                                    self.handle(system_id, component_id, &message, out);
+                                }
+                                Incoming::Command(command) => {
+                                    self.handle_long(system_id, component_id, &command, out);
+                                }
+                            }
                         }
                     }
                     None => pos += 1,
@@ -475,23 +522,32 @@ impl SimVehicle {
                     self.push_param_value(index, out);
                 }
             }
-            MavMessage::COMMAND_LONG(d)
-                if self.is_addressed(d.target_system, d.target_component) =>
-            {
-                self.handle_command(d, (system_id, component_id), out);
-            }
             _ => {}
         }
     }
 
-    /// Answers a COMMAND_LONG addressed to this vehicle. `from` is the sender's system and
-    /// component, to which the COMMAND_ACK goes.
-    fn handle_command(&mut self, d: &COMMAND_LONG_DATA, from: (u8, u8), out: &mut Vec<u8>) {
-        if d.command != MavCmd::MAV_CMD_REQUEST_MESSAGE {
-            self.push_ack(d.command, MavResult::MAV_RESULT_UNSUPPORTED, from, out);
+    /// A COMMAND_LONG from another system: the ones for this vehicle are answered.
+    fn handle_long(&mut self, system_id: u8, component_id: u8, d: &RawCommand, out: &mut Vec<u8>) {
+        if system_id == self.config.system_id
+            || !self.is_addressed(d.target_system, d.target_component)
+        {
             return;
         }
-        let requested = Some(d.param1)
+        let from = (system_id, component_id);
+        if d.command == MAV_CMD_REQUEST_MESSAGE {
+            self.handle_request_message(d, from, out);
+            return;
+        }
+        if self.commands_dropped < self.config.drop_first_commands {
+            self.commands_dropped += 1;
+            return;
+        }
+        self.handle_action_command(d, from, out);
+    }
+
+    /// MAV_CMD_REQUEST_MESSAGE: the message and an ACK; anything not served is UNSUPPORTED.
+    fn handle_request_message(&mut self, d: &RawCommand, from: (u8, u8), out: &mut Vec<u8>) {
+        let requested = Some(d.params[0])
             .filter(|v| v.is_finite() && *v >= 0.0 && v.fract() == 0.0 && *v < u32::MAX as f32)
             .map(|v| v as u32);
         let messages = match requested {
@@ -503,12 +559,105 @@ impl SimVehicle {
             _ => Vec::new(),
         };
         if messages.is_empty() {
-            self.push_ack(d.command, MavResult::MAV_RESULT_UNSUPPORTED, from, out);
+            self.push_ack(d.command, MavResult::MAV_RESULT_UNSUPPORTED, 0, from, out);
             return;
         }
-        self.push_ack(d.command, MavResult::MAV_RESULT_ACCEPTED, from, out);
+        self.push_ack(d.command, MavResult::MAV_RESULT_ACCEPTED, 0, from, out);
         for message in &messages {
             self.push_frame(message, out);
+        }
+    }
+
+    /// The commands of `docs/link-contract.md` section 10, in the vehicle's admission order:
+    /// UNSUPPORTED or DENIED by command and parameters, then the cancel, then TEMPORARILY_REJECTED
+    /// when an action runs, then admitted.
+    fn handle_action_command(&mut self, d: &RawCommand, from: (u8, u8), out: &mut Vec<u8>) {
+        match actions::admit(d.command, &d.params) {
+            Admission::Unsupported => {
+                self.push_ack(d.command, MavResult::MAV_RESULT_UNSUPPORTED, 0, from, out);
+            }
+            Admission::Denied(reason) => {
+                self.push_text(reason, out);
+                self.push_ack(d.command, MavResult::MAV_RESULT_DENIED, 0, from, out);
+            }
+            Admission::Cancel => {
+                let running = self.action.as_ref().filter(|a| a.is_calibration());
+                let Some(running) = running.cloned() else {
+                    self.push_text("no calibration is running", out);
+                    self.push_ack(d.command, MavResult::MAV_RESULT_DENIED, 0, from, out);
+                    return;
+                };
+                self.push_ack(d.command, MavResult::MAV_RESULT_ACCEPTED, 0, from, out);
+                self.action = None;
+                if !self.config.never_final_ack {
+                    self.push_ack(
+                        running.command,
+                        MavResult::MAV_RESULT_CANCELLED,
+                        0,
+                        running.from,
+                        out,
+                    );
+                }
+            }
+            Admission::Run { duration_ms } => {
+                if let Some(running) = &self.action {
+                    if running.command == d.command && running.params == d.params {
+                        let percent = running.percent(self.now_ms);
+                        self.push_ack(
+                            d.command,
+                            MavResult::MAV_RESULT_IN_PROGRESS,
+                            percent,
+                            from,
+                            out,
+                        );
+                    } else {
+                        self.push_text("another action is running", out);
+                        self.push_ack(
+                            d.command,
+                            MavResult::MAV_RESULT_TEMPORARILY_REJECTED,
+                            0,
+                            from,
+                            out,
+                        );
+                    }
+                    return;
+                }
+                self.action = Some(Action::new(
+                    d.command,
+                    d.params,
+                    from,
+                    self.now_ms,
+                    duration_ms,
+                ));
+                self.push_ack(d.command, MavResult::MAV_RESULT_IN_PROGRESS, 0, from, out);
+            }
+        }
+    }
+
+    /// Progress ACKs every 500 ms of the running action, then its final ACK.
+    fn emit_action(&mut self, now_ms: u64, out: &mut Vec<u8>) {
+        while let Some(action) = &mut self.action {
+            let Some(due) = action.next_due(now_ms) else {
+                break;
+            };
+            let (command, from) = (action.command, action.from);
+            match due {
+                actions::Due::Progress(percent) => {
+                    self.push_ack(
+                        command,
+                        MavResult::MAV_RESULT_IN_PROGRESS,
+                        percent,
+                        from,
+                        out,
+                    );
+                }
+                actions::Due::Final => {
+                    self.action = None;
+                    if !self.config.never_final_ack {
+                        self.push_ack(command, MavResult::MAV_RESULT_ACCEPTED, 0, from, out);
+                    }
+                }
+            }
         }
     }
 
@@ -528,16 +677,28 @@ impl SimVehicle {
         }
     }
 
-    fn push_ack(&mut self, command: MavCmd, result: MavResult, to: (u8, u8), out: &mut Vec<u8>) {
-        let message = MavMessage::COMMAND_ACK(COMMAND_ACK_DATA {
-            command,
-            result,
-            progress: 0,
-            result_param2: 0,
-            target_system: to.0,
-            target_component: to.1,
-        });
-        self.push_frame(&message, out);
+    /// A COMMAND_ACK to `to`, built by hand (the command may be a number `common` does not have).
+    fn push_ack(
+        &mut self,
+        command: u16,
+        result: MavResult,
+        progress: u8,
+        to: (u8, u8),
+        out: &mut Vec<u8>,
+    ) {
+        let mut payload = Vec::with_capacity(10);
+        payload.extend_from_slice(&command.to_le_bytes());
+        payload.push(result as u8);
+        payload.push(progress);
+        payload.extend_from_slice(&0i32.to_le_bytes());
+        payload.push(to.0);
+        payload.push(to.1);
+        self.push_raw(
+            COMMAND_ACK_DATA::ID,
+            COMMAND_ACK_DATA::EXTRA_CRC,
+            &payload,
+            out,
+        );
     }
 
     /// Whether a target system and component (0 is everyone) include this vehicle.
@@ -581,7 +742,8 @@ fn later_valid_frame(rest: &[u8]) -> Option<usize> {
 }
 
 /// Checks one complete MAVLink 2 frame (flags, checksum, payload) and returns sender and message.
-fn decode_frame(frame: &[u8]) -> Option<(u8, u8, MavMessage)> {
+/// A COMMAND_LONG is read by hand, whatever its command number.
+fn decode_frame(frame: &[u8]) -> Option<(u8, u8, Incoming)> {
     if frame[2] != 0 {
         return None;
     }
@@ -592,7 +754,23 @@ fn decode_frame(frame: &[u8]) -> Option<(u8, u8, MavMessage)> {
     if !raw.has_valid_crc::<MavMessage>() {
         return None;
     }
-    let message = MavMessage::parse(MavlinkVersion::V2, raw.message_id(), raw.payload()).ok()?;
     let system_id = u8::try_from(raw.system_id()).ok()?;
-    Some((system_id, raw.component_id(), message))
+    if raw.message_id() == COMMAND_LONG_ID {
+        let mut payload = [0u8; COMMAND_LONG_LEN];
+        let given = raw.payload();
+        payload.get_mut(..given.len())?.copy_from_slice(given);
+        let mut params = [0f32; 7];
+        for (i, param) in params.iter_mut().enumerate() {
+            *param = f32::from_le_bytes(payload[4 * i..4 * i + 4].try_into().ok()?);
+        }
+        let command = RawCommand {
+            command: u16::from_le_bytes([payload[28], payload[29]]),
+            params,
+            target_system: payload[30],
+            target_component: payload[31],
+        };
+        return Some((system_id, raw.component_id(), Incoming::Command(command)));
+    }
+    let message = MavMessage::parse(MavlinkVersion::V2, raw.message_id(), raw.payload()).ok()?;
+    Some((system_id, raw.component_id(), Incoming::Message(message)))
 }

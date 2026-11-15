@@ -11,6 +11,7 @@
 //! not implemented in the simulator yet: it gets COMMAND_ACK UNSUPPORTED like every other command
 //! except MAV_CMD_REQUEST_MESSAGE (512).
 
+pub mod actions;
 pub mod devices;
 pub mod signals;
 
