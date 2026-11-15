@@ -1,10 +1,12 @@
 # Architecture
 
-The ground station is four crates. The dependency graph enforces the layers, so a rule that is broken
+The ground station is six crates. The dependency graph enforces the layers, so a rule that is broken
 does not build or shows up in `cargo tree`.
 
 ```
-                 marv-gcs  (window: views, wiring)
+        marv-gcs (window)     marv-cli (command line, no display)
+                 \             /
+                  gcs-link  (endpoint -> role, start a session)
                  /       \
       gcs-transport     gcs-mavlink            gcs-sim (simulated vehicle; dev and tests only)
       bytes only        MAVLink on any         uses the `mavlink` crate directly,
@@ -16,7 +18,10 @@ does not build or shows up in `cargo tree`.
 1. **USB lives alone.** `gcs-transport` moves bytes. It never depends on `mavlink` or `gcs-mavlink`.
 2. **MAVLink is a layer on top.** `gcs-mavlink` takes any `std::io::Read` / `std::io::Write` pair. It
    never depends on `gcs-transport`, `serialport` or a GUI crate.
-3. **The window joins them.** Only `marv-gcs` depends on both, and on `eframe`.
+3. **The join is small and has no GUI.** Only `gcs-link` and the applications (`marv-gcs`, `marv-cli`) depend
+   on both `gcs-transport` and `gcs-mavlink`. `gcs-link` holds exactly what every application needs to turn an
+   endpoint into a running session: `access_of` (the role a link gives the station) and `start_session`. Only
+   `marv-gcs` depends on `eframe`; `gcs-link` and `marv-cli` never depend on a GUI crate.
 4. **The simulator is independent.** `gcs-sim` never depends on `gcs-mavlink`; it is written from the
    MAVLink specification so the two check each other.
 5. **Protocol logic is sans-IO.** A service is a state machine: messages and the time go in, messages to
@@ -25,7 +30,7 @@ does not build or shows up in `cargo tree`.
    parameter list is whatever the vehicle reports. Every received message is listed and plottable by
    generic field access.
 
-Check: `cargo tree -p gcs-transport | grep -c mavlink` is 0; `cargo tree -p gcs-mavlink | grep -cE 'serialport|egui|eframe'` is 0; `cargo tree -p gcs-sim | grep -c gcs-mavlink` is 0.
+Check: `cargo tree -p gcs-transport | grep -c mavlink` is 0; `cargo tree -p gcs-mavlink | grep -cE 'serialport|egui|eframe'` is 0; `cargo tree -p gcs-sim | grep -c gcs-mavlink` is 0; `cargo tree -p gcs-link -e normal | grep -ciE 'eframe|egui|winit|wgpu|glow'` is 0; `cargo tree -p marv-cli -e normal | grep -ciE 'eframe|egui|winit|wgpu|glow'` is 0 (`crates/marv-cli/tests/dependencies.rs` runs the last two).
 
 ## How to extend (kept true as the code grows; details in `docs/extending.md`)
 
@@ -76,6 +81,16 @@ one arrives a write succeeds and discards the bytes; each write is one datagram;
 datagram over several reads when the buffer is small and skips empty datagrams; `ConnectionRefused`,
 `ConnectionReset`, `NetworkUnreachable`, `HostUnreachable` and `NetworkDown` (a peer that went away or a
 network that dropped) are not link-down, on read or on write: a write is discarded and the link stays up.
+
+### `gcs-link`
+
+```rust
+/// The one mapping from a link to a role: Serial and Tcp are Configure, Udp is Operate. Exhaustive over `Endpoint`.
+pub fn access_of(endpoint: &gcs_transport::Endpoint) -> gcs_mavlink::Access;
+/// Open the endpoint and start a session on it with `access`; `wake` is called when the state changed.
+pub fn start_session(endpoint: &Endpoint, access: Access, wake: Box<dyn Fn() + Send + Sync>)
+    -> Result<gcs_mavlink::Session, gcs_transport::OpenError>;
+```
 
 ### `gcs-mavlink`: framing
 
@@ -225,3 +240,14 @@ pub trait View {
 /// The registry in `views/mod.rs`: the one line to touch when a view is added.
 pub fn all() -> Vec<Box<dyn View>>;
 ```
+
+### `marv-cli`
+
+```rust
+pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32;   // parse, open, execute; the exit status
+pub mod args { pub fn parse(args: &[String]) -> Result<Parsed, String>; }       // by hand, no dependency
+pub mod commands { pub fn execute(invocation, session, access, out, err) -> i32; }  // on a session that exists
+```
+
+One command per invocation, on one link; the usage, the output format and the exit statuses are in
+`README.md`. It sends everything through `Session::send` and has no gate of its own.

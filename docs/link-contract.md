@@ -314,8 +314,9 @@ Roles. A session has one `Access`, fixed when it starts (`SessionConfig.access` 
 - `Operate`: the station is a telemetry display and controller. It reads and it concerns itself.
 - `Configure`: the station is also the flight controller's configurator.
 
-Which link gives which role (one function in `marv-gcs`, `connection::access_of`, exhaustive over
-`gcs_transport::Endpoint`; the transport knows only bytes and does not hold the mapping):
+Which link gives which role (one function in `gcs-link`, `gcs_link::access_of`, used by the window and by the
+command line, exhaustive over `gcs_transport::Endpoint`; the transport knows only bytes and does not hold the
+mapping, and `gcs-mavlink` does not know the transport):
 
 | Link | Access | Why |
 |---|---|---|
@@ -327,7 +328,7 @@ Which link gives which role (one function in `marv-gcs`, `connection::access_of`
 A session built without an explicit access is `Operate` (`SessionConfig::default()`): the gate fails closed,
 so a session that someone forgot to configure cannot write. Whoever needs to write says `Configure`.
 
-Enforcement. `Session::send` is the one choke point, for the window and for a later command line. Every
+Enforcement. `Session::send` is the one choke point, for the window and for the command line (`marv-cli`). Every
 `Command` has a class (`Command::access`, one exhaustive `match` with no wildcard arm, so a new variant
 cannot be added without a class). A configure-class command on an Operate session is refused: nothing is
 written to the link (0 bytes) and the refusal is recorded in `VehicleState.link.refused` (what was asked,

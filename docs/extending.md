@@ -71,15 +71,28 @@ answer. The vehicle's side is `docs/link-contract.md` section 10.
    skips empty datagrams instead of returning `Ok(0)`, and says in its module doc which error kinds are
    "nothing yet" and which end the link.
 2. Add a variant to `Endpoint` (with its text form, `udp:ADDR:PORT`) and an arm in `open`. Give the link its
-   role in `access_of` in `crates/marv-gcs/src/connection.rs` (Operate or Configure, `docs/link-contract.md`
+   role in `access_of` in `crates/gcs-link/src/lib.rs` (Operate or Configure, `docs/link-contract.md`
    section 9): it is a match over `Endpoint` with no wildcard arm, so the application does not compile
-   until you do. The mapping does not live in `gcs-transport`.
+   until you do. The mapping does not live in `gcs-transport`, and it is the one mapping for the window and for
+   `marv-cli` (it needs no change there).
 3. Add the choice to the connection bar in `crates/marv-gcs/src/connection.rs` (UDP: one text field, the
    local address to listen on) and its parse test in `cli.rs`.
 
 Test it against a plain peer socket (`crates/gcs-transport/tests/udp.rs`), then through a session
 (`crates/marv-gcs/tests/e2e_udp.rs`). The MAVLink layer does not change: it takes any reader and writer.
 This crate never names MAVLink.
+
+## A command for the command line (`marv-cli`)
+
+1. If it is a new MAVLink command or parameter action, first do the service and the `Command` variant as above
+   (with its access class); the command line never decides access, `Session::send` does.
+2. Add the word to `command` in `crates/marv-cli/src/args.rs` (and to `mav_command` when it sends a
+   `COMMAND_LONG`: the label of its progress lines, the `MAV_CMD`, the seven parameters), and the usage text.
+3. A command that is not a `COMMAND_LONG` gets a function in `crates/marv-cli/src/commands.rs` and an arm in
+   `run_command`. Every wait in it goes through `wait`, which has a deadline. Its output is tab-separated
+   lines, errors on stderr, and an exit status from `exit` in `lib.rs`.
+4. Test the parsing in `tests/args.rs` and the behaviour against the simulator in `tests/sim.rs`; if it writes,
+   add it to the list in `tests/gate.rs` (the negative control: an Operate session must refuse it with 0 frames).
 
 ## A message outside the standard set
 
@@ -118,6 +131,7 @@ To add the next message:
 - `cargo tree -p gcs-mavlink | grep -cE 'serialport|egui|eframe|gcs-transport'` is 0.
 - `cargo tree -p gcs-sim | grep -c gcs-mavlink` is 0 (the simulator is written from the specification, so
   the two check each other).
+- `cargo tree -p gcs-link -e normal | grep -ciE 'eframe|egui|winit|wgpu|glow'` and the same for `marv-cli` are 0.
 - No parameter name and no message-specific code outside a view that is about that message (the one
   exception is `enum_instance` in the message store, for a message whose instance field is an enum: it
   supplies the instance number, and the message also needs its row in `INSTANCE_FIELDS`, which gives the label).

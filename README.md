@@ -85,6 +85,73 @@ calibration during a calibration. The last command, in words ("Gyro calibration:
 after 3 sends"), is shown under the buttons of the Parameters, Devices and Link tabs and is
 `VehicleState.command`. The simulator answers them as the vehicle will; no firmware does yet.
 
+## The command line (`marv-cli`)
+
+For a companion computer with no display (a Raspberry Pi cabled to the flight controller's USB port): the
+same station without a window. One command per invocation, on one link, plain text on stdout, errors on
+stderr. It depends on no GUI crate (`cargo tree -p marv-cli -e normal | grep -ciE 'eframe|egui|winit|wgpu|glow'`
+is 0) and on no third-party crate beyond what the station already uses. It presents itself as a ground
+station (system 255, component 190), speaks through the same session as the window, and sends every write
+through `Session::send`, so the role of the link applies as in the window (below): on a `udp:` link every
+command that writes prints `marv-cli: refused: this link is operate-only (...)` and exits 4, having written
+nothing. `serial:` and `tcp:` links are Configure.
+
+```
+marv-cli --connect <endpoint> [--timeout <s>] <command> [args]      # endpoint: serial:PATH[:BAUD], tcp:HOST:PORT, udp:ADDR:PORT
+marv-cli --connect serial:/dev/ttyACM0 status
+marv-cli --connect serial:/dev/ttyACM0 param set LOG_RATE_HZ 200
+marv-cli --connect serial:/dev/ttyACM0 calibrate gyro
+```
+
+Every command first waits for the vehicle's heartbeat (`--timeout`, default 5 s) and fails with exit status 3
+and `no heartbeat from a vehicle within N s` without it. Options may stand anywhere on the line.
+
+| Command | What it does and prints |
+|---|---|
+| `status [--for s]` | collects for `--for` (default 2 s), then prints `vehicle<TAB>system=1 component=1 type=...`, `role<TAB>Operate` or `Configure`, `health<TAB>` the sensors SYS_STATUS reports healthy in words (`none`, or `not received`), `devices<TAB>N` (the number of device rows), and the last 3 texts as `text<TAB>TIME<TAB>SEVERITY<TAB>TEXT` |
+| `devices [--for s]` | collects for `--for` (default 2 s), then one line per `MARV_DEVICE_STATUS` device: `NAME<TAB>STATE<TAB>LAST_ERROR<TAB>SAMPLES<TAB>ERRORS<TAB>TIMEOUTS<TAB>RECOVERIES<TAB>LAST_SAMPLE_AGE_MS` (`never` when the device has had no sample) |
+| `texts [--for s]` | STATUSTEXTs as they arrive, until the time is over (default 10 s): `TIME<TAB>SEVERITY<TAB>TEXT`, TIME in session seconds |
+| `watch [--for s]` | until the time is over (default 30 s): `device<TAB>` + a device line when a device appears or its state, last error, errors or timeouts change (samples and the age change all the time and do not count), and `text<TAB>` + a text line |
+| `param list` | `NAME<TAB>VALUE<TAB>TYPE`, one per parameter, by name; waits for the whole list (on a `udp:` link it asks for it: a read) |
+| `param get NAME` | the same line for one parameter; exit 1 for an unknown name |
+| `param set NAME VALUE` | waits for the vehicle's echo and prints the same line with the value now in effect; if the echo differs from what was asked (the vehicle refused) the line is printed, the reason goes to stderr and the exit status is 1; a value that does not fit the parameter's type is not sent |
+| `param save` / `param reload` | `MAV_CMD_PREFLIGHT_STORAGE` with param1 = 1 / 0 |
+| `param reset-all --yes` / `param reset-calibration --yes` | param1 = 2 / 3; without `--yes` they refuse (exit 2) before connecting |
+| `calibrate gyro` / `accel` / `cancel` | `MAV_CMD_PREFLIGHT_CALIBRATION` (gyro param1 = 1; accelerometer param5 = 4, one position, level; cancel all zeros) |
+| `device restart NAME` / `device selftest NAME` | `MAV_CMD_MARV_DEVICE`; NAME is IMU1, IMU2, BARO, MAG, GNSS, BATT, RC, SD, PSRAM, LED or ESC (any case); every name is sent and the vehicle decides (it denies a restart of RC; the window's buttons offer only the ones it accepts) |
+| `reboot --yes` | `MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN` param1 = 1; without `--yes` it refuses (exit 2) before connecting |
+| `record FILE [--for s]` | records the link to a `.tlog` (the session's own recording) for `--for` (default 60 s), then prints `recorded<TAB>FILE<TAB>N frames<TAB>N bytes`; an existing file is never overwritten (exit 1) |
+
+Output is one record per line; fields are separated by a TAB, so `cut -f`, `awk -F'\t'` and `grep` do. A
+command that sends a MAVLink command follows the commands service's record to its end and prints a line each
+time it changes: `gyro calibration: waiting for the vehicle`, `gyro calibration: 40 %`, then the result
+(`gyro calibration: accepted`; `restart RC: denied`; `... no answer after 3 sends`). One command at a time, as
+in the window. Ctrl-C ends the process at once; a recording keeps everything written so far (the file is not
+buffered by the CLI), and a calibration the vehicle has begun goes on, so `calibrate cancel` from the next
+invocation stops it (the vehicle serves one station at a time on its USB port, so the next invocation can only
+connect after the first has let go).
+
+| Exit status | Meaning |
+|---|---|
+| 0 | success (a command: the vehicle's result is accepted) |
+| 1 | the command failed: not accepted (denied, failed, cancelled, no answer, ...), a parameter echo that differs, an unknown parameter, a recording that cannot start |
+| 2 | usage error (unknown command, a missing argument, a bad number, `--yes` missing); nothing is opened |
+| 3 | no link, no heartbeat within `--timeout`, or the link went down |
+| 4 | refused: the link is operate-only and the command writes (`marv-cli: refused: this link is operate-only (SetParam)`) |
+
+There is no JSON or other structured mode: the tab-separated lines are what the session holds, and a structured
+form would need a new dependency.
+
+Build for a Raspberry Pi: `cargo build --release -p marv-cli` on the Pi itself, or cross-compiled with
+`cargo build --release -p marv-cli --target aarch64-unknown-linux-gnu` (64-bit Raspberry Pi OS; the 32-bit one
+is `armv7-unknown-linux-gnueabihf`). It was NOT built or run for the Pi here: only on this Linux x86-64
+computer, against the simulator. The user needs the `dialout` group for `/dev/ttyACM*`. Against the simulator:
+
+```
+cargo run -p gcs-sim &                                          # on 127.0.0.1:5760
+cargo run -p marv-cli -- --connect tcp:127.0.0.1:5760 devices
+```
+
 ## Two roles: Operate and Configure
 
 The station is either only a telemetry display and controller (Operate) or also the flight controller's
@@ -106,13 +173,15 @@ in `Command::access` (`crates/gcs-mavlink/src/state.rs`); the code does not comp
 
 ## How it is built
 
-Four crates; the dependency graph enforces the layers (`docs/architecture.md`).
+Six crates; the dependency graph enforces the layers (`docs/architecture.md`).
 
 | Crate | What it is |
 |---|---|
 | `gcs-transport` | Bytes only: USB serial port, TCP and UDP. It never names MAVLink. |
 | `gcs-mavlink` | MAVLink 2 on any reader and writer: framing, one small state machine per sub-protocol (heartbeat, messages, parameters, commands, text, recorder), the vehicle state, the log reader and replay. No transport, no window. |
 | `gcs-sim` | The simulated vehicle (`marv-sim`). Written from the specification and never using `gcs-mavlink`, so the two check each other. |
+| `gcs-link` | The join, with no GUI: the role an endpoint gives the station (`access_of`, the one mapping) and the start of a session on it. Used by both applications. |
+| `marv-cli` | The command line (`marv-cli`), for a computer with no display: see below. |
 | `marv-gcs` | The window: the connection bar and one file per tab; also the link test tool `marv-link-test` (`src/link_test.rs`, `src/bin/marv_link_test.rs`), which builds `MARV_TEST` with `marv-dialect`. |
 
 - `docs/link-contract.md`: what the flight controller and the ground station must do on the wire (the
