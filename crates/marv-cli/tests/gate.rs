@@ -123,7 +123,7 @@ fn on_an_operate_session_every_write_is_refused_with_zero_frames() {
 
     // The reads work on the same session.
     let (code, out, _) = invoke("devices --for 1.5", &session, Access::Operate);
-    assert_eq!((code, out.lines().count()), (0, 7), "{out:?}");
+    assert_eq!((code, out.lines().count()), (0, 8), "{out:?}");
     let (code, out, _) = invoke("status --for 0.2", &session, Access::Operate);
     assert!(out.contains("role\tOperate") && code == 0, "{out:?}");
     let (code, out, _) = invoke("param list", &session, Access::Operate);

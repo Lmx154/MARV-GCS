@@ -367,12 +367,14 @@ fn live_data_has_the_contract_rates_and_values() {
 
     run_for(secs(6));
     let state = client.state();
-    for instance in 0..4 {
-        assert_rate(&state, &format!("HIGHRES_IMU[{instance}]"), 50.0, 5.0);
+    for label in ["HIGHRES_IMU[0]", "SCALED_IMU2", "SCALED_PRESSURE"] {
+        assert_rate(&state, label, 25.0, 5.0);
     }
-    assert_rate(&state, "SCALED_PRESSURE", 10.0, 5.0);
-    assert_rate(&state, "GPS_RAW_INT", 5.0, 10.0);
+    assert_rate(&state, "RC_CHANNELS", 5.0, 10.0);
+    assert_rate(&state, "GPS_RAW_INT", 1.0, 10.0);
+    assert_rate(&state, "SYS_STATUS", 1.0, 10.0);
     assert_rate(&state, "HEARTBEAT", 1.0, 10.0);
+    assert!(rate(&state, "HIGHRES_IMU[1]").is_none(), "IMU1 only");
 
     let zacc = state
         .messages
@@ -394,11 +396,16 @@ fn live_data_has_the_contract_rates_and_values() {
         xgyro.is_some_and(|s| !s.points.is_empty()),
         "instance 0 has gyro data, so its series must have points"
     );
-    let nan_field = state.messages.series("HIGHRES_IMU", 2, "xgyro");
+    let pressure = state.messages.series("HIGHRES_IMU", 0, "abs_pressure");
     assert!(
-        nan_field.is_none_or(|s| s.points.is_empty()),
-        "HIGHRES_IMU[2].xgyro is NaN and must have no points: {:?}",
-        nan_field.map(|s| s.points.len())
+        pressure.is_none_or(|s| s.points.is_empty()),
+        "HIGHRES_IMU.abs_pressure is NaN and must have no points: {:?}",
+        pressure.map(|s| s.points.len())
+    );
+    let xmag = state.messages.series("HIGHRES_IMU", 0, "xmag");
+    assert!(
+        xmag.is_some_and(|s| !s.points.is_empty()),
+        "the magnetometer is in HIGHRES_IMU's xmag"
     );
 
     assert_eq!(state.messages.lost_frames, 0, "frames were lost");
@@ -420,9 +427,9 @@ fn device_status_gives_one_row_per_device_against_the_simulator() {
         .iter()
         .filter(|(_, entry)| entry.name == "MARV_DEVICE_STATUS")
         .collect();
-    assert_eq!(rows.len(), 7, "{rows:?}");
+    assert_eq!(rows.len(), 8, "{rows:?}");
     let instances: Vec<u8> = rows.iter().map(|(key, _)| key.instance).collect();
-    assert_eq!(instances, [1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(instances, [1, 2, 3, 4, 5, 6, 7, 9]);
     for (_, entry) in &rows {
         assert!(entry.count >= 3, "{entry:?}");
         assert_eq!(entry.text("state"), Some("MARV_DEVICE_STATE_OK"));
@@ -534,7 +541,7 @@ fn a_recording_replays_to_the_same_counts() {
         log.frames,
         "records against log.frames"
     );
-    assert!(records.len() > 400, "only {} records in 3 s", records.len());
+    assert!(records.len() > 200, "only {} records in 3 s", records.len());
     assert_eq!(
         std::fs::metadata(&path).expect("log metadata").len(),
         log.bytes,
@@ -557,7 +564,8 @@ fn a_recording_replays_to_the_same_counts() {
             in_file[usize::from(instance)] += 1;
         }
     }
-    assert!(in_file.iter().all(|&n| n > 100), "{in_file:?}");
+    assert!(in_file[0] > 50, "{in_file:?}");
+    assert_eq!(in_file[1..], [0, 0, 0], "IMU1 only: {in_file:?}");
 
     let (reader, writer) = replay(
         Box::new(File::open(&path).expect("open the log to replay")),
@@ -573,17 +581,14 @@ fn a_recording_replays_to_the_same_counts() {
         replayed.status()
     );
     let state = replayed.state();
-    for instance in 0..4u8 {
-        let entry = state
-            .messages
-            .entry("HIGHRES_IMU", instance)
-            .unwrap_or_else(|| panic!("no HIGHRES_IMU[{instance}] after the replay"));
-        assert_eq!(
-            entry.count,
-            in_file[usize::from(instance)],
-            "HIGHRES_IMU[{instance}]: replayed against recorded"
-        );
-    }
+    let entry = state
+        .messages
+        .entry("HIGHRES_IMU", 0)
+        .expect("no HIGHRES_IMU[0] after the replay");
+    assert_eq!(
+        entry.count, in_file[0],
+        "HIGHRES_IMU[0]: replayed against recorded"
+    );
     assert_eq!(state.link.rx.crc_errors, 0, "{:?}", state.link.rx);
     assert_eq!(state.link.rx.discarded_bytes, 0, "{:?}", state.link.rx);
 }
@@ -609,7 +614,7 @@ fn serial_pseudo_port_carries_the_whole_stack() {
     );
     run_for(secs(5));
     let state = client.state();
-    assert_rate(&state, "HIGHRES_IMU[0]", 50.0, 5.0);
+    assert_rate(&state, "HIGHRES_IMU[0]", 25.0, 5.0);
     assert_eq!(state.link.rx.discarded_bytes, 0, "{:?}", state.link.rx);
 
     socat.kill();
