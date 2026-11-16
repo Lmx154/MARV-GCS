@@ -33,7 +33,7 @@ fn start() -> Server {
     }
 }
 
-/// Counts of HEARTBEAT and HIGHRES_IMU messages (four instances in each 50 Hz period) decoded from a connection so far.
+/// Counts of HEARTBEAT and HIGHRES_IMU messages (25 Hz) decoded from a connection so far.
 #[derive(Default)]
 struct Seen {
     heartbeats: usize,
@@ -94,8 +94,8 @@ fn streams_telemetry_in_real_time() {
         let seen = seen.lock().unwrap();
         assert!(seen.heartbeats >= 2, "heartbeats: {}", seen.heartbeats);
         assert!(
-            (452..=548).contains(&seen.imu),
-            "HIGHRES_IMU: {} instead of about 4 x 125",
+            (56..=69).contains(&seen.imu),
+            "HIGHRES_IMU: {} instead of about 62",
             seen.imu
         );
     }

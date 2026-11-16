@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 
 use gcs_sim::{ParamEncoding, SimConfig, SimVehicle, Stream};
 use mavlink::dialects::common::{
-    COMMAND_ACK_DATA, COMMAND_LONG_DATA, HEARTBEAT_DATA, HIGHRES_IMU_DATA, HighresImuUpdatedFlags,
-    MavAutopilot, MavCmd, MavMessage, MavModeFlag, MavProtocolCapability, MavResult, MavState,
-    MavType, PARAM_REQUEST_LIST_DATA,
+    COMMAND_ACK_DATA, COMMAND_LONG_DATA, HEARTBEAT_DATA, HIGHRES_IMU_DATA, MavAutopilot, MavCmd,
+    MavMessage, MavModeFlag, MavProtocolCapability, MavResult, MavState, MavType,
+    PARAM_REQUEST_LIST_DATA,
 };
 use mavlink::{
     MAVLinkV1MessageRaw, MAVLinkV2MessageRaw, MavHeader, MavlinkReader, Message, calculate_crc,
@@ -95,43 +95,41 @@ fn imu_frames(bytes: &[u8]) -> Vec<HIGHRES_IMU_DATA> {
 }
 
 #[test]
-fn highres_imu_sends_four_instances_per_period_with_one_timestamp() {
+fn the_default_streams_are_the_real_firmwares_at_its_rates() {
     let mut vehicle = SimVehicle::new(SimConfig::default());
     let mut bytes = Vec::new();
     for t in 0..=1000 {
         bytes.extend(vehicle.step(t, &[]));
     }
-    let mut periods: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
-    let mut order = Vec::new();
-    for d in imu_frames(&bytes) {
-        periods.entry(d.time_usec).or_default().push(d.id);
-        order.push(d.id);
+    let mut count: BTreeMap<u32, usize> = BTreeMap::new();
+    for (_, m) in decode(&bytes) {
+        *count.entry(m.message_id()).or_default() += 1;
     }
+    // HEARTBEAT, SYS_STATUS and GPS_RAW_INT 1 Hz (both ends of the second included), the three sensor
+    // values 25 Hz, RC_CHANNELS 5 Hz, and the boot STATUSTEXT.
     assert_eq!(
-        periods.len(),
-        51,
-        "50 Hz over one second, both ends included"
+        count,
+        BTreeMap::from([
+            (0, 2),
+            (1, 2),
+            (24, 2),
+            (29, 26),
+            (65, 6),
+            (105, 26),
+            (116, 26),
+            (253, 1)
+        ])
     );
-    for (time_usec, ids) in &periods {
-        assert_eq!(ids, &[0, 1, 2, 3], "period at {time_usec} us");
-        assert_eq!(time_usec % 20_000, 0);
-    }
-    assert_eq!(order.len(), 204);
-    // Nothing else of the old default streams.
-    let others: Vec<u32> = decode(&bytes)
-        .iter()
-        .map(|(_, m)| m.message_id())
-        .filter(|id| ![0, 105, 29, 24, 253].contains(id))
-        .collect();
-    assert!(others.is_empty(), "{others:?}");
+    let imu = imu_frames(&bytes);
+    assert!(imu.iter().all(|d| d.id == 0), "IMU1 only");
+    assert!(imu.iter().all(|d| d.time_usec % 40_000 == 0));
 }
 
 #[test]
-fn highres_imu_on_the_wire_has_the_documented_values_nans_and_bits() {
-    use HighresImuUpdatedFlags as F;
+fn highres_imu_on_the_wire_is_imu1_with_the_magnetometer() {
     let mut vehicle = SimVehicle::new(SimConfig::default());
     let frames = imu_frames(&vehicle.step(0, &[]));
-    assert_eq!(frames.len(), 4);
+    assert_eq!(frames.len(), 1);
     let near = |a: f32, b: f32| (a - b).abs() < 2e-6;
 
     let a = &frames[0];
@@ -141,87 +139,17 @@ fn highres_imu_on_the_wire_has_the_documented_values_nans_and_bits() {
         near(a.xgyro, 0.002_397_13) && near(a.ygyro, 0.003_989_98) && near(a.zgyro, 0.001_795_42)
     );
     assert_eq!(a.temperature, 25.0);
+    assert_eq!((a.xmag, a.ymag, a.zmag), (0.21, -0.03, 0.42));
     assert!(
-        [
-            a.xmag,
-            a.ymag,
-            a.zmag,
-            a.abs_pressure,
-            a.diff_pressure,
-            a.pressure_alt
-        ]
-        .iter()
-        .all(|v| v.is_nan())
+        [a.abs_pressure, a.diff_pressure, a.pressure_alt]
+            .iter()
+            .all(|v| v.is_nan())
     );
-    assert_eq!(a.fields_updated.bits(), 0x103F);
+    assert_eq!(a.fields_updated.bits(), 0x11FF);
 
-    let b = &frames[1];
-    assert_eq!(b.id, 1);
-    assert!(near(b.xacc, 0.289_067_46) && near(b.yacc, 0.186_426_3) && near(b.zacc, -9.841_549));
-    assert!(near(b.xgyro, 0.004_869_24) && near(b.zgyro, -0.001_835_57));
-    assert_eq!(b.temperature, 25.0);
-    assert!(
-        [
-            b.xmag,
-            b.ymag,
-            b.zmag,
-            b.abs_pressure,
-            b.diff_pressure,
-            b.pressure_alt
-        ]
-        .iter()
-        .all(|v| v.is_nan())
-    );
-    assert_eq!(b.fields_updated.bits(), 0x103F);
-
-    let c = &frames[2];
-    assert_eq!(c.id, 2);
-    assert!(near(c.xacc, -0.026_694_25) && near(c.yacc, 0.441_277_33) && near(c.zacc, -9.388_841));
-    assert!(
-        [
-            c.xgyro,
-            c.ygyro,
-            c.zgyro,
-            c.xmag,
-            c.ymag,
-            c.zmag,
-            c.abs_pressure,
-            c.diff_pressure,
-            c.pressure_alt,
-            c.temperature
-        ]
-        .iter()
-        .all(|v| v.is_nan())
-    );
-    assert_eq!(
-        c.fields_updated,
-        F::HIGHRES_IMU_UPDATED_XACC | F::HIGHRES_IMU_UPDATED_YACC | F::HIGHRES_IMU_UPDATED_ZACC
-    );
-
-    let d = &frames[3];
-    assert_eq!(d.id, 3);
-    assert_eq!((d.xmag, d.ymag, d.zmag), (0.21, -0.03, 0.42));
-    assert_eq!(d.temperature, 25.0);
-    assert!(
-        [
-            d.xacc,
-            d.yacc,
-            d.zacc,
-            d.xgyro,
-            d.ygyro,
-            d.zgyro,
-            d.abs_pressure,
-            d.diff_pressure,
-            d.pressure_alt
-        ]
-        .iter()
-        .all(|v| v.is_nan())
-    );
-    assert_eq!(d.fields_updated.bits(), 64 | 128 | 256 | 4096);
-
-    // Later in time the main IMU has moved and the time stamp follows.
-    let later = imu_frames(&vehicle.step(20, &[]));
-    assert_eq!(later[0].time_usec, 20_000);
+    // Later in time the IMU has moved and the time stamp follows.
+    let later = imu_frames(&vehicle.step(40, &[]));
+    assert_eq!(later[0].time_usec, 40_000);
     assert_ne!(later[0].yacc, a.yacc);
 }
 
@@ -308,7 +236,7 @@ fn unanswered_version_request_sends_neither_ack_nor_message() {
 fn requesting_a_stream_gives_an_ack_and_one_copy() {
     let mut vehicle = booted(SimConfig::default());
     let messages = decode(&vehicle.step(10, &request_message(105)));
-    assert_eq!(messages.len(), 5, "{messages:?}");
+    assert_eq!(messages.len(), 2, "{messages:?}");
     assert!(matches!(&messages[0].1, MavMessage::COMMAND_ACK(a)
         if a.result == MavResult::MAV_RESULT_ACCEPTED && a.command == MavCmd::MAV_CMD_REQUEST_MESSAGE));
     let copies: Vec<(u8, u64)> = messages[1..]
@@ -318,10 +246,13 @@ fn requesting_a_stream_gives_an_ack_and_one_copy() {
             other => panic!("{other:?}"),
         })
         .collect();
-    assert_eq!(copies, [(0, 10_000), (1, 10_000), (2, 10_000), (3, 10_000)]);
+    assert_eq!(copies, [(0, 10_000)]);
 
     for (t, (id, name)) in [
         (29, "SCALED_PRESSURE"),
+        (116, "SCALED_IMU2"),
+        (65, "RC_CHANNELS"),
+        (1, "SYS_STATUS"),
         (24, "GPS_RAW_INT"),
         (0, "HEARTBEAT"),
     ]
@@ -339,13 +270,13 @@ fn requesting_a_stream_gives_an_ack_and_one_copy() {
     // A stream of a custom configuration can be requested too.
     let mut config = SimConfig::default();
     config.streams.push(Stream {
-        message_id: 1,
+        message_id: 26,
         rate_hz: 1.0,
     });
     let mut vehicle = booted(config);
-    let messages = decode(&vehicle.step(1, &request_message(1)));
+    let messages = decode(&vehicle.step(1, &request_message(26)));
     assert_eq!(messages.len(), 2);
-    assert!(matches!(messages[1].1, MavMessage::SYS_STATUS(_)));
+    assert!(matches!(messages[1].1, MavMessage::SCALED_IMU(_)));
 }
 
 #[test]

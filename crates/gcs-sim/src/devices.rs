@@ -19,12 +19,13 @@ const MAG: u8 = 4;
 const GNSS: u8 = 5;
 const BATT: u8 = 6;
 const RC: u8 = 7;
+const SD: u8 = 9;
 /// `MARV_DEVICE_STATE_OK` and `MARV_DEVICE_ERROR_NONE`.
 const STATE_OK: u8 = 2;
 const ERROR_NONE: u8 = 0;
 
 /// The devices of the simulated vehicle and the samples per second each delivers.
-pub const DEVICES: [(u8, u32); 7] = [
+pub const DEVICES: [(u8, u32); 8] = [
     (IMU1, 1000),
     (IMU2, 640),
     (BARO, 50),
@@ -32,6 +33,7 @@ pub const DEVICES: [(u8, u32); 7] = [
     (GNSS, 10),
     (BATT, 10),
     (RC, 100),
+    (SD, 1),
 ];
 
 /// The payload of one device at `now_ms` after boot (not yet cut of its trailing zeros).

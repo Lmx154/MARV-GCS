@@ -65,16 +65,16 @@ fn the_default_configuration_sends_no_device_status() {
 }
 
 #[test]
-fn seven_devices_once_a_second_with_advancing_counters() {
+fn eight_devices_once_a_second_with_advancing_counters() {
     let frames = run(SimConfig::default().with_device_status(1.0), 3);
     let rows: Vec<_> = frames.iter().filter(|f| f.id == ID).collect();
-    // Seconds 0, 1, 2 and 3: seven devices each.
-    assert_eq!(rows.len(), 28);
+    // Seconds 0, 1, 2 and 3: eight devices each (the SD card is id 9).
+    assert_eq!(rows.len(), 32);
     assert!(rows.iter().all(|f| f.crc_ok));
     let device = |f: &Frame| f.payload[26];
     assert_eq!(
-        rows[..7].iter().map(|f| device(f)).collect::<Vec<_>>(),
-        [1, 2, 3, 4, 5, 6, 7]
+        rows[..8].iter().map(|f| device(f)).collect::<Vec<_>>(),
+        [1, 2, 3, 4, 5, 6, 7, 9]
     );
     for f in &rows {
         assert_eq!(f.payload[27], 2, "state OK");

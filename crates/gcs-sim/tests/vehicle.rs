@@ -67,13 +67,32 @@ fn default_config() {
         .iter()
         .map(|s| (s.message_id, s.rate_hz))
         .collect();
-    assert_eq!(streams, [(0, 1.0), (105, 50.0), (29, 10.0), (24, 5.0)]);
+    assert_eq!(
+        streams,
+        [
+            (0, 1.0),
+            (1, 1.0),
+            (105, 25.0),
+            (116, 25.0),
+            (29, 25.0),
+            (24, 1.0),
+            (65, 5.0)
+        ]
+    );
 }
 
 #[test]
 fn rates_over_ten_seconds_1ms_and_20ms_steps() {
-    // HIGHRES_IMU: 50 Hz periods of four frames each.
-    let expected = [(0, 10), (105, 2000), (29, 100), (24, 50)];
+    // The firmware's rates: 25 Hz for the sensor values, 1 Hz heartbeat, SYS_STATUS and GPS, 5 Hz RC.
+    let expected = [
+        (0, 10),
+        (1, 10),
+        (105, 250),
+        (116, 250),
+        (29, 250),
+        (24, 10),
+        (65, 50),
+    ];
     for step_ms in [1, 20] {
         let counts = counts(step_ms, 10_000);
         assert_eq!(
@@ -83,9 +102,8 @@ fn rates_over_ten_seconds_1ms_and_20ms_steps() {
         );
         for (id, want) in expected {
             let got = counts[&id];
-            let tolerance = if id == 105 { 4 } else { 1 };
             assert!(
-                got.abs_diff(want) <= tolerance,
+                got.abs_diff(want) <= 1,
                 "step {step_ms} ms, message {id}: {got} instead of {want}"
             );
         }
@@ -113,13 +131,13 @@ fn a_jump_in_time_is_not_made_up() {
         vehicle.step(t, &[]);
     }
     let jump = decode(&vehicle.step(61_000, &[]));
-    // One message of each stream, four of them HIGHRES_IMU: 1 + 4 + 1 + 1.
+    // One message of each of the seven streams.
     assert!(jump.len() <= 7, "burst of {} messages", jump.len());
     let after: usize = (61_001..=62_000)
         .map(|t| decode(&vehicle.step(t, &[])).len())
         .sum();
-    // One second of the default streams: 1 + 4 * 50 + 10 + 5. HIGHRES_IMU arrives in fours.
-    assert!(after.abs_diff(216) <= 8, "{after}");
+    // One second of the default streams: 1 + 1 + 3 * 25 + 1 + 5.
+    assert!(after.abs_diff(83) <= 4, "{after}");
 }
 
 #[test]

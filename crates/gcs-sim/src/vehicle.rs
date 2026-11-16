@@ -20,7 +20,8 @@
 use mavlink::dialects::common::{
     AUTOPILOT_VERSION_DATA, COMMAND_ACK_DATA, GPS_RAW_INT_DATA, HEARTBEAT_DATA, HIGHRES_IMU_DATA,
     LOG_DATA_DATA, LOG_ENTRY_DATA, MavMessage, MavProtocolCapability, MavResult, MavSeverity,
-    PARAM_VALUE_DATA, SCALED_PRESSURE_DATA, STATUSTEXT_DATA,
+    PARAM_VALUE_DATA, RC_CHANNELS_DATA, SCALED_IMU2_DATA, SCALED_PRESSURE_DATA, STATUSTEXT_DATA,
+    SYS_STATUS_DATA,
 };
 use mavlink::types::CharArray;
 use mavlink::{MAVLinkV2MessageRaw, MavHeader, MavlinkVersion, Message, MessageData};
@@ -146,10 +147,14 @@ impl Default for SimConfig {
             system_id: 1,
             component_id: 1,
             streams: vec![
+                // The streams of the real firmware on its USB port.
                 stream(HEARTBEAT_DATA::ID, 1.0),
-                stream(HIGHRES_IMU_DATA::ID, 50.0),
-                stream(SCALED_PRESSURE_DATA::ID, 10.0),
-                stream(GPS_RAW_INT_DATA::ID, 5.0),
+                stream(SYS_STATUS_DATA::ID, 1.0),
+                stream(HIGHRES_IMU_DATA::ID, 25.0),
+                stream(SCALED_IMU2_DATA::ID, 25.0),
+                stream(SCALED_PRESSURE_DATA::ID, 25.0),
+                stream(GPS_RAW_INT_DATA::ID, 1.0),
+                stream(RC_CHANNELS_DATA::ID, 5.0),
             ],
             params: default_params(),
             param_encoding: ParamEncoding::default(),

@@ -3,16 +3,17 @@
 //! The simulated board lies still, with a small visible motion so plots are not flat lines.
 //! `time_boot_ms` of every message is `now_ms` (GPS and HIGHRES_IMU `time_usec` is `now_ms * 1000`).
 //!
-//! The default streams are HEARTBEAT, HIGHRES_IMU (four instances, see [`highres_imu`]),
-//! SCALED_PRESSURE and GPS_RAW_INT. [`scaled_imu`], [`scaled_imu2`] and [`sys_status`] are not
-//! default streams any more (the link contract rejects SCALED_IMU: it stops at 32.7 g) but a
-//! custom [`SimConfig`](crate::SimConfig) can still stream them.
+//! The default streams are those of the real firmware on its USB port: HEARTBEAT, SYS_STATUS, GPS_RAW_INT
+//! (1 Hz), HIGHRES_IMU (IMU1 as `id` 0, with the magnetometer in `xmag`/`ymag`/`zmag`), SCALED_IMU2 (IMU2, in mG
+//! and mrad/s) and SCALED_PRESSURE (25 Hz), and RC_CHANNELS (5 Hz). [`scaled_imu`] is not a default stream
+//! (the link contract rejects SCALED_IMU: it stops at 32.7 g) but a custom [`SimConfig`](crate::SimConfig)
+//! can still stream it.
 
 use mavlink::MessageData;
 use mavlink::dialects::common::{
     GPS_RAW_INT_DATA, GpsFixType, HEARTBEAT_DATA, HIGHRES_IMU_DATA, HighresImuUpdatedFlags,
-    MavAutopilot, MavMessage, MavModeFlag, MavState, MavType, SCALED_IMU_DATA, SCALED_IMU2_DATA,
-    SCALED_PRESSURE_DATA, SYS_STATUS_DATA,
+    MavAutopilot, MavMessage, MavModeFlag, MavState, MavType, RC_CHANNELS_DATA, SCALED_IMU_DATA,
+    SCALED_IMU2_DATA, SCALED_PRESSURE_DATA, SYS_STATUS_DATA,
 };
 
 /// Mean barometric pressure in hPa.
@@ -27,16 +28,18 @@ pub const LONGITUDE_E7: i32 = 85_456_000;
 pub const ALTITUDE_MM: i32 = 488_000;
 /// Battery voltage in mV.
 pub const BATTERY_MV: u16 = 16_000;
+/// Battery current in cA (1.20 A).
+pub const BATTERY_CA: i16 = 120;
+/// RSSI of RC_CHANNELS (0 to 254; 255 is unknown).
+pub const RC_RSSI: u8 = 200;
 
 /// Constant magnetometer reading in mGauss.
 const MAG: [i16; 3] = [210, -30, 420];
-/// Number of HIGHRES_IMU instances (`id` 0 to 3), all sent in each period of the stream.
-pub const HIGHRES_IMU_INSTANCES: u8 = 4;
+/// Number of HIGHRES_IMU instances: the real firmware sends IMU1 only, as `id` 0.
+pub const HIGHRES_IMU_INSTANCES: u8 = 1;
 /// Standard gravity as the main IMUs measure it, in m/s^2 (z axis, board lying still).
 pub const GRAVITY_MS2: f64 = 9.81;
-/// Gravity as the high-g accelerometer measures it, in m/s^2 (z axis).
-pub const HIGH_G_GRAVITY_MS2: f64 = 9.8;
-/// Constant magnetic field of instance 3 in gauss.
+/// Constant magnetic field in gauss.
 pub const MAG_GAUSS: [f32; 3] = [0.21, -0.03, 0.42];
 /// Temperature of the sensors that measure it, in degrees Celsius.
 pub const TEMPERATURE_DEGC: f32 = 25.0;
@@ -81,106 +84,44 @@ fn imu_motion_si(now_ms: u64, phase: f64) -> [f64; 6] {
     ]
 }
 
-/// Deterministic noise in [-0.05, 0.05) m/s^2: a hash of the time and the axis, so it is a pure
-/// function of time like everything else here.
-fn high_g_noise(now_ms: u64, axis: u64) -> f64 {
-    let mut x =
-        now_ms.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (axis + 1).wrapping_mul(0xD1B5_4A32_D192_ED03);
-    x ^= x >> 32;
-    x = x.wrapping_mul(0xD6E8_FEB8_6659_FD93);
-    x ^= x >> 32;
-    ((x >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 0.1
-}
-
-/// Acceleration of the high-g accelerometer in m/s^2: (0, 0, -9.8) plus sines of 0.5 m/s^2 at 1.7,
-/// 2.3 and 1.1 Hz (phases 0, 1 and 2 rad) plus [`high_g_noise`], a coarser and noisier look than
-/// the main IMUs.
-fn high_g_motion(now_ms: u64) -> [f64; 3] {
-    [
-        sine(now_ms, 0.5, 1.7, 0.0) + high_g_noise(now_ms, 0),
-        sine(now_ms, 0.5, 2.3, 1.0) + high_g_noise(now_ms, 1),
-        -HIGH_G_GRAVITY_MS2 + sine(now_ms, 0.5, 1.1, 2.0) + high_g_noise(now_ms, 2),
-    ]
-}
-
-/// HIGHRES_IMU instance `id` (0 to 3) at this time, or `None` for any other `id`. SI units;
-/// `time_usec` is `now_ms * 1000`; a field the instance does not measure is NaN and its
-/// `fields_updated` bit is clear; pressure fields are NaN in every instance.
-///
-/// - 0, main IMU: acceleration, gyro (see `imu_motion_si`: (0, 0, -9.81) m/s^2 plus sines up to
-///   0.3 m/s^2, rotation sines of a few mrad/s) and temperature 25.0 degC.
-/// - 1, second IMU: the same with every sine shifted by 1.3 rad.
-/// - 2, high-g accelerometer: acceleration only, about (0, 0, -9.8) m/s^2 with sines of 0.5 m/s^2
-///   and noise of up to 0.05 m/s^2.
-/// - 3, magnetometer: field (0.21, -0.03, 0.42) gauss and temperature 25.0 degC.
+/// HIGHRES_IMU as the real firmware sends it: `id` 0 only (IMU1), anything else is `None`. SI units;
+/// `time_usec` is `now_ms * 1000`; acceleration (see `imu_motion_si`: (0, 0, -9.81) m/s^2 plus sines up to
+/// 0.3 m/s^2), rotation (sines of a few mrad/s), temperature 25.0 degC and the magnetic field
+/// (0.21, -0.03, 0.42) gauss in `xmag`, `ymag`, `zmag`; the pressure fields are NaN and their
+/// `fields_updated` bits clear.
 pub fn highres_imu(id: u8, now_ms: u64) -> Option<HIGHRES_IMU_DATA> {
     use HighresImuUpdatedFlags as F;
+    if id != 0 {
+        return None;
+    }
     let nan = f32::NAN;
-    let blank = HIGHRES_IMU_DATA {
+    let m = imu_motion_si(now_ms, 0.0);
+    Some(HIGHRES_IMU_DATA {
         time_usec: now_ms * 1000,
-        xacc: nan,
-        yacc: nan,
-        zacc: nan,
-        xgyro: nan,
-        ygyro: nan,
-        zgyro: nan,
-        xmag: nan,
-        ymag: nan,
-        zmag: nan,
+        xacc: m[0] as f32,
+        yacc: m[1] as f32,
+        zacc: m[2] as f32,
+        xgyro: m[3] as f32,
+        ygyro: m[4] as f32,
+        zgyro: m[5] as f32,
+        xmag: MAG_GAUSS[0],
+        ymag: MAG_GAUSS[1],
+        zmag: MAG_GAUSS[2],
         abs_pressure: nan,
         diff_pressure: nan,
         pressure_alt: nan,
-        temperature: nan,
-        fields_updated: F::empty(),
+        temperature: TEMPERATURE_DEGC,
+        fields_updated: F::HIGHRES_IMU_UPDATED_XACC
+            | F::HIGHRES_IMU_UPDATED_YACC
+            | F::HIGHRES_IMU_UPDATED_ZACC
+            | F::HIGHRES_IMU_UPDATED_XGYRO
+            | F::HIGHRES_IMU_UPDATED_YGYRO
+            | F::HIGHRES_IMU_UPDATED_ZGYRO
+            | F::HIGHRES_IMU_UPDATED_XMAG
+            | F::HIGHRES_IMU_UPDATED_YMAG
+            | F::HIGHRES_IMU_UPDATED_ZMAG
+            | F::HIGHRES_IMU_UPDATED_TEMPERATURE,
         id,
-    };
-    let imu = |phase: f64| {
-        let m = imu_motion_si(now_ms, phase);
-        HIGHRES_IMU_DATA {
-            xacc: m[0] as f32,
-            yacc: m[1] as f32,
-            zacc: m[2] as f32,
-            xgyro: m[3] as f32,
-            ygyro: m[4] as f32,
-            zgyro: m[5] as f32,
-            temperature: TEMPERATURE_DEGC,
-            fields_updated: F::HIGHRES_IMU_UPDATED_XACC
-                | F::HIGHRES_IMU_UPDATED_YACC
-                | F::HIGHRES_IMU_UPDATED_ZACC
-                | F::HIGHRES_IMU_UPDATED_XGYRO
-                | F::HIGHRES_IMU_UPDATED_YGYRO
-                | F::HIGHRES_IMU_UPDATED_ZGYRO
-                | F::HIGHRES_IMU_UPDATED_TEMPERATURE,
-            ..blank.clone()
-        }
-    };
-    Some(match id {
-        0 => imu(0.0),
-        1 => imu(1.3),
-        2 => {
-            let a = high_g_motion(now_ms);
-            HIGHRES_IMU_DATA {
-                xacc: a[0] as f32,
-                yacc: a[1] as f32,
-                zacc: a[2] as f32,
-                fields_updated: F::HIGHRES_IMU_UPDATED_XACC
-                    | F::HIGHRES_IMU_UPDATED_YACC
-                    | F::HIGHRES_IMU_UPDATED_ZACC,
-                ..blank
-            }
-        }
-        3 => HIGHRES_IMU_DATA {
-            xmag: MAG_GAUSS[0],
-            ymag: MAG_GAUSS[1],
-            zmag: MAG_GAUSS[2],
-            temperature: TEMPERATURE_DEGC,
-            fields_updated: F::HIGHRES_IMU_UPDATED_XMAG
-                | F::HIGHRES_IMU_UPDATED_YMAG
-                | F::HIGHRES_IMU_UPDATED_ZMAG
-                | F::HIGHRES_IMU_UPDATED_TEMPERATURE,
-            ..blank
-        },
-        _ => return None,
     })
 }
 
@@ -196,11 +137,12 @@ pub fn heartbeat() -> HEARTBEAT_DATA {
     }
 }
 
-/// SYS_STATUS: battery 16000 mV, everything else unknown or zero.
+/// SYS_STATUS as the firmware's board sensor fills it: battery 16000 mV and 1.20 A (120 cA), the
+/// remaining percentage unknown (-1), everything else zero.
 pub fn sys_status() -> SYS_STATUS_DATA {
     SYS_STATUS_DATA {
         voltage_battery: BATTERY_MV,
-        current_battery: -1,
+        current_battery: BATTERY_CA,
         battery_remaining: -1,
         ..SYS_STATUS_DATA::default()
     }
@@ -224,7 +166,9 @@ pub fn scaled_imu(now_ms: u64) -> SCALED_IMU_DATA {
     }
 }
 
-/// SCALED_IMU2: the shape of [`scaled_imu`] with every sine shifted by 1.3 rad; temperature 2500 cdegC.
+/// SCALED_IMU2 as the firmware sends it (IMU2: acceleration in mG, rotation in mrad/s): the motion of
+/// [`scaled_imu`] with every sine shifted by 1.3 rad; the magnetometer fields 0 (IMU2 has none);
+/// temperature 2500 cdegC.
 pub fn scaled_imu2(now_ms: u64) -> SCALED_IMU2_DATA {
     let m = imu_motion(now_ms, 1.3);
     SCALED_IMU2_DATA {
@@ -235,9 +179,9 @@ pub fn scaled_imu2(now_ms: u64) -> SCALED_IMU2_DATA {
         xgyro: m[3],
         ygyro: m[4],
         zgyro: m[5],
-        xmag: MAG[0],
-        ymag: MAG[1],
-        zmag: MAG[2],
+        xmag: 0,
+        ymag: 0,
+        zmag: 0,
         temperature: TEMPERATURE_CDEGC,
     }
 }
@@ -278,8 +222,46 @@ pub fn gps_raw_int(now_ms: u64) -> GPS_RAW_INT_DATA {
     }
 }
 
-/// The messages with this id at this time: one, except HIGHRES_IMU, which has one per instance
-/// (ids 0 to 3, in that order). Empty when the simulator does not produce the message.
+/// RC_CHANNELS as the firmware sends it: 16 channels in microseconds (`chancount` 16, channels 17 and 18
+/// 65535 = not used), `rssi` [`RC_RSSI`]. Channel `n` (1 to 16) is 1500 us plus a sine of up to 400 us
+/// at (0.1 + 0.05 n) Hz, except channel 3 (throttle), which is 1000 us plus 0 to 1000 us.
+pub fn rc_channels(now_ms: u64) -> RC_CHANNELS_DATA {
+    let mut ch = [0u16; 16];
+    for (i, slot) in ch.iter_mut().enumerate() {
+        let n = (i + 1) as f64;
+        *slot = if i == 2 {
+            (1500.0 + sine(now_ms, 500.0, 0.1, 0.0)).round() as u16
+        } else {
+            (1500.0 + sine(now_ms, 400.0, 0.1 + 0.05 * n, n)).round() as u16
+        };
+    }
+    RC_CHANNELS_DATA {
+        time_boot_ms: now_ms as u32,
+        chancount: 16,
+        chan1_raw: ch[0],
+        chan2_raw: ch[1],
+        chan3_raw: ch[2],
+        chan4_raw: ch[3],
+        chan5_raw: ch[4],
+        chan6_raw: ch[5],
+        chan7_raw: ch[6],
+        chan8_raw: ch[7],
+        chan9_raw: ch[8],
+        chan10_raw: ch[9],
+        chan11_raw: ch[10],
+        chan12_raw: ch[11],
+        chan13_raw: ch[12],
+        chan14_raw: ch[13],
+        chan15_raw: ch[14],
+        chan16_raw: ch[15],
+        chan17_raw: u16::MAX,
+        chan18_raw: u16::MAX,
+        rssi: RC_RSSI,
+    }
+}
+
+/// The messages with this id at this time: one (HIGHRES_IMU has one instance, `id` 0). Empty when the
+/// simulator does not produce the message.
 pub fn messages(message_id: u32, now_ms: u64) -> Vec<MavMessage> {
     match message_id {
         HEARTBEAT_DATA::ID => vec![MavMessage::HEARTBEAT(heartbeat())],
@@ -291,6 +273,7 @@ pub fn messages(message_id: u32, now_ms: u64) -> Vec<MavMessage> {
             .map(MavMessage::HIGHRES_IMU)
             .collect(),
         SCALED_PRESSURE_DATA::ID => vec![MavMessage::SCALED_PRESSURE(scaled_pressure(now_ms))],
+        RC_CHANNELS_DATA::ID => vec![MavMessage::RC_CHANNELS(rc_channels(now_ms))],
         GPS_RAW_INT_DATA::ID => vec![MavMessage::GPS_RAW_INT(gps_raw_int(now_ms))],
         _ => Vec::new(),
     }
@@ -333,11 +316,11 @@ mod tests {
     }
 
     #[test]
-    fn imu2_differs_from_imu_in_phase_only() {
+    fn imu2_differs_from_imu_in_phase_only_and_has_no_magnetometer() {
         let (a, b) = (scaled_imu(0), scaled_imu2(0));
         assert_eq!((b.xacc, b.yacc, b.zacc), (29, 19, -1003));
         assert_ne!(a.xacc, b.xacc);
-        assert_eq!((a.xmag, a.ymag, a.zmag), (b.xmag, b.ymag, b.zmag));
+        assert_eq!((b.xmag, b.ymag, b.zmag), (0, 0, 0));
         assert_eq!(b.time_boot_ms, 0);
         assert_eq!((a.temperature, b.temperature), (2500, 2500));
     }
@@ -372,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn highres_main_imu_at_time_zero() {
+    fn highres_is_imu1_with_the_magnetometer_as_the_firmware_sends_it() {
         use HighresImuUpdatedFlags as F;
         let d = highres_imu(0, 0).unwrap();
         assert_eq!((d.id, d.time_usec), (0, 0));
@@ -383,16 +366,10 @@ mod tests {
         assert_close(d.ygyro, 0.003_989_980);
         assert_close(d.zgyro, 0.001_795_416);
         assert_eq!(d.temperature, 25.0);
+        assert_eq!((d.xmag, d.ymag, d.zmag), (0.21, -0.03, 0.42));
         assert_eq!(
             nan_fields(&d),
-            [
-                "xmag",
-                "ymag",
-                "zmag",
-                "abs_pressure",
-                "diff_pressure",
-                "pressure_alt"
-            ]
+            ["abs_pressure", "diff_pressure", "pressure_alt"]
         );
         assert_eq!(
             d.fields_updated,
@@ -402,119 +379,62 @@ mod tests {
                 | F::HIGHRES_IMU_UPDATED_XGYRO
                 | F::HIGHRES_IMU_UPDATED_YGYRO
                 | F::HIGHRES_IMU_UPDATED_ZGYRO
+                | F::HIGHRES_IMU_UPDATED_XMAG
+                | F::HIGHRES_IMU_UPDATED_YMAG
+                | F::HIGHRES_IMU_UPDATED_ZMAG
                 | F::HIGHRES_IMU_UPDATED_TEMPERATURE
         );
-        assert_eq!(d.fields_updated.bits(), 0x103F);
+        assert_eq!(d.fields_updated.bits(), 0x11FF);
+        // Only IMU1 exists: no second instance, no high-g, no separate magnetometer.
+        for id in 1..=4 {
+            assert!(highres_imu(id, 0).is_none(), "id {id}");
+        }
     }
 
     #[test]
-    fn highres_second_imu_has_other_phases() {
-        let (a, b) = (highres_imu(0, 0).unwrap(), highres_imu(1, 0).unwrap());
-        assert_eq!(b.id, 1);
-        assert_close(b.xacc, 0.289_067_456);
-        assert_close(b.yacc, 0.186_426_303);
-        assert_close(b.zacc, -9.841_549_139);
-        assert_close(b.xgyro, 0.004_869_238);
-        assert_close(b.ygyro, 0.001_339_953);
-        assert_close(b.zgyro, -0.001_835_574);
-        assert_ne!(a.xacc, b.xacc);
-        assert_eq!(b.temperature, 25.0);
-        assert_eq!(nan_fields(&a), nan_fields(&b));
-        assert_eq!(a.fields_updated, b.fields_updated);
+    fn highres_stays_within_its_amplitudes() {
+        let samples: Vec<_> = (0..20_000)
+            .step_by(10)
+            .map(|t| highres_imu(0, t).unwrap())
+            .collect();
+        for s in &samples {
+            assert!(s.xacc.abs() <= 0.3 + 1e-6 && s.yacc.abs() <= 0.25 + 1e-6);
+            assert!((-10.01..=-9.609).contains(&s.zacc));
+            assert!(s.xgyro.abs() <= 0.005 + 1e-6 && s.ygyro.abs() <= 0.004 + 1e-6);
+            assert!(s.zgyro.abs() <= 0.003 + 1e-6);
+        }
+        assert!(samples.iter().any(|s| s.xacc > 0.25));
+        assert!(samples.iter().any(|s| s.xacc < -0.25));
     }
 
     #[test]
-    fn highres_main_imus_stay_within_their_amplitudes() {
-        for id in [0, 1] {
-            let samples: Vec<_> = (0..20_000)
-                .step_by(10)
-                .map(|t| highres_imu(id, t).unwrap())
-                .collect();
-            for s in &samples {
-                assert!(s.xacc.abs() <= 0.3 + 1e-6 && s.yacc.abs() <= 0.25 + 1e-6);
-                assert!((-10.01..=-9.609).contains(&s.zacc));
-                assert!(s.xgyro.abs() <= 0.005 + 1e-6 && s.ygyro.abs() <= 0.004 + 1e-6);
-                assert!(s.zgyro.abs() <= 0.003 + 1e-6);
+    fn rc_channels_are_sixteen_channels_in_microseconds() {
+        for t in [0, 1234, 50_000] {
+            let m = rc_channels(t);
+            assert_eq!((m.chancount, m.rssi, m.time_boot_ms), (16, 200, t as u32));
+            assert_eq!((m.chan17_raw, m.chan18_raw), (u16::MAX, u16::MAX));
+            for us in [
+                m.chan1_raw,
+                m.chan2_raw,
+                m.chan3_raw,
+                m.chan4_raw,
+                m.chan5_raw,
+                m.chan6_raw,
+                m.chan7_raw,
+                m.chan8_raw,
+                m.chan9_raw,
+                m.chan10_raw,
+                m.chan11_raw,
+                m.chan12_raw,
+                m.chan13_raw,
+                m.chan14_raw,
+                m.chan15_raw,
+                m.chan16_raw,
+            ] {
+                assert!((1000..=2000).contains(&us), "{us} at {t} ms");
             }
-            assert!(samples.iter().any(|s| s.xacc > 0.25));
-            assert!(samples.iter().any(|s| s.xacc < -0.25));
         }
-    }
-
-    #[test]
-    fn highres_high_g_is_acceleration_only_and_noisy() {
-        use HighresImuUpdatedFlags as F;
-        let d = highres_imu(2, 0).unwrap();
-        assert_eq!(d.id, 2);
-        assert_close(d.xacc, -0.026_694_247);
-        assert_close(d.yacc, 0.441_277_335);
-        assert_close(d.zacc, -9.388_841_217);
-        assert_eq!(
-            nan_fields(&d),
-            [
-                "xgyro",
-                "ygyro",
-                "zgyro",
-                "xmag",
-                "ymag",
-                "zmag",
-                "abs_pressure",
-                "diff_pressure",
-                "pressure_alt",
-                "temperature"
-            ]
-        );
-        assert_eq!(
-            d.fields_updated,
-            F::HIGHRES_IMU_UPDATED_XACC | F::HIGHRES_IMU_UPDATED_YACC | F::HIGHRES_IMU_UPDATED_ZACC
-        );
-        let at_1s = highres_imu(2, 1000).unwrap();
-        assert_close(at_1s.xacc, -0.493_777_498);
-        // Noise: the residual of the pure sine is not zero, and never beyond 0.05 m/s^2.
-        let mut residuals = Vec::new();
-        for t in 0..2000 {
-            let s = highres_imu(2, t).unwrap();
-            let sine_x = sine(t, 0.5, 1.7, 0.0);
-            let r = f64::from(s.xacc) - sine_x;
-            assert!(r.abs() <= 0.0501, "{r} at {t}");
-            assert!((f64::from(s.zacc) + 9.8).abs() <= 0.5501);
-            residuals.push(r);
-        }
-        assert!(residuals.iter().any(|r| r.abs() > 0.04));
-        assert!(residuals.windows(2).filter(|w| w[0] != w[1]).count() > 1900);
-    }
-
-    #[test]
-    fn highres_magnetometer() {
-        use HighresImuUpdatedFlags as F;
-        for t in [0, 777, 123_456] {
-            let d = highres_imu(3, t).unwrap();
-            assert_eq!((d.id, d.time_usec), (3, t * 1000));
-            assert_eq!((d.xmag, d.ymag, d.zmag), (0.21, -0.03, 0.42));
-            assert_eq!(d.temperature, 25.0);
-            assert_eq!(
-                nan_fields(&d),
-                [
-                    "xacc",
-                    "yacc",
-                    "zacc",
-                    "xgyro",
-                    "ygyro",
-                    "zgyro",
-                    "abs_pressure",
-                    "diff_pressure",
-                    "pressure_alt"
-                ]
-            );
-            assert_eq!(
-                d.fields_updated,
-                F::HIGHRES_IMU_UPDATED_XMAG
-                    | F::HIGHRES_IMU_UPDATED_YMAG
-                    | F::HIGHRES_IMU_UPDATED_ZMAG
-                    | F::HIGHRES_IMU_UPDATED_TEMPERATURE
-            );
-        }
-        assert!(highres_imu(4, 0).is_none());
+        assert_ne!(rc_channels(0).chan1_raw, rc_channels(1234).chan1_raw);
     }
 
     #[test]
@@ -543,7 +463,9 @@ mod tests {
 
     #[test]
     fn sys_status_battery() {
-        assert_eq!(sys_status().voltage_battery, 16_000);
+        let m = sys_status();
+        assert_eq!((m.voltage_battery, m.current_battery), (16_000, 120));
+        assert_eq!(m.battery_remaining, -1);
     }
 
     #[test]
@@ -560,13 +482,13 @@ mod tests {
         assert!(messages(999, 0).is_empty());
         assert!(matches!(&messages(26, 5)[..], [MavMessage::SCALED_IMU(m)] if *m == scaled_imu(5)));
         let imu = messages(105, 5);
-        assert_eq!(imu.len(), 4);
-        for (i, m) in imu.iter().enumerate() {
-            let MavMessage::HIGHRES_IMU(d) = m else {
-                panic!("{m:?}")
-            };
-            assert_eq!(usize::from(d.id), i);
-            assert_eq!(d.time_usec, 5000);
-        }
+        assert_eq!(imu.len(), 1);
+        let MavMessage::HIGHRES_IMU(d) = &imu[0] else {
+            panic!("{:?}", imu[0])
+        };
+        assert_eq!((d.id, d.time_usec), (0, 5000));
+        assert!(
+            matches!(&messages(65, 7)[..], [MavMessage::RC_CHANNELS(m)] if *m == rc_channels(7))
+        );
     }
 }

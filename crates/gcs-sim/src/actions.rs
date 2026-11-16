@@ -20,7 +20,7 @@ pub const COMPASS_CALIBRATION_MS: u64 = 4_000;
 pub const ACTION_MS: u64 = 2_000;
 
 /// Devices that can be restarted and devices that have a self-test (`MARV_DEVICE` ids).
-const RESTART: [u8; 6] = [1, 2, 3, 4, 5, 6];
+const RESTART: [u8; 7] = [1, 2, 3, 4, 5, 6, 9];
 const SELF_TEST: [u8; 3] = [1, 2, 4];
 
 /// What the vehicle makes of a command and its parameters before it looks whether it is busy.
