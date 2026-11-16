@@ -129,6 +129,8 @@ stderr (a command whose own stdout shows texts does not echo them). A text belon
 | `calibrate gyro` / `accel` / `compass` / `cancel` | `MAV_CMD_PREFLIGHT_CALIBRATION` (gyro param1 = 1; accelerometer param5 = 4, one position, level; compass param2 = 1, 30 s of rotating the vehicle through all orientations, the CLI prints that as its first line; cancel all zeros) |
 | `device restart NAME` / `device selftest NAME` | `MAV_CMD_MARV_DEVICE`; NAME is IMU1, IMU2, BARO, MAG, GNSS, BATT, RC, SD, PSRAM, LED or ESC (any case); every name is sent and the vehicle decides (it denies a restart of RC; the window's buttons offer only the ones it accepts) |
 | `reboot --yes` | `MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN` param1 = 1; without `--yes` it refuses (exit 2) before connecting |
+| `logs list` | the logs on the vehicle's card, one line each, `NUMBER<TAB>SIZE` (bytes), then `last<TAB>N`: the number of the log being written, or the highest present when none is open; numbers have gaps; an empty card prints nothing on stdout and `marv-cli: no logs on the vehicle` on stderr, exit 0. Configure links only (`serial:`, `tcp:`) |
+| `logs get N [-o FILE] [--force]` | lists, then downloads log N to FILE (default `NNNNNNNN.BIN`, the card's name, in the current directory); prints `downloaded<TAB>FILE<TAB>SIZE bytes`. Progress on stderr, at most twice a second: `log N: DONE of SIZE bytes (P %)`. An existing file is refused (exit 1) unless `--force`; a log that is not in the list is exit 1 and creates no file; a download that ends without all its bytes is exit 1 and keeps the partial file, saying how many bytes are in it. Configure links only. See "Logs" below |
 | `record FILE [--for s]` | records the link to a `.tlog` (the session's own recording) for `--for` (default 60 s), then prints `recorded<TAB>FILE<TAB>N frames<TAB>N bytes`; an existing file is never overwritten (exit 1) |
 
 Output is one record per line; fields are separated by a TAB, so `cut -f`, `awk -F'\t'` and `grep` do. A
@@ -143,10 +145,30 @@ connect after the first has let go).
 | Exit status | Meaning |
 |---|---|
 | 0 | success (a command: the vehicle's result is accepted) |
-| 1 | the command failed: not accepted (denied, failed, cancelled, no answer, ...), a parameter echo that differs, an unknown parameter, a recording that cannot start |
+| 1 | the command failed: not accepted (denied, failed, cancelled, no answer, ...), a parameter echo that differs, an unknown parameter, a recording that cannot start; for `logs`: the list did not arrive, the log is not listed, the file exists or cannot be written, the download is incomplete |
 | 2 | usage error (unknown command, a missing argument, a bad number, `--yes` missing); nothing is opened |
 | 3 | no link, no heartbeat within `--timeout`, or the link went down |
 | 4 | refused: the link is operate-only and the command writes (`marv-cli: refused: this link is operate-only (SetParam)`) |
+
+### Logs
+
+`logs list` and `logs get` download the `.BIN` logs the firmware writes to its SD card, over the same USB
+cable, with ArduPilot's MAVLink log download (`docs/link-contract.md` section 11). The file is the card's file,
+byte for byte, and opens in MAVExplorer, UAV Log Viewer and Mission Planner. Log numbers are the card's, with
+gaps; the log being written can be downloaded too, up to what the vehicle has flushed (at most about 1 s
+behind), and logging goes on meanwhile.
+
+- Speed: the vehicle sends 4 frames of 90 bytes per 5 ms, so about 70 kB/s at best: a log of 10 MB takes
+  about 2.5 minutes and one of 161 MB about 37 minutes. The command prints its progress and does not hurry.
+- The station asks for 512 frames at a time and asks again from the first missing byte when a second passes
+  without news; after 5 fruitless tries at the same byte it stops with
+  `no data from the vehicle at byte N after 5 new requests` (exit 1) and keeps what it has in the file.
+  A vehicle that does not have the log gives the same silence, so `logs get` lists first and refuses a number
+  that is not listed. Ctrl-C ends the process; the vehicle stops sending 3 s after the last heartbeat.
+- Only on the USB cable (`serial:`) and TCP (the simulator): the radio's node does not serve these messages, and
+  on a `udp:` link both commands are refused with exit 4, nothing sent. The window (`marv-gcs`) has no logs tab yet.
+- Not verified against a board: the firmware side does not exist yet. It has been run against the SIMULATOR
+  only (`gcs-sim`, which follows the contract, including lost frames).
 
 There is no JSON or other structured mode: the tab-separated lines are what the session holds, and a structured
 form would need a new dependency.
@@ -175,7 +197,7 @@ section 9). The link gives the role:
 | Log-file replay | Operate |
 
 On an Operate session `Session::send` refuses every configure-class command (parameter writes, and later
-sending a MAVLink command, storage, calibration, device actions, reboot): nothing is written, and the Link
+sending a MAVLink command, storage, calibration, device actions, reboot, log download): nothing is written, and the Link
 view shows the refusal. The parameter list is not downloaded at connect (Refresh asks for it), and the
 configure controls are shown disabled with the reason, not hidden. A session whose access was not set is Operate: the gate fails closed. A new `Command` variant is classified
 in `Command::access` (`crates/gcs-mavlink/src/state.rs`); the code does not compile until it is.
@@ -187,7 +209,7 @@ Six crates; the dependency graph enforces the layers (`docs/architecture.md`).
 | Crate | What it is |
 |---|---|
 | `gcs-transport` | Bytes only: USB serial port, TCP and UDP. It never names MAVLink. |
-| `gcs-mavlink` | MAVLink 2 on any reader and writer: framing, one small state machine per sub-protocol (heartbeat, messages, parameters, commands, text, recorder), the vehicle state, the log reader and replay. No transport, no window. |
+| `gcs-mavlink` | MAVLink 2 on any reader and writer: framing, one small state machine per sub-protocol (heartbeat, messages, parameters, commands, text, recorder, logs), the vehicle state, the log reader and replay. No transport, no window. |
 | `gcs-sim` | The simulated vehicle (`marv-sim`). Written from the specification and never using `gcs-mavlink`, so the two check each other. |
 | `gcs-link` | The join, with no GUI: the role an endpoint gives the station (`access_of`, the one mapping) and the start of a session on it. Used by both applications. |
 | `marv-cli` | The command line (`marv-cli`), for a computer with no display: see below. |
@@ -235,7 +257,7 @@ What the tests stand on:
 
 ## Not covered, and known limits
 
-- Not built: missions, a map, joystick input, firmware upload, download of logs stored on the vehicle,
+- Not built: missions, a map, joystick input, firmware upload, a logs tab in the window (the command line downloads the logs: see "Logs"),
   changing message rates from the ground station. None is needed by the firmware yet.
 - `marv-link-test` has been run on localhost and, once (2026-11-15, 30 s), over a real radio; the UDP link
   has not been run for longer than that against a real radio. The deframer releases a frame of an id the dialect does not have only when the next frame

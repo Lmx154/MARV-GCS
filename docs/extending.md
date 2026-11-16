@@ -33,7 +33,7 @@ Nothing else changes: the tab row, the command line option `--view` and the test
 all come from that registry. Test a view without a window with `egui_kittest` (see `tests/views_*.rs`);
 give every input widget an accessible name.
 
-## A new protocol service (missions, log download, rate control, ...)
+## A new protocol service (missions, rate control, ...)
 
 1. Create `crates/gcs-mavlink/src/services/<name>.rs` with a type that implements `Service`. It is a
    state machine: `on_frame` for what arrives, `on_tick` for timers (at least every 50 ms), `on_command`
@@ -43,17 +43,24 @@ give every input widget an accessible name.
 2. If it has something to show, add a section for it to `VehicleState` in `crates/gcs-mavlink/src/state.rs`.
 3. If the user can ask it for something, add a variant to `Command` in the same file and classify it in
    `Command::access` (and `Command::name`) there: `Configure` for anything that writes to the vehicle (a
-   parameter write, a MAVLink command, storage, calibration, a device action, reboot), `Operate` for what
-   only reads or only concerns the station. Both are matches with no wildcard arm, so the code does not
-   compile until the variant has its class; add a row for it to the table test in
+   parameter write, a MAVLink command, storage, calibration, a device action, reboot) or that the vehicle
+   offers on a cable only (log download), `Operate` for what only reads or only concerns the station. Both
+   are matches with no wildcard arm, so the code does not compile until the variant has its class; add a row for it to the table test in
    `crates/gcs-mavlink/src/session_tests.rs` (`every_command_has_its_class_in_the_table`). `Session::send`
    refuses a configure-class command on an Operate session; a service does not check it.
 4. In `crates/gcs-mavlink/src/services/mod.rs` add `pub mod <name>;` and one line in `default_services`.
 
 Test it with plain calls and a made-up `now` (see `services/params_tests.rs`), then end to end against the
-simulator (`crates/marv-gcs/tests/e2e*.rs`; every loop that waits for a state or drains an API is bounded). When the firmware side of the feature is specified, write it
+simulator (`crates/marv-gcs/tests/e2e*.rs`, or through the command line, `crates/marv-cli/tests/logs.rs`; every loop that waits for a state or drains an API is bounded). When the firmware side of the feature is specified, write it
 into `docs/link-contract.md` first and teach the simulator (`crates/gcs-sim`) to behave that way, so the
 ground station is developed against the real behaviour.
+
+The log service (`services/logs.rs`, contract in `docs/link-contract.md` section 11) is the worked example of a
+service that moves a lot of data: it never holds it. `Command::DownloadLog` carries a writer the caller opened
+(`LogSink`, the one the recorder takes); the service hands the bytes to it in order as they arrive and keeps
+in `VehicleState.logs` only the progress (`done` of `size`), the status and a counter (`downloads`) that a caller
+compares before and after sending, so that it never reads the result of an earlier request. Retries are
+counted from `cx.now`, so its tests run in made-up time (`services/logs_tests.rs`).
 
 The command service (`services/commands.rs`) is the worked example of a service that follows a request to
 its result: `Command::SendCommand { command, params }` starts it, `VehicleState.command` shows it. A new
@@ -88,10 +95,11 @@ This crate never names MAVLink.
    (with its access class); the command line never decides access, `Session::send` does.
 2. Add the word to `command` in `crates/marv-cli/src/args.rs` (and to `mav_command` when it sends a
    `COMMAND_LONG`: the label of its progress lines, the `MAV_CMD`, the seven parameters), and the usage text.
-3. A command that is not a `COMMAND_LONG` gets a function in `crates/marv-cli/src/commands.rs` and an arm in
+3. A command that is not a `COMMAND_LONG` gets a function (the logs ones, `logs_list` and `logs_get`, are the example
+   of one that waits for a service's result and writes a file) in `crates/marv-cli/src/commands.rs` and an arm in
    `run_command`. Every wait in it goes through `wait`, which has a deadline. Its output is tab-separated
    lines, errors on stderr, and an exit status from `exit` in `lib.rs`.
-4. Test the parsing in `tests/args.rs` and the behaviour against the simulator in `tests/sim.rs`; if it writes,
+4. Test the parsing in `tests/args.rs` and the behaviour against the simulator in `tests/sim.rs` (or a file of its own, `tests/logs.rs`); if it writes,
    add it to the list in `tests/gate.rs` (the negative control: an Operate session must refuse it with 0 frames).
 
 ## A message outside the standard set

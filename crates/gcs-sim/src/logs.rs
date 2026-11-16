@@ -41,7 +41,7 @@ pub fn default_logs() -> Vec<SimLog> {
 
 /// The byte at `ofs` of log `number`.
 fn log_byte(number: u16, ofs: u32) -> u8 {
-    (ofs.wrapping_mul(131) ^ (ofs >> 8) ^ u32::from(number) * 17) as u8
+    (ofs.wrapping_mul(131) ^ (ofs >> 8) ^ (u32::from(number) * 17)) as u8
 }
 
 /// The bytes of log `number`, `size` of them: the same for every call.

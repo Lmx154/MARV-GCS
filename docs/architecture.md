@@ -41,7 +41,7 @@ Check: `cargo tree -p gcs-transport | grep -c mavlink` is 0; `cargo tree -p gcs-
 | A custom message | The dialect: add it in `marv-dialect`, bump its rev here; the station reads it through one alias in `gcs-mavlink` (`dialect`, which is `marv_dialect::marv`), see `docs/extending.md`. |
 | A view (tab) | One file in `crates/marv-gcs/src/views/`, plus its `mod` line and its registry line in `views/mod.rs`. |
 | A transport (radio, ...) | One module in `gcs-transport` and one `Endpoint` variant. |
-| A protocol service (missions, log download) | One sans-IO module in `gcs-mavlink/src/services/`, plus its `mod` line and its registry line in `services/mod.rs`; a section in `VehicleState` and a `Command` variant if it shows or takes something. |
+| A protocol service (missions, rate control; log download is the worked example, `services/logs.rs`) | One sans-IO module in `gcs-mavlink/src/services/`, plus its `mod` line and its registry line in `services/mod.rs`; a section in `VehicleState` and a `Command` variant if it shows or takes something. |
 
 ## Interfaces between the crates
 
@@ -158,6 +158,8 @@ pub struct VehicleState {
     pub params: ParamTable,       // the vehicle's parameters, fetch and write status
     pub texts: TextLog,           // STATUSTEXT
     pub log: LogState,            // the recording
+    pub logs: LogsState,          // the vehicle's logs: the last listing, the current download (service `logs`)
+    pub command: Option<CommandRecord>, // the current or last MAVLink command (service `commands`)
 }
 
 pub enum LinkStatus {
@@ -184,6 +186,10 @@ pub enum Command {
     SetParam { name: String, value: ParamValue },
     StartLog { sink: LogSink, label: String },   // the window opens the file and hands it over
     StopLog,
+    SendCommand { command: MavCmd, params: [f32; 7] },          // Configure
+    ListLogs,                                                    // Configure: the three log commands
+    DownloadLog { number: u16, size: u32, sink: LogSink },      // (docs/link-contract.md section 11):
+    CancelLogDownload,                                           // the sink is a writer the caller opened
 }
 
 pub struct Ctx<'a> {

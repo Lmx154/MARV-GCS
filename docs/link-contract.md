@@ -96,6 +96,9 @@ station's `dialect` alias is `marv_dialect::marv` (with the crate's `serde` feat
 reads fields through), so it knows `MARV_TEST`: it checks its checksum and shows it with its fields; see
 `docs/extending.md`.
 
+Log download (LOG_REQUEST_LIST, LOG_ENTRY, LOG_REQUEST_DATA, LOG_DATA, LOG_REQUEST_END) is on the vehicle's USB
+link only; the contract for it is section 11.
+
 Not now, each with its trigger: SYS_STATUS and battery (battery data exists); ATTITUDE (an estimator);
 TIMESYNC (timestamps must line up with the computer); parameter metadata (descriptions or ranges wanted);
 parameter persistence (the first parameter that must survive a reboot; firmware scope); signing (a radio
@@ -348,7 +351,10 @@ sessions pass every command.
 Classes.
 - Configure-class: every parameter write (`Command::SetParam`); and sending a MAVLink command to the vehicle
   (`Command::SendCommand`: ALL of them, an unknown `MAV_CMD` id counts as Configure, so storage actions,
-  calibration, device actions (restart, self-test) and reboot are all Configure; section 10).
+  calibration, device actions (restart, self-test) and reboot are all Configure; section 10); and the three
+  commands of log download (`Command::ListLogs`, `Command::DownloadLog`, `Command::CancelLogDownload`; section
+  11), because the vehicle offers log download on its USB link only and the station must not ask for it on a
+  radio or a network link, where the vehicle does not answer.
 - Operate-class: everything that only reads or only concerns the station: the heartbeat (a service, not a
   command), a parameter list request (`Command::RefreshParams`), a single parameter read (reserved: no such `Command` exists yet), log recording
   (`Command::StartLog`, `Command::StopLog`), link management (connect, disconnect, replay).
@@ -448,3 +454,92 @@ configuration, off by default: drop the first N `COMMAND_LONG`s that are not `MA
 never send the final ACK. The simulator reads and writes 42430 by hand, as it does `MARV_DEVICE_STATUS`.
 
 Not in this feature: `COMMAND_INT`, a queue of commands, arming, flight commands, automatic commands.
+
+## 11. Log download
+
+Decision of 2026-11-16 (the lead, within the architect's Q6 of `decision-sd-logging-20261115.md`). It binds
+both ends: the firmware serves it, the station (`gcs-mavlink` service `logs`, `marv-cli logs list` and
+`logs get`) and the simulator (`gcs-sim`) follow it. It is ArduPilot's MAVLink log download, with the
+messages of `common` unchanged.
+
+Messages: LOG_REQUEST_LIST 117, LOG_ENTRY 118, LOG_REQUEST_DATA 119, LOG_DATA 120, LOG_REQUEST_END 122.
+LOG_ERASE 121 is not served. The three requests carry `target_system` and `target_component`: the vehicle's
+ids (1 and 1), as the station learned them from its HEARTBEAT.
+
+Where. On the vehicle's USB link only. The radio's node does not list these ids, so a request there is
+dropped. The station treats log download as Configure-class (section 9): it asks for it on a serial or a TCP
+link and refuses it on UDP with its usual message and exit status 4, with nothing written. The vehicle does
+not check anything: the station enforces, as everywhere else.
+
+Listing. The station sends LOG_REQUEST_LIST with `start` 0 and `end` 0xFFFF (all). The vehicle answers one
+LOG_ENTRY per existing log whose number lies in `start..=end`, in ascending order of number:
+- `id` is the log's NUMBER on the card, 1 to 500. Numbers have gaps (a deleted log leaves one); the station
+  never assumes they are contiguous.
+- `num_logs` is how many logs exist on the card (not how many are in the range); `last_log_num` is the number
+  of the log being written, or the highest present when none is open.
+- `time_utc` is 0 (unavailable: the card has no clock; the wall-clock time is inside the log, in its GPS
+  records).
+- `size` is in bytes. For the log being written it is the size as of its last flush: it grows, and is at most
+  about 1 s behind.
+- No logs, or no card: ONE LOG_ENTRY with `id` 0, `num_logs` 0, `last_log_num` 0, `size` 0. The station reads
+  it as an empty list, not as an error.
+- A range with no log in it, on a card that has logs: nothing is sent (the station asks only for all).
+
+Download. The station sends LOG_REQUEST_DATA (`id`, `ofs`, `count`). The vehicle answers with LOG_DATA (`id`,
+`ofs`, `count` at most 90, `data`) in ascending offset order for the bytes `ofs .. ofs + count`, clamped to the
+log's size at the time of the request; a `count` of 0xFFFFFFFF, or one that goes past the end, means "to the
+end".
+- One transfer at a time: a LOG_REQUEST_DATA for an existing log replaces the running transfer.
+- `ofs` at or past the end of an existing log: ONE LOG_DATA with `count` 0 (ArduPilot's end marker). The
+  station never waits for it and does not count it as the end of a download.
+- A log that does not exist: NO LOG_DATA at all, not even a marker. For the station this is the same as a
+  silent vehicle, and it ends the same way (below).
+- LOG_REQUEST_END stops the running transfer. A transfer also stops when the station's HEARTBEAT has not been
+  seen for 3 s (ArduPilot's rule), or when the link goes down. The station sends its HEARTBEAT at 1 Hz
+  (section 2).
+- MAVLink 2 cuts the trailing zero bytes of a payload: the station reads `count`, never the length of the
+  payload, and treats what was cut as zeros.
+
+Pace. The vehicle sends LOG_DATA through a stream slot of its node: at most 4 frames per 5 ms, about 72 kB/s of
+log data (a log of 161 MB takes about 37 minutes at best). The station paces itself:
+- One outstanding request. It asks for a window of 512 frames (46 080 bytes) from the first missing offset, or
+  for what is left of the size when that is less. When every byte of the window is in, it asks for the next.
+- Bytes are taken as they come: a frame that repeats what is in, or that is out of order inside the window, is
+  tolerated (held until its turn); a frame of another log id, from another system, with count 0, or beyond
+  the window is ignored.
+- Progress is the first missing offset moving. When it has not moved for 1 s after the last request or move,
+  the station asks again from the first missing offset (a "retry"). After 5 retries of the same first missing
+  offset, one second after the fifth, it gives up (6 s of silence from the first request): the error "no data
+  from the vehicle at byte N after 5 new requests", and it sends LOG_REQUEST_END. A move of the first missing
+  offset starts the count again.
+- The download is complete when every byte up to the `size` of the LOG_ENTRY it started from has arrived,
+  never by waiting for a zero-count LOG_DATA. A log that grew after the listing is not a failure: the station
+  ends at the size it started with. A log of size 0 is complete at once and nothing is requested.
+- LOG_REQUEST_END is sent when a download is given up or cancelled, and when the file cannot be written.
+- A listing waits 1 s for a new LOG_ENTRY; it then asks again for all logs, 4 requests in all, the entries
+  already in are kept; it ends when `num_logs` different entries are in, or fails ("only N of M log entries
+  arrived", or no answer at all) one second after the fourth request.
+
+Logging continues during a download. The log being written can be listed and downloaded up to its flushed
+size. Not offered: erase; a download while a log clean-up or a card recovery is running (the request is simply
+not answered then; the station's retries cover a short one). No new parameter, no new MARV message, no dialect
+change.
+
+What the station does (`gcs-mavlink`, service `logs`; state in `VehicleState.logs`)
+- `Command::ListLogs` starts a listing; the result is `logs.list` (`Done` with the logs and `last_log_num`, or
+  `Failed`). `Command::DownloadLog { number, size, sink }` starts the download of one log, `size` taken from a
+  listing, to a writer the caller opened (`LogSink`): the bytes are handed to it in order as they come, so a
+  log is never held in memory; progress is `logs.download.done` of `size`. `Command::CancelLogDownload` ends
+  the running download. One listing or download at a time: a second request is refused and counted
+  (`logs.refused`). A request with no vehicle connected fails at once, sending nothing.
+- `marv-cli logs list` prints `NUMBER<TAB>SIZE` per log and then `last<TAB>N`; an empty card prints nothing
+  but `marv-cli: no logs on the vehicle` on stderr; exit 0. `marv-cli logs get N [-o FILE] [--force]` lists,
+  checks that N is there (exit 1 if not), opens the file (default `NNNNNNNN.BIN` in the current directory;
+  an existing file is refused unless `--force`), downloads with a progress line on stderr at most twice a
+  second, and prints `downloaded<TAB>FILE<TAB>SIZE bytes`. See the README for the exit statuses.
+
+The simulator (`gcs-sim`) behaves as above, in virtual time: five logs with numbers 2, 3, 5, 8 and 11 (sizes
+12 345, 0, 9 000, 60 001 and 450), answered through a slot of 4 frames per 5 ms, a request replacing the running
+one, a zero-count LOG_DATA at or past the end, nothing for a missing log, the 3 s heartbeat rule. Its
+configuration can drop chosen LOG_DATA frames by offset (`drop_log_data`) and replace the logs (`logs`).
+It has been the only vehicle this was run against: the firmware side does not exist yet.
