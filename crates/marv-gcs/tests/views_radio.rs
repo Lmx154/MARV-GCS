@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use eframe::egui;
+use eframe::egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use gcs_mavlink::dialect::MavCmd;
@@ -389,7 +390,10 @@ impl Rig {
     }
 
     fn has(&self, text: &str) -> bool {
-        self.harness.query_by_label_contains(text).is_some()
+        self.harness
+            .query_all_by_label_contains(text)
+            .next()
+            .is_some()
     }
 
     /// The `SetParam`s sent so far, sorted, and the other commands.
@@ -616,4 +620,202 @@ fn save_to_flash_sends_one_command_and_the_line_stays_until_an_accepted_save() {
     rig.harness.run();
     assert!(!rig.has(views::radio::NOT_SAVED_TEXT));
     assert!(rig.harness.query_by_label("Save to flash").is_none());
+}
+
+// The mapping editor (docs/link-contract.md section 12, "Mapping").
+
+impl Rig {
+    /// Choose `channel` in the drop-down of the `function`th function (0 Roll, 1 Pitch, 2 Throttle, 3 Yaw).
+    fn pick(&mut self, function: usize, channel: u8) {
+        self.harness
+            .get_all_by_role(Role::ComboBox)
+            .nth(function)
+            .expect("drop-down")
+            .click();
+        self.harness.run();
+        self.harness
+            .get_all_by_role_and_label(Role::Button, &channel.to_string())
+            .next()
+            .expect("the list of channels")
+            .click();
+        self.harness.run();
+    }
+
+    fn tick_reversed(&mut self, function: usize) {
+        self.harness
+            .get_all_by_label("Reversed")
+            .nth(function)
+            .expect("checkbox")
+            .click();
+        self.harness.run();
+    }
+
+    fn set_dead_zone(&mut self, function: usize, us: f64) {
+        self.harness
+            .get_all_by_role(Role::SpinButton)
+            .nth(function)
+            .expect("dead zone field")
+            .set_value_accesskit(us);
+        self.harness.run();
+        self.harness.run();
+    }
+
+    /// The channel each drop-down shows, and whether each Reversed box is ticked.
+    fn shown(&self) -> (Vec<String>, Vec<bool>) {
+        let channels = self
+            .harness
+            .get_all_by_role(Role::ComboBox)
+            .map(|n| n.accesskit_node().label().unwrap_or_default())
+            .collect();
+        let ticks = self
+            .harness
+            .get_all_by_label("Reversed")
+            .map(|n| n.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True))
+            .collect();
+        (channels, ticks)
+    }
+}
+
+#[test]
+fn staging_a_channel_sends_nothing_and_apply_writes_that_one_value() {
+    let mut rig = Rig::new(Access::Configure);
+    rig.pick(0, 2);
+    assert!(rig.commands.borrow().is_empty(), "staging sends nothing");
+    assert!(rig.has("Staged: RCMAP_ROLL = 2"));
+    rig.click("Apply mapping");
+    let (writes, others) = rig.sent();
+    assert_eq!(writes, [("RCMAP_ROLL".to_string(), 2)]);
+    assert!(others.is_empty(), "no command 245: {others:?}");
+    assert!(rig.has(views::radio::NOT_SAVED_TEXT));
+}
+
+#[test]
+fn reversed_and_dead_zone_go_to_the_channel_the_function_is_mapped_to() {
+    let mut rig = Rig::new(Access::Configure);
+    // The default map is roll 1, pitch 2, throttle 3, yaw 4; the list order is roll, pitch, throttle, yaw.
+    rig.tick_reversed(1);
+    rig.set_dead_zone(3, 20.0);
+    rig.click("Apply mapping");
+    let (writes, others) = rig.sent();
+    assert_eq!(
+        writes,
+        [("RC2_REVERSED".to_string(), 1), ("RC4_DZ".to_string(), 20)]
+    );
+    assert!(others.is_empty());
+}
+
+#[test]
+fn reversed_of_a_restaged_function_is_the_new_channels() {
+    let mut rig = Rig::new(Access::Configure);
+    rig.pick(0, 5);
+    rig.tick_reversed(0);
+    rig.click("Apply mapping");
+    let (writes, _) = rig.sent();
+    assert_eq!(
+        writes,
+        [
+            ("RC5_REVERSED".to_string(), 1),
+            ("RCMAP_ROLL".to_string(), 5)
+        ]
+    );
+}
+
+#[test]
+fn a_duplicate_map_shows_a_warning_and_apply_still_works() {
+    let mut rig = Rig::new(Access::Configure);
+    assert!(!rig.has("Warning"));
+    rig.pick(0, 4);
+    assert!(rig.has("Warning: Roll, Yaw are all mapped to channel 4"));
+    assert!(rig.enabled("Apply mapping"));
+    rig.click("Apply mapping");
+    let (writes, _) = rig.sent();
+    assert_eq!(writes, [("RCMAP_ROLL".to_string(), 4)]);
+}
+
+#[test]
+fn revert_sends_nothing_and_the_controls_show_the_vehicles_values_again() {
+    let mut rig = Rig::new(Access::Configure);
+    let before = rig.shown();
+    assert!(!rig.enabled("Revert"));
+    rig.pick(0, 5);
+    rig.tick_reversed(0);
+    rig.set_dead_zone(1, 30.0);
+    assert_ne!(rig.shown(), before);
+    assert!(!rig.enabled("Calibrate radio"));
+    assert!(rig.has(views::radio::STAGED_TEXT));
+    rig.click("Revert");
+    assert!(rig.commands.borrow().is_empty());
+    assert_eq!(rig.shown(), before);
+    assert!(!rig.has("Staged:"));
+    assert!(rig.enabled("Calibrate radio"));
+    assert!(!rig.enabled("Apply mapping"));
+}
+
+#[test]
+fn an_operate_session_has_the_mapping_disabled_with_the_reason_and_writes_nothing() {
+    let mut rig = Rig::new(Access::Operate);
+    assert!(rig.has("Configure needs a serial or TCP link"));
+    for combo in rig.harness.get_all_by_role(Role::ComboBox) {
+        assert!(combo.accesskit_node().is_disabled());
+    }
+    for tick in rig.harness.get_all_by_label("Reversed") {
+        assert!(tick.accesskit_node().is_disabled());
+    }
+    assert!(!rig.enabled("Apply mapping"));
+    rig.harness
+        .get_all_by_role(Role::ComboBox)
+        .next()
+        .unwrap()
+        .click();
+    rig.harness.run();
+    rig.click("Apply mapping");
+    assert!(rig.commands.borrow().is_empty());
+}
+
+#[test]
+fn the_mapping_is_disabled_during_a_calibration_and_without_parameters() {
+    let mut rig = Rig::new(Access::Configure);
+    rig.click("Calibrate radio");
+    assert!(rig.has(views::radio::CALIBRATING_TEXT));
+    for combo in rig.harness.get_all_by_role(Role::ComboBox) {
+        assert!(combo.accesskit_node().is_disabled());
+    }
+    rig.click("Cancel");
+    assert!(!rig.has(views::radio::CALIBRATING_TEXT));
+    rig.state.borrow_mut().params.fetch = FetchStatus::Fetching {
+        received: 1,
+        expected: 44,
+    };
+    rig.harness.run();
+    assert!(rig.has("the parameter list is not complete"));
+    assert!(
+        rig.harness
+            .query_all_by_role(Role::ComboBox)
+            .next()
+            .is_none()
+    );
+    rig.state.borrow_mut().params.fetch = FetchStatus::Complete;
+    rig.state.borrow_mut().params.params.remove("RC1_MIN");
+    rig.harness.run();
+    assert!(rig.has(NO_RC));
+    assert!(
+        rig.harness
+            .query_all_by_role(Role::ComboBox)
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
+fn after_a_mapping_apply_save_to_flash_sends_one_command_245() {
+    let mut rig = Rig::new(Access::Configure);
+    rig.pick(0, 2);
+    rig.click("Apply mapping");
+    assert!(rig.has(views::radio::NOT_SAVED_TEXT));
+    rig.click("Save to flash");
+    let (writes, others) = rig.sent();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(others.len(), 1, "{others:?}");
+    assert!(others[0].contains(&format!("{:?}", MavCmd::MAV_CMD_PREFLIGHT_STORAGE)));
+    assert!(others[0].contains("[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]"));
 }

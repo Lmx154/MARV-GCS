@@ -454,10 +454,9 @@ impl Radio {
                         .is_some_and(|n| current_number(params, n).is_some())
                 };
                 ui.horizontal(|ui| {
-                    ui.label(function.name());
-                    ui.label("on channel");
+                    let named = ui.label(format!("{} on channel", function.name()));
                     let mut pick = None;
-                    egui::ComboBox::from_id_salt(("rcmap", function.name()))
+                    let combo = egui::ComboBox::from_id_salt(("rcmap", function.name()))
                         .selected_text(channel.map_or_else(|| "—".to_string(), |n| n.to_string()))
                         .show_ui(ui, |ui| {
                             for n in 1..=MAPPED_CHANNELS {
@@ -469,6 +468,7 @@ impl Radio {
                                 }
                             }
                         });
+                    combo.response.labelled_by(named.id);
                     if let Some(n) = pick {
                         self.stage(params, function.map_param(), n as i64);
                     }
@@ -482,13 +482,14 @@ impl Radio {
                     if changed && let Some(name) = &reversed_name {
                         self.stage(params, name, i64::from(reversed));
                     }
-                    ui.label("Dead zone (us)");
+                    let named = ui.label("Dead zone (us)");
                     let mut dz = dz_now;
                     let changed = ui
                         .add_enabled(
                             known(&dz_name),
                             egui::DragValue::new(&mut dz).range(0..=DEAD_ZONE_MAX),
                         )
+                        .labelled_by(named.id)
                         .changed();
                     if changed && let Some(name) = &dz_name {
                         self.stage(params, name, dz.clamp(0, DEAD_ZONE_MAX));
