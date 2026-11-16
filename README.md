@@ -11,9 +11,10 @@ The flight-controller end of the link is three small crates, each in its own rep
 [`usb-cdc`](https://github.com/Lmx154/usb-cdc) (bytes over USB),
 [`marv-dialect`](https://github.com/Lmx154/marv-dialect) (the message definitions) and
 [`mavlink-device`](https://github.com/Lmx154/mavlink-device) (the MAVLink layer, on any byte stream). The
-ground station has been run against the MARV V2 board over its real USB port with a
-demonstration firmware (values computed on the board, parameters in RAM); the real sensors are not wired
-to it yet. Without a board it runs against the simulated vehicle in this repo, which behaves as
+ground station has been run against the MARV V2 board's real firmware (the `MARV-V2-firmware` repository)
+over its USB port and over the radio: it runs seven device rows (IMU1, IMU2, BARO, MAG, GNSS, BATT and the
+radio receiver RC), the parameters, the commands, the calibrations and the self-test. The automated board
+check (`tools/board_check.sh`) still uses the small demonstration program of `mavlink-device`. Without a board it runs against the simulated vehicle in this repo, which behaves as
 `docs/link-contract.md` says the real one does.
 
 ## Quick start
@@ -85,7 +86,7 @@ calibration during a calibration. The Devices tab has Calibrate gyro, Calibrate 
 Calibrate compass; while the compass calibration waits or runs it shows "rotate the vehicle through all
 orientations" next to the status line. The last command, in words ("Gyro calibration: 40 %", "Compass
 calibration: accepted", "Reboot: no answer after 3 sends"), is shown under the buttons of the Parameters, Devices and Link tabs and is
-`VehicleState.command`. The simulator answers them as the vehicle will; no firmware does yet.
+`VehicleState.command`. The simulator answers them as the vehicle will, and the firmware answers them too.
 
 ## The command line (`marv-cli`)
 
@@ -236,12 +237,12 @@ What the tests stand on:
 
 - Not built: missions, a map, joystick input, firmware upload, download of logs stored on the vehicle,
   changing message rates from the ground station. None is needed by the firmware yet.
-- `marv-link-test` has been tested on localhost only; neither it nor the UDP link has been run against
-  a real radio. The deframer releases a frame of an id the dialect does not have only when the next frame
+- `marv-link-test` has been run on localhost and, once (2026-11-15, 30 s), over a real radio; the UDP link
+  has not been run for longer than that against a real radio. The deframer releases a frame of an id the dialect does not have only when the next frame
   starts, so a count of such frames can be one frame late until the next frame arrives (`MARV_TEST` is
   known and is delivered at once); the tool does not flush the last one at the end of the run.
-- Run against one board with a demonstration firmware on one Linux computer. Not run: Windows, macOS, a
-  USB-serial adapter or radio in between, sessions longer than a minute, real sensor data.
+- Run against one board (its real firmware, and the demonstration program for `tools/board_check.sh`) on one
+  Linux computer. Not run: Windows, macOS, a USB-serial adapter between the board and the computer, sessions longer than a minute.
 - After the board enumerates, Linux hands its port over in terminal mode for about a millisecond of every
   first open; the board therefore keeps quiet until the port is really open (`docs/link-contract.md`,
   "The start gate"). A device that does not do this shows a few discarded bytes at the first connect; the
@@ -251,7 +252,7 @@ What the tests stand on:
   (press Refresh).
 - File paths are typed into a text field; there is no file dialog.
 - Opening a TCP address that does not answer blocks the window for up to 2 s.
-- The UDP link has been tested on localhost only, not against a real radio or backpack. Its peer is
+- The UDP link has been tested on localhost and briefly against a real radio backpack (2026-11-15). Its peer is
   whoever sent last (no authentication, as usual for MAVLink over UDP). A write while the network is
   unreachable (the WiFi dropped) is discarded and the link stays up; any other error ends the link.
   A USB transmitter module is expected to use the serial link at 460800 baud; that is untested.
