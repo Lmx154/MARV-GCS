@@ -1,11 +1,15 @@
 //! Radio view: the sixteen channels of `RC_CHANNELS` as bars, the link quality, the age of the last stick
-//! report, the RC row of `MARV_DEVICE_STATUS` and `RADIO_STATUS` when it is present. Read only: no
-//! mapping and no calibration.
+//! report, the RC row of `MARV_DEVICE_STATUS` and `RADIO_STATUS` when it is present. The four function
+//! bars (roll, pitch, yaw, throttle) show what the vehicle's `MANUAL_CONTROL` carries, and on channels 1
+//! to 8 the markers `MIN`, `TRIM` and `MAX` and the function of the channel come from the vehicle's RC
+//! parameters (`docs/link-contract.md` section 12). Read only: no mapping editor and no calibration; the
+//! station computes no normalised value.
 
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, Rect, Sense, Stroke, StrokeKind, vec2};
 use gcs_mavlink::services::messages::{MessageEntry, MessageStore};
+use gcs_mavlink::services::params::{FetchStatus, ParamTable};
 
 use super::devices;
 use super::{View, ViewCtx};
@@ -20,6 +24,12 @@ pub const MARKS_US: [f64; 3] = [1000.0, 1500.0, 2000.0];
 pub const STICK_STALE: Duration = Duration::from_secs(2);
 /// The channels the message carries.
 pub const CHANNELS: usize = 16;
+/// The channels that have `RCn_MIN`, `RCn_TRIM` and `RCn_MAX`.
+pub const MAPPED_CHANNELS: usize = 8;
+/// The mark of a channel's `MIN`, `TRIM` and `MAX` on its bar.
+const MARKER: Color32 = Color32::from_rgb(235, 160, 40);
+/// Shown in place of the markers and tags when the vehicle has no `RC1_MIN`.
+pub const NO_RC_PARAMS: &str = "this firmware has no RC mapping parameters";
 const BAR_SIZE: egui::Vec2 = vec2(420.0, 16.0);
 
 #[derive(Default)]
@@ -60,6 +70,20 @@ impl View for Radio {
         }
         ui.label(radio_status_text(store.entry("RADIO_STATUS", 0)));
         ui.separator();
+        let control = ManualControl::of(store, cx.now);
+        ui.label("Sticks as the vehicle maps them (MANUAL_CONTROL)");
+        for function in Function::ALL {
+            let value = control.map(|c| function.value(c));
+            ui.horizontal(|ui| {
+                function_bar(ui, value, function.range());
+                ui.label(function.text(value));
+            });
+        }
+        ui.separator();
+        let mapping = Mapping::of(&cx.state.params);
+        if mapping == Mapping::Missing {
+            ui.label(NO_RC_PARAMS);
+        }
         marks_header(ui);
         egui::ScrollArea::vertical().show(ui, |ui| {
             for channel in 0..sticks.shown() {
@@ -69,10 +93,14 @@ impl View for Radio {
                     .copied()
                     .flatten()
                     .filter(|_| sticks.fresh);
+                let marks = mapping.channel(channel);
                 ui.horizontal(|ui| {
                     ui.monospace(format!("CH {:>2}", channel + 1));
-                    bar(ui, value);
+                    bar(ui, value, marks);
                     ui.label(value_text(value));
+                    if let Some(marks) = marks {
+                        ui.label(marks.text());
+                    }
                 });
             }
         });
@@ -154,6 +182,179 @@ impl Sticks {
     }
 }
 
+/// What the latest `MANUAL_CONTROL` says, as the vehicle sent it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManualControl {
+    /// `y`: -1000 to 1000, positive for stick right.
+    pub roll: i32,
+    /// `x`: -1000 to 1000, positive for stick forward.
+    pub pitch: i32,
+    /// `r`: -1000 to 1000, positive for yaw right.
+    pub yaw: i32,
+    /// `z`: 0 to 1000, 1000 for throttle up.
+    pub throttle: i32,
+}
+
+impl ManualControl {
+    /// `None` when none was received, when it is older than [`STICK_STALE`] or when there is no session.
+    pub fn of(store: &MessageStore, now: Option<Duration>) -> Option<ManualControl> {
+        let entry = store.entry("MANUAL_CONTROL", 0)?;
+        let age = now?.saturating_sub(entry.last_seen);
+        if age > STICK_STALE {
+            return None;
+        }
+        let field = |name: &str| entry.number(name).map(|n| n as i32);
+        Some(ManualControl {
+            roll: field("y")?,
+            pitch: field("x")?,
+            yaw: field("r")?,
+            throttle: field("z")?,
+        })
+    }
+}
+
+/// The four functions of the function bars, in the order they are drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Function {
+    Roll,
+    Pitch,
+    Yaw,
+    Throttle,
+}
+
+impl Function {
+    pub const ALL: [Function; 4] = [
+        Function::Roll,
+        Function::Pitch,
+        Function::Yaw,
+        Function::Throttle,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Function::Roll => "Roll",
+            Function::Pitch => "Pitch",
+            Function::Yaw => "Yaw",
+            Function::Throttle => "Throttle",
+        }
+    }
+
+    /// The direction the user should see when they move the stick (the contract's sign convention).
+    pub fn direction(self) -> &'static str {
+        match self {
+            Function::Roll => "stick right: +",
+            Function::Pitch => "stick forward: +",
+            Function::Yaw => "yaw right: +",
+            Function::Throttle => "throttle up: 1000",
+        }
+    }
+
+    pub fn value(self, control: ManualControl) -> i32 {
+        match self {
+            Function::Roll => control.roll,
+            Function::Pitch => control.pitch,
+            Function::Yaw => control.yaw,
+            Function::Throttle => control.throttle,
+        }
+    }
+
+    /// The scale of the bar.
+    pub fn range(self) -> (i32, i32) {
+        match self {
+            Function::Throttle => (0, 1000),
+            _ => (-1000, 1000),
+        }
+    }
+
+    /// The line next to the bar: the name, the value or "no data", and the expected direction.
+    pub fn text(self, value: Option<i32>) -> String {
+        match value {
+            Some(v) => format!("{}: {v} ({})", self.name(), self.direction()),
+            None => format!("{}: no data ({})", self.name(), self.direction()),
+        }
+    }
+}
+
+/// `MIN`, `TRIM` and `MAX` of one channel and the functions mapped to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelMarks {
+    pub min: Option<i64>,
+    pub trim: Option<i64>,
+    pub max: Option<i64>,
+    pub functions: Vec<Function>,
+}
+
+impl ChannelMarks {
+    fn text(&self) -> String {
+        let number = |v: Option<i64>| v.map_or_else(|| "—".to_string(), |v| v.to_string());
+        let mut text = format!(
+            "MIN {} TRIM {} MAX {}",
+            number(self.min),
+            number(self.trim),
+            number(self.max)
+        );
+        if !self.functions.is_empty() {
+            let names: Vec<_> = self.functions.iter().map(|f| f.name()).collect();
+            text.push_str(&format!("  [{}]", names.join(", ")));
+        }
+        text
+    }
+}
+
+/// The vehicle's RC parameters as the markers and tags of channels 1 to 8 need them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mapping {
+    /// The parameter list is not complete: nothing is drawn.
+    NotReady,
+    /// The list is complete and has no `RC1_MIN`.
+    Missing,
+    /// One entry per channel 1 to 8.
+    Marks(Vec<ChannelMarks>),
+}
+
+impl Mapping {
+    pub fn of(params: &ParamTable) -> Mapping {
+        if params.fetch != FetchStatus::Complete {
+            return Mapping::NotReady;
+        }
+        if params.value("RC1_MIN").is_none() {
+            return Mapping::Missing;
+        }
+        let number = |name: &str| params.value(name).map(|v| v.as_f64() as i64);
+        let mut marks: Vec<ChannelMarks> = (1..=MAPPED_CHANNELS)
+            .map(|n| ChannelMarks {
+                min: number(&format!("RC{n}_MIN")),
+                trim: number(&format!("RC{n}_TRIM")),
+                max: number(&format!("RC{n}_MAX")),
+                functions: Vec::new(),
+            })
+            .collect();
+        for (name, function) in [
+            ("RCMAP_ROLL", Function::Roll),
+            ("RCMAP_PITCH", Function::Pitch),
+            ("RCMAP_THROTTLE", Function::Throttle),
+            ("RCMAP_YAW", Function::Yaw),
+        ] {
+            let channel = number(name).and_then(|n| usize::try_from(n).ok());
+            if let Some(entry) = channel
+                .and_then(|c| c.checked_sub(1))
+                .and_then(|i| marks.get_mut(i))
+            {
+                entry.functions.push(function);
+            }
+        }
+        Mapping::Marks(marks)
+    }
+
+    /// The markers and tags of channel `index` (0 for channel 1), if there are any to draw.
+    pub fn channel(&self, index: usize) -> Option<&ChannelMarks> {
+        match self {
+            Mapping::Marks(marks) => marks.get(index),
+            _ => None,
+        }
+    }
+}
+
 /// `rssi` of RC_CHANNELS: 0 to 254, 255 unknown.
 pub fn link_quality_text(rssi: Option<u8>) -> String {
     match rssi {
@@ -214,7 +415,7 @@ fn marks_header(ui: &mut egui::Ui) {
     });
 }
 
-fn bar(ui: &mut egui::Ui, value: Option<u16>) {
+fn bar(ui: &mut egui::Ui, value: Option<u16>, marks: Option<&ChannelMarks>) {
     let (rect, _) = ui.allocate_exact_size(BAR_SIZE, Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
@@ -225,6 +426,45 @@ fn bar(ui: &mut egui::Ui, value: Option<u16>) {
     }
     for mark in MARKS_US {
         let x = rect.left() + fraction(mark as u16) * rect.width();
+        painter.line_segment(
+            [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+            Stroke::new(1.0, ui.visuals().weak_text_color()),
+        );
+    }
+    for us in marks
+        .into_iter()
+        .flat_map(|m| [m.min, m.trim, m.max])
+        .flatten()
+    {
+        let x = rect.left() + fraction(us.clamp(0, i64::from(u16::MAX)) as u16) * rect.width();
+        painter.line_segment(
+            [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+            Stroke::new(2.0, MARKER),
+        );
+    }
+    painter.rect_stroke(rect, 2.0, Stroke::new(1.0, GREY), StrokeKind::Inside);
+}
+
+/// A function bar: the value on `range`, drawn from the left edge for 0 at the bottom of the range and
+/// from the centre for a signed range. Empty for `None`.
+fn function_bar(ui: &mut egui::Ui, value: Option<i32>, range: (i32, i32)) {
+    let (rect, _) = ui.allocate_exact_size(BAR_SIZE, Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+    let span = (range.1 - range.0) as f32;
+    let at =
+        |v: i32| rect.left() + (v.clamp(range.0, range.1) - range.0) as f32 / span * rect.width();
+    if let Some(v) = value {
+        let (from, to) = if range.0 < 0 { (0, v) } else { (range.0, v) };
+        let (a, b) = (at(from), at(to));
+        let filled = Rect::from_min_max(
+            egui::pos2(a.min(b), rect.top()),
+            egui::pos2(a.max(b), rect.bottom()),
+        );
+        painter.rect_filled(filled, 2.0, Color32::from_rgb(70, 150, 220));
+    }
+    if range.0 < 0 {
+        let x = at(0);
         painter.line_segment(
             [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
             Stroke::new(1.0, ui.visuals().weak_text_color()),
