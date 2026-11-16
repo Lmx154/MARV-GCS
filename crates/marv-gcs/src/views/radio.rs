@@ -70,7 +70,7 @@ impl View for Radio {
                     .flatten()
                     .filter(|_| sticks.fresh);
                 ui.horizontal(|ui| {
-                    ui.label(format!("CH {:>2}", channel + 1));
+                    ui.monospace(format!("CH {:>2}", channel + 1));
                     bar(ui, value);
                     ui.label(value_text(value));
                 });
@@ -198,7 +198,7 @@ pub fn radio_status_text(entry: Option<&MessageEntry>) -> String {
 
 fn marks_header(ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
-        ui.label("      ");
+        ui.monospace("     ");
         let (rect, _) = ui.allocate_exact_size(vec2(BAR_SIZE.x, 14.0), Sense::hover());
         let painter = ui.painter_at(rect);
         for mark in MARKS_US {
