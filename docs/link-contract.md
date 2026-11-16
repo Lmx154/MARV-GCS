@@ -481,8 +481,13 @@ LOG_ENTRY per existing log whose number lies in `start..=end`, in ascending orde
   records).
 - `size` is in bytes. For the log being written it is the size as of its last flush: it grows, and is at most
   about 1 s behind.
-- No logs, or no card: ONE LOG_ENTRY with `id` 0, `num_logs` 0, `last_log_num` 0, `size` 0. The station reads
-  it as an empty list, not as an error.
+- A mounted card with no logs: ONE LOG_ENTRY with `id` 0, `num_logs` 0, `last_log_num` 0, `size` 0. The
+  station reads it as an empty list, not as an error.
+- No card, or the vehicle's SD row not OK (starting, recovering, clean-up before a log opens, logging off):
+  the vehicle does NOT answer (amended 2026-11-16 after the firmware was built: an "empty list" would be a
+  wrong answer while logs exist but cannot be reached). The station's listing then ends with "no answer"; the
+  Devices view (`devices`) says why.
+- A LOG_REQUEST_LIST during a download replaces the transfer (one activity at a time, as ArduPilot).
 - A range with no log in it, on a card that has logs: nothing is sent (the station asks only for all).
 
 Download. The station sends LOG_REQUEST_DATA (`id`, `ofs`, `count`). The vehicle answers with LOG_DATA (`id`,
