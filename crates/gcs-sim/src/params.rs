@@ -105,14 +105,15 @@ impl ParamValue {
 
 /// The parameters of a default [`SimConfig`](crate::SimConfig): the link contract allows only
 /// INT32 and REAL32, so every integer parameter (a bool or an enum too) is an `Int32`. There is one
-/// read-only parameter and one name of exactly 16 characters.
+/// read-only parameter and one name of exactly 16 characters. The 44 parameters of the RC block
+/// (`docs/link-contract.md` section 2) come last, so no other parameter changes its index.
 pub fn default_params() -> Vec<SimParam> {
     let p = |name: &str, value, read_only| SimParam {
         name: name.to_string(),
         value,
         read_only,
     };
-    vec![
+    let mut params = vec![
         p("IMU_RATE_HZ", ParamValue::Int32(800), false),
         p("IMU_ACC_RANGE", ParamValue::Int32(16), false),
         p("IMU_GYR_LPF_HZ", ParamValue::Real32(98.0), false),
@@ -126,7 +127,9 @@ pub fn default_params() -> Vec<SimParam> {
         p("SYS_TRIM", ParamValue::Int32(-3), false),
         p("SYS_UID", ParamValue::Int32(1_592_460_852), true),
         p("NAV_TEST_16CHARS", ParamValue::Real32(1.5), false),
-    ]
+    ];
+    params.extend(crate::rcmap::rc_params());
+    params
 }
 
 /// The parameters [`SimConfig::with_every_param_type`](crate::SimConfig::with_every_param_type)

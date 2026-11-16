@@ -13,6 +13,7 @@
 
 pub mod actions;
 pub mod devices;
+pub mod rcmap;
 pub mod signals;
 
 mod logs;

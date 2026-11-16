@@ -19,7 +19,7 @@
 
 use mavlink::dialects::common::{
     AUTOPILOT_VERSION_DATA, COMMAND_ACK_DATA, GPS_RAW_INT_DATA, HEARTBEAT_DATA, HIGHRES_IMU_DATA,
-    LOG_DATA_DATA, LOG_ENTRY_DATA, MavMessage, MavProtocolCapability, MavResult, MavSeverity,
+    LOG_DATA_DATA, LOG_ENTRY_DATA, MANUAL_CONTROL_DATA, MavMessage, MavProtocolCapability, MavResult, MavSeverity,
     PARAM_VALUE_DATA, RC_CHANNELS_DATA, SCALED_IMU2_DATA, SCALED_PRESSURE_DATA, STATUSTEXT_DATA,
     SYS_STATUS_DATA,
 };
@@ -33,7 +33,7 @@ use crate::logs::{
     SimLog, Transfer,
 };
 use crate::params::{ParamEncoding, ParamValue, SimParam, default_params, other_type_params};
-use crate::signals;
+use crate::{rcmap, signals};
 
 /// MAVLink 2 start-of-frame marker.
 const STX_V2: u8 = 0xFD;
@@ -155,6 +155,7 @@ impl Default for SimConfig {
                 stream(SCALED_PRESSURE_DATA::ID, 25.0),
                 stream(GPS_RAW_INT_DATA::ID, 1.0),
                 stream(RC_CHANNELS_DATA::ID, 5.0),
+                stream(MANUAL_CONTROL_DATA::ID, 5.0),
             ],
             params: default_params(),
             param_encoding: ParamEncoding::default(),
@@ -291,6 +292,7 @@ impl SimVehicle {
             .filter(|s| s.rate_hz.is_finite() && s.rate_hz > 0.0)
             .filter(|s| {
                 s.message_id == devices::MESSAGE_ID
+                    || s.message_id == MANUAL_CONTROL_DATA::ID
                     || !signals::messages(s.message_id, 0).is_empty()
             })
             .map(|s| Schedule {
@@ -410,10 +412,41 @@ impl SimVehicle {
                 }
                 continue;
             }
-            for message in signals::messages(self.schedules[i].message_id, stamp_ms) {
+            for message in self.stream_messages(self.schedules[i].message_id, stamp_ms) {
                 self.push_frame(&message, out);
             }
         }
+    }
+
+    /// The messages of a stream at `now_ms`. MANUAL_CONTROL follows the RC parameters now in effect
+    /// (`docs/link-contract.md` section 12); it is empty for a vehicle that has none.
+    fn stream_messages(&self, message_id: u32, now_ms: u64) -> Vec<MavMessage> {
+        if message_id != MANUAL_CONTROL_DATA::ID {
+            return signals::messages(message_id, now_ms);
+        }
+        let channels = signals::rc_channels(now_ms);
+        let channels = [
+            channels.chan1_raw,
+            channels.chan2_raw,
+            channels.chan3_raw,
+            channels.chan4_raw,
+            channels.chan5_raw,
+            channels.chan6_raw,
+            channels.chan7_raw,
+            channels.chan8_raw,
+            channels.chan9_raw,
+            channels.chan10_raw,
+            channels.chan11_raw,
+            channels.chan12_raw,
+            channels.chan13_raw,
+            channels.chan14_raw,
+            channels.chan15_raw,
+            channels.chan16_raw,
+        ];
+        rcmap::manual_control(self.config.system_id, &channels, |name| self.param(name))
+            .map(MavMessage::MANUAL_CONTROL)
+            .into_iter()
+            .collect()
     }
 
     /// Sends the parameters of a PARAM_REQUEST_LIST in index order, one per millisecond.
@@ -599,6 +632,11 @@ impl SimVehicle {
                 let reason = if param.read_only {
                     Some("read only")
                 } else if d.param_type != param.value.param_type() {
+                    Some("out of range")
+                } else if matches!(
+                    param.value.same_type_from_field(d.param_value, self.config.param_encoding),
+                    ParamValue::Int32(v) if rcmap::out_of_range(&param.name, v)
+                ) {
                     Some("out of range")
                 } else {
                     None
@@ -788,7 +826,7 @@ impl SimVehicle {
             Some(AUTOPILOT_VERSION_ID) if !self.config.answer_version_request => return,
             Some(AUTOPILOT_VERSION_ID) => vec![MavMessage::AUTOPILOT_VERSION(self.version())],
             Some(id) if self.config.streams.iter().any(|s| s.message_id == id) => {
-                signals::messages(id, self.now_ms)
+                self.stream_messages(id, self.now_ms)
             }
             _ => Vec::new(),
         };
