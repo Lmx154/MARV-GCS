@@ -19,9 +19,9 @@
 
 use mavlink::dialects::common::{
     AUTOPILOT_VERSION_DATA, COMMAND_ACK_DATA, GPS_RAW_INT_DATA, HEARTBEAT_DATA, HIGHRES_IMU_DATA,
-    LOG_DATA_DATA, LOG_ENTRY_DATA, MANUAL_CONTROL_DATA, MavMessage, MavProtocolCapability, MavResult, MavSeverity,
-    PARAM_VALUE_DATA, RC_CHANNELS_DATA, SCALED_IMU2_DATA, SCALED_PRESSURE_DATA, STATUSTEXT_DATA,
-    SYS_STATUS_DATA,
+    LOG_DATA_DATA, LOG_ENTRY_DATA, MANUAL_CONTROL_DATA, MavMessage, MavProtocolCapability,
+    MavResult, MavSeverity, PARAM_VALUE_DATA, RC_CHANNELS_DATA, SCALED_IMU2_DATA,
+    SCALED_PRESSURE_DATA, STATUSTEXT_DATA, SYS_STATUS_DATA,
 };
 use mavlink::types::CharArray;
 use mavlink::{MAVLinkV2MessageRaw, MavHeader, MavlinkVersion, Message, MessageData};
@@ -424,25 +424,7 @@ impl SimVehicle {
         if message_id != MANUAL_CONTROL_DATA::ID {
             return signals::messages(message_id, now_ms);
         }
-        let channels = signals::rc_channels(now_ms);
-        let channels = [
-            channels.chan1_raw,
-            channels.chan2_raw,
-            channels.chan3_raw,
-            channels.chan4_raw,
-            channels.chan5_raw,
-            channels.chan6_raw,
-            channels.chan7_raw,
-            channels.chan8_raw,
-            channels.chan9_raw,
-            channels.chan10_raw,
-            channels.chan11_raw,
-            channels.chan12_raw,
-            channels.chan13_raw,
-            channels.chan14_raw,
-            channels.chan15_raw,
-            channels.chan16_raw,
-        ];
+        let channels = rcmap::channels_of(&signals::rc_channels(now_ms));
         rcmap::manual_control(self.config.system_id, &channels, |name| self.param(name))
             .map(MavMessage::MANUAL_CONTROL)
             .into_iter()

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use gcs_sim::{SimConfig, SimVehicle, signals};
+use gcs_sim::{SimConfig, SimVehicle, rcmap, signals};
 use mavlink::dialects::common::{HEARTBEAT_DATA, MavAutopilot, MavMessage, MavState, MavType};
 use mavlink::{MAVLinkV2MessageRaw, MavHeader, MavlinkReader, Message};
 
@@ -76,14 +76,15 @@ fn default_config() {
             (116, 25.0),
             (29, 25.0),
             (24, 1.0),
-            (65, 5.0)
+            (65, 5.0),
+            (69, 5.0)
         ]
     );
 }
 
 #[test]
 fn rates_over_ten_seconds_1ms_and_20ms_steps() {
-    // The firmware's rates: 25 Hz for the sensor values, 1 Hz heartbeat, SYS_STATUS and GPS, 5 Hz RC.
+    // The firmware's rates: 25 Hz for the sensor values, 1 Hz heartbeat, SYS_STATUS and GPS, 5 Hz RC_CHANNELS and MANUAL_CONTROL.
     let expected = [
         (0, 10),
         (1, 10),
@@ -92,6 +93,7 @@ fn rates_over_ten_seconds_1ms_and_20ms_steps() {
         (29, 250),
         (24, 10),
         (65, 50),
+        (69, 50),
     ];
     for step_ms in [1, 20] {
         let counts = counts(step_ms, 10_000);
@@ -131,13 +133,13 @@ fn a_jump_in_time_is_not_made_up() {
         vehicle.step(t, &[]);
     }
     let jump = decode(&vehicle.step(61_000, &[]));
-    // One message of each of the seven streams.
-    assert!(jump.len() <= 7, "burst of {} messages", jump.len());
+    // One message of each of the eight streams.
+    assert!(jump.len() <= 8, "burst of {} messages", jump.len());
     let after: usize = (61_001..=62_000)
         .map(|t| decode(&vehicle.step(t, &[])).len())
         .sum();
-    // One second of the default streams: 1 + 1 + 3 * 25 + 1 + 5.
-    assert!(after.abs_diff(83) <= 4, "{after}");
+    // One second of the default streams: 1 + 1 + 3 * 25 + 1 + 5 + 5.
+    assert!(after.abs_diff(88) <= 4, "{after}");
 }
 
 #[test]
@@ -184,7 +186,19 @@ fn emitted_message_is_the_signal_at_that_time() {
             if matches!(message, MavMessage::STATUSTEXT(_)) {
                 continue;
             }
-            let want = signals::messages(message.message_id(), t);
+            // MANUAL_CONTROL is computed from the RC parameters: here the default ones.
+            let want = if let MavMessage::MANUAL_CONTROL(_) = message {
+                let params = SimConfig::default().params;
+                let channels = rcmap::channels_of(&signals::rc_channels(t));
+                rcmap::manual_control(1, &channels, |name| {
+                    params.iter().find(|p| p.name == name).map(|p| p.value)
+                })
+                .map(MavMessage::MANUAL_CONTROL)
+                .into_iter()
+                .collect()
+            } else {
+                signals::messages(message.message_id(), t)
+            };
             assert!(!want.is_empty(), "known message");
             // Debug text, because NaN fields make HIGHRES_IMU unequal to itself.
             assert!(

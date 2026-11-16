@@ -136,6 +136,9 @@ fn read_value(d: &PARAM_VALUE_DATA, encoding: ParamEncoding) -> ParamValue {
     }
 }
 
+/// The parameters of a default configuration: the 13 of the first block and the 44 of the RC block.
+const DEFAULT_PARAMS: usize = 13 + 44;
+
 fn vehicle_with(encoding: ParamEncoding) -> SimVehicle {
     SimVehicle::new(SimConfig {
         param_encoding: encoding,
@@ -162,7 +165,7 @@ fn booted(config: SimConfig) -> SimVehicle {
 #[test]
 fn default_parameters_are_int32_and_real32_with_the_special_cases() {
     let params = SimConfig::default().params;
-    assert_eq!(params.len(), 13);
+    assert_eq!(params.len(), DEFAULT_PARAMS);
     assert!(
         params
             .iter()
@@ -194,8 +197,8 @@ fn default_parameters_are_int32_and_real32_with_the_special_cases() {
 #[test]
 fn with_every_param_type_adds_one_of_each_other_type() {
     let config = SimConfig::default().with_every_param_type();
-    assert_eq!(config.params.len(), 18);
-    let added: Vec<_> = config.params[13..]
+    assert_eq!(config.params.len(), DEFAULT_PARAMS + 5);
+    let added: Vec<_> = config.params[DEFAULT_PARAMS..]
         .iter()
         .map(|p| (p.name.as_str(), p.value, p.read_only))
         .collect();
@@ -209,15 +212,18 @@ fn with_every_param_type_adds_one_of_each_other_type() {
             ("TYPE_U32", ParamValue::Uint32(3_735_928_559), false),
         ]
     );
-    assert_eq!(config.params[..13], SimConfig::default().params[..]);
+    assert_eq!(
+        config.params[..DEFAULT_PARAMS],
+        SimConfig::default().params[..]
+    );
 
     for encoding in [ParamEncoding::Bytewise, ParamEncoding::CCast] {
         let mut vehicle = SimVehicle::new(SimConfig {
             param_encoding: encoding,
             ..config.clone()
         });
-        let got = values(&run(&mut vehicle, 0, 60, &request_list(1, 1)));
-        assert_eq!(got.len(), 18);
+        let got = values(&run(&mut vehicle, 0, 130, &request_list(1, 1)));
+        assert_eq!(got.len(), DEFAULT_PARAMS + 5);
         for (d, want) in got.iter().zip(&config.params) {
             assert_eq!(name(d), want.name);
             if encoding == ParamEncoding::CCast && want.name == "SYS_UID" {
@@ -239,7 +245,7 @@ fn with_every_param_type_adds_one_of_each_other_type() {
 #[test]
 fn bytewise_values_decode_back_exactly() {
     let mut vehicle = vehicle_with(ParamEncoding::Bytewise);
-    let bytes = run(&mut vehicle, 0, 40, &request_list(1, 1));
+    let bytes = run(&mut vehicle, 0, 130, &request_list(1, 1));
     let got = values(&bytes);
     let defaults = SimConfig::default().params;
     assert_eq!(got.len(), defaults.len());
@@ -263,7 +269,7 @@ fn bytewise_values_decode_back_exactly() {
 #[test]
 fn ccast_values_are_float_conversions() {
     let mut vehicle = vehicle_with(ParamEncoding::CCast);
-    let bytes = run(&mut vehicle, 0, 40, &request_list(1, 1));
+    let bytes = run(&mut vehicle, 0, 130, &request_list(1, 1));
     let got = values(&bytes);
     let defaults = SimConfig::default().params;
     assert_eq!(got.len(), defaults.len());
@@ -298,7 +304,7 @@ fn param_type_always_states_the_real_type() {
             param_encoding: encoding,
             ..SimConfig::default().with_every_param_type()
         });
-        let got = values(&run(&mut vehicle, 0, 60, &request_list(0, 0)));
+        let got = values(&run(&mut vehicle, 0, 130, &request_list(0, 0)));
         let ty = |n: &str| got.iter().find(|d| name(d) == n).unwrap().param_type;
         for n in [
             "IMU_RATE_HZ",
@@ -322,7 +328,7 @@ fn param_type_always_states_the_real_type() {
 #[test]
 fn list_is_complete_in_order_and_paced_while_telemetry_flows() {
     let mut vehicle = booted(SimConfig::default().with_synthetic_params(500));
-    let total = 13 + 500;
+    let total = DEFAULT_PARAMS + 500;
     let mut per_step = Vec::new();
     let mut all = Vec::new();
     let mut telemetry = 0;
@@ -349,9 +355,9 @@ fn list_is_complete_in_order_and_paced_while_telemetry_flows() {
         assert_eq!(usize::from(d.param_index), i);
         assert_eq!(usize::from(d.param_count), total);
     }
-    assert_eq!(name(&all[13]), "P0000");
+    assert_eq!(name(&all[DEFAULT_PARAMS]), "P0000");
     assert_eq!(name(&all[total - 1]), "P0499");
-    // About 1026 ms (513 parameters, one per 2 ms) at 25 Hz.
+    // About 1114 ms (557 parameters, one per 2 ms) at 25 Hz.
     assert!((24..=28).contains(&telemetry), "{telemetry} IMU messages");
 }
 
@@ -391,7 +397,7 @@ fn read_by_index_and_by_name_including_sixteen_characters() {
         assert_eq!(by_index.len(), 1);
         assert_eq!(name(&by_index[0]), "HIGHG_RANGE");
         assert_eq!(by_index[0].param_index, 3);
-        assert_eq!(by_index[0].param_count, 13);
+        assert_eq!(by_index[0].param_count, DEFAULT_PARAMS as u16);
         assert_eq!(read_value(&by_index[0], encoding), ParamValue::Int32(320));
 
         // The name is used only when the index is -1; an index wins otherwise.
@@ -422,7 +428,7 @@ fn read_of_unknown_name_or_index_gets_no_reply() {
         request_read(-1, "NO_SUCH_PARAM"),
         request_read(-1, "SYS_TRI"),
         request_read(-1, "SYS_TRIMX"),
-        request_read(13, ""),
+        request_read(DEFAULT_PARAMS as i16, ""),
         request_read(9999, ""),
         request_read(-2, ""),
         request_read(-1, ""),
@@ -451,7 +457,10 @@ fn set_stores_the_value_and_replies_without_a_text() {
         let got = values(&bytes);
         assert_eq!(got.len(), 1);
         assert_eq!(name(&got[0]), "IMU_RATE_HZ");
-        assert_eq!((got[0].param_index, got[0].param_count), (0, 13));
+        assert_eq!(
+            (got[0].param_index, got[0].param_count),
+            (0, DEFAULT_PARAMS as u16)
+        );
         assert_eq!(read_value(&got[0], encoding), ParamValue::Int32(1600));
         assert_eq!(got[0].param_type, MavParamType::MAV_PARAM_TYPE_INT32);
         assert!(texts(&bytes).is_empty(), "an accepted write sends no text");
@@ -737,16 +746,16 @@ fn silent_vehicle_sends_nothing_but_still_acts() {
         ),
     ));
     bytes.extend(vehicle.step(2002, &request_list(1, 1)));
-    bytes.extend(run(&mut vehicle, 2003, 2100, &[]));
+    bytes.extend(run(&mut vehicle, 2003, 2200, &[]));
     assert!(bytes.is_empty(), "{} bytes while silent", bytes.len());
     assert_eq!(vehicle.param("LOG_ENABLE"), Some(ParamValue::Int32(0)));
 
     vehicle.set_silent(false);
-    let after = run(&mut vehicle, 2101, 3100, &[]);
+    let after = run(&mut vehicle, 2201, 3200, &[]);
     let frames = decode(&after);
-    // About one second of the default streams (1 + 1 + 3 * 25 + 1 + 5), with no replay of what was
+    // About one second of the default streams (1 + 1 + 3 * 25 + 1 + 5 + 5), with no replay of what was
     // missed.
-    assert!(frames.len().abs_diff(83) <= 6, "{}", frames.len());
+    assert!(frames.len().abs_diff(88) <= 6, "{}", frames.len());
     assert!(values(&after).is_empty());
 }
 
@@ -777,13 +786,13 @@ fn a_non_ascii_name_is_rejected() {
 #[test]
 fn synthetic_parameters_are_appended() {
     let config = SimConfig::default().with_synthetic_params(3);
-    let names: Vec<_> = config.params[13..]
+    let names: Vec<_> = config.params[DEFAULT_PARAMS..]
         .iter()
         .map(|p| p.name.as_str())
         .collect();
     assert_eq!(names, ["P0000", "P0001", "P0002"]);
     assert!(
-        config.params[13..]
+        config.params[DEFAULT_PARAMS..]
             .iter()
             .all(|p| matches!(p.value, ParamValue::Real32(_)) && !p.read_only)
     );

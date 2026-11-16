@@ -3,7 +3,7 @@
 //! of the contract (an angle for roll, pitch and yaw, a range for throttle). This is the only place in
 //! this repository where the formulas exist: the ground station only shows what MANUAL_CONTROL carries.
 
-use mavlink::dialects::common::MANUAL_CONTROL_DATA;
+use mavlink::dialects::common::{MANUAL_CONTROL_DATA, RC_CHANNELS_DATA};
 
 use crate::params::{ParamValue, SimParam};
 
@@ -115,6 +115,28 @@ pub fn throttle(pwm: u16, min: i32, max: i32, reversed: bool, dz: i32) -> i16 {
         0.0
     };
     per_mille(v.clamp(0.0, 1.0))
+}
+
+/// The microseconds of channel 1 to 16 of an RC_CHANNELS.
+pub fn channels_of(d: &RC_CHANNELS_DATA) -> [u16; 16] {
+    [
+        d.chan1_raw,
+        d.chan2_raw,
+        d.chan3_raw,
+        d.chan4_raw,
+        d.chan5_raw,
+        d.chan6_raw,
+        d.chan7_raw,
+        d.chan8_raw,
+        d.chan9_raw,
+        d.chan10_raw,
+        d.chan11_raw,
+        d.chan12_raw,
+        d.chan13_raw,
+        d.chan14_raw,
+        d.chan15_raw,
+        d.chan16_raw,
+    ]
 }
 
 /// The MANUAL_CONTROL of `channels` (microseconds of channel 1 to 16) with the vehicle's RC parameters
