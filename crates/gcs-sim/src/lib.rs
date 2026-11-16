@@ -15,10 +15,12 @@ pub mod actions;
 pub mod devices;
 pub mod signals;
 
+mod logs;
 mod params;
 mod server;
 mod vehicle;
 
+pub use logs::{LogDataDrop, SimLog, default_logs, log_bytes};
 pub use params::{ParamEncoding, ParamValue, SimParam, default_params};
 pub use server::serve_tcp;
 pub use vehicle::{SimConfig, SimVehicle, Stream};

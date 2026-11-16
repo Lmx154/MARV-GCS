@@ -13,17 +13,24 @@
 //! 42430) are answered as the vehicle does: see [`SimVehicle`] and the [`actions`] module. A
 //! COMMAND_LONG is read by hand from its bytes (its `command` may be a number the `common` dialect
 //! does not have, 42430).
+//!
+//! Logs: LOG_REQUEST_LIST, LOG_REQUEST_DATA and LOG_REQUEST_END are answered as `docs/link-contract.md`
+//! section 11 says the real vehicle will answer them: see [`crate::SimLog`] and [`crate::LogDataDrop`].
 
 use mavlink::dialects::common::{
     AUTOPILOT_VERSION_DATA, COMMAND_ACK_DATA, GPS_RAW_INT_DATA, HEARTBEAT_DATA, HIGHRES_IMU_DATA,
-    MavMessage, MavProtocolCapability, MavResult, MavSeverity, PARAM_VALUE_DATA,
-    SCALED_PRESSURE_DATA, STATUSTEXT_DATA,
+    LOG_DATA_DATA, LOG_ENTRY_DATA, MavMessage, MavProtocolCapability, MavResult, MavSeverity,
+    PARAM_VALUE_DATA, SCALED_PRESSURE_DATA, STATUSTEXT_DATA,
 };
 use mavlink::types::CharArray;
 use mavlink::{MAVLinkV2MessageRaw, MavHeader, MavlinkVersion, Message, MessageData};
 
 use crate::actions::{self, Action, Admission};
 use crate::devices;
+use crate::logs::{
+    self, FRAME_BYTES, HEARTBEAT_LOST_MS, LogDataDrop, Outbox, Queued, SLOT_FRAMES, SLOT_MS,
+    SimLog, Transfer,
+};
 use crate::params::{ParamEncoding, ParamValue, SimParam, default_params, other_type_params};
 use crate::signals;
 
@@ -86,6 +93,10 @@ pub struct SimConfig {
     /// milliseconds later, to test a ground station that must not read the stale copy as a
     /// refusal. 0 is off.
     pub stale_echo_delay_ms: u64,
+    /// The logs on the card (`docs/link-contract.md` section 11): none is an empty card.
+    pub logs: Vec<SimLog>,
+    /// LOG_DATA frames to lose, by offset, to test a ground station's re-requests.
+    pub drop_log_data: Vec<LogDataDrop>,
 }
 
 impl SimConfig {
@@ -150,6 +161,8 @@ impl Default for SimConfig {
             never_final_ack: false,
             drop_first_param_echoes: 0,
             stale_echo_delay_ms: 0,
+            logs: logs::default_logs(),
+            drop_log_data: Vec::new(),
         }
     }
 }
@@ -224,6 +237,10 @@ pub struct SimVehicle {
     held_echo: Option<(usize, u64)>,
     /// PARAM_SET frames addressed to this vehicle so far.
     param_sets_received: u32,
+    /// What the vehicle has queued to send for the log download.
+    logs_out: Outbox,
+    /// Time of the last HEARTBEAT from another system.
+    last_heartbeat_ms: Option<u64>,
 }
 
 /// A COMMAND_LONG read from its bytes: the command is a number, not a dialect enum.
@@ -278,6 +295,7 @@ impl SimVehicle {
                 count: 0,
             })
             .collect();
+        let config_drops = config.drop_log_data.clone();
         Self {
             tx_loss: LossGate::new(config.seed, config.drop_tx_percent),
             rx_loss: LossGate::new(config.seed ^ 0xD1B5_4A32_D192_ED03, config.drop_rx_percent),
@@ -298,6 +316,11 @@ impl SimVehicle {
             echoes_dropped: 0,
             held_echo: None,
             param_sets_received: 0,
+            logs_out: Outbox {
+                drops: config_drops,
+                ..Outbox::default()
+            },
+            last_heartbeat_ms: None,
         }
     }
 
@@ -332,6 +355,7 @@ impl SimVehicle {
         self.emit_params(&mut out);
         self.emit_held_echo(&mut out);
         self.emit_action(now_ms, &mut out);
+        self.emit_logs(now_ms, &mut out);
         self.emit_due(now_ms, &mut out);
         out
     }
@@ -526,6 +550,22 @@ impl SimVehicle {
             MavMessage::HEARTBEAT(_) => {
                 self.heartbeats_received = self.heartbeats_received.saturating_add(1);
                 self.last_heartbeat_from = Some((system_id, component_id));
+                self.last_heartbeat_ms = Some(self.now_ms);
+            }
+            MavMessage::LOG_REQUEST_LIST(d)
+                if self.is_addressed(d.target_system, d.target_component) =>
+            {
+                self.list_logs(d.start, d.end);
+            }
+            MavMessage::LOG_REQUEST_DATA(d)
+                if self.is_addressed(d.target_system, d.target_component) =>
+            {
+                self.serve_log(d.id, d.ofs, d.count);
+            }
+            MavMessage::LOG_REQUEST_END(d)
+                if self.is_addressed(d.target_system, d.target_component) =>
+            {
+                self.logs_out.transfer = None;
             }
             MavMessage::PARAM_REQUEST_LIST(d)
                 if self.is_addressed(d.target_system, d.target_component) =>
@@ -582,6 +622,135 @@ impl SimVehicle {
             }
             _ => {}
         }
+    }
+
+    /// Starts a slot clock when the vehicle had nothing to send.
+    fn wake_logs(&mut self) {
+        if self.logs_out.queue.is_empty() && self.logs_out.transfer.is_none() {
+            self.logs_out.due_ms = self.now_ms;
+        }
+    }
+
+    /// LOG_REQUEST_LIST: one LOG_ENTRY per log in `start..=end`, in number order; one with id 0 when the
+    /// card has no log. A new list replaces the entries not yet sent.
+    fn list_logs(&mut self, start: u16, end: u16) {
+        let mut logs = self.config.logs.clone();
+        logs.sort_by_key(|l| l.number);
+        let last_log_num = logs.last().map_or(0, |l| l.number);
+        let num_logs = logs.len() as u16;
+        self.wake_logs();
+        self.logs_out
+            .queue
+            .retain(|q| !matches!(q, Queued::Entry { .. }));
+        if logs.is_empty() {
+            self.logs_out.queue.push_back(Queued::Entry {
+                id: 0,
+                num_logs: 0,
+                last_log_num: 0,
+                size: 0,
+            });
+        }
+        for log in logs.iter().filter(|l| (start..=end).contains(&l.number)) {
+            self.logs_out.queue.push_back(Queued::Entry {
+                id: log.number,
+                num_logs,
+                last_log_num,
+                size: log.size,
+            });
+        }
+    }
+
+    /// LOG_REQUEST_DATA: replaces the running transfer. Nothing at all for a log that does not exist.
+    fn serve_log(&mut self, id: u16, ofs: u32, count: u32) {
+        let Some(log) = self.config.logs.iter().find(|l| l.number == id) else {
+            return;
+        };
+        let size = log.size;
+        self.wake_logs();
+        self.logs_out.transfer = None;
+        if ofs >= size {
+            self.logs_out.queue.push_back(Queued::EndMarker { id, ofs });
+            return;
+        }
+        self.logs_out.transfer = Some(Transfer {
+            number: id,
+            next: ofs,
+            end: ofs.saturating_add(count).min(size),
+            started_ms: self.now_ms,
+        });
+    }
+
+    /// Through the slot: 4 frames per 5 ms of virtual time, entries and markers first.
+    fn emit_logs(&mut self, now_ms: u64, out: &mut Vec<u8>) {
+        if let Some(transfer) = &self.logs_out.transfer {
+            let seen = self.last_heartbeat_ms.unwrap_or(transfer.started_ms);
+            if now_ms.saturating_sub(seen) > HEARTBEAT_LOST_MS {
+                self.logs_out.transfer = None;
+            }
+        }
+        if self.logs_out.queue.is_empty() && self.logs_out.transfer.is_none() {
+            return;
+        }
+        if now_ms.saturating_sub(self.logs_out.due_ms) > MAX_CATCH_UP_MS {
+            self.logs_out.due_ms = now_ms;
+        }
+        while self.logs_out.due_ms <= now_ms
+            && (!self.logs_out.queue.is_empty() || self.logs_out.transfer.is_some())
+        {
+            self.logs_out.due_ms += SLOT_MS;
+            for _ in 0..SLOT_FRAMES {
+                if let Some(queued) = self.logs_out.queue.pop_front() {
+                    let message = match queued {
+                        Queued::Entry {
+                            id,
+                            num_logs,
+                            last_log_num,
+                            size,
+                        } => MavMessage::LOG_ENTRY(LOG_ENTRY_DATA {
+                            time_utc: 0,
+                            size,
+                            id,
+                            num_logs,
+                            last_log_num,
+                        }),
+                        Queued::EndMarker { id, ofs } => MavMessage::LOG_DATA(LOG_DATA_DATA {
+                            ofs,
+                            id,
+                            count: 0,
+                            data: [0; 90],
+                        }),
+                    };
+                    self.push_frame(&message, out);
+                } else if let Some(frame) = self.next_log_frame() {
+                    self.push_frame(&frame, out);
+                }
+            }
+        }
+    }
+
+    /// The next LOG_DATA of the transfer, or `None` when it ended or the frame is one that is lost.
+    fn next_log_frame(&mut self) -> Option<MavMessage> {
+        let transfer = self.logs_out.transfer.as_mut()?;
+        let (number, ofs) = (transfer.number, transfer.next);
+        let count = (transfer.end - ofs).min(FRAME_BYTES);
+        transfer.next += count;
+        let finished = transfer.next >= transfer.end;
+        let size = self.config.logs.iter().find(|l| l.number == number)?.size;
+        if finished {
+            self.logs_out.transfer = None;
+        }
+        if self.logs_out.drops_frame(ofs) {
+            return None;
+        }
+        let bytes = logs::log_bytes_range(number, size, ofs, count);
+        let mut data = [0u8; 90];
+        data[..bytes.len()].copy_from_slice(&bytes);
+        Some(MavMessage::LOG_DATA(LOG_DATA_DATA {
+            ofs,
+            id: number,
+            count: count as u8,
+            data,
+        }))
     }
 
     /// A COMMAND_LONG from another system: the ones for this vehicle are answered.
