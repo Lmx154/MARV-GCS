@@ -613,12 +613,12 @@ impl SimVehicle {
                 let param = &mut self.config.params[index];
                 let reason = if param.read_only {
                     Some("read only")
-                } else if d.param_type != param.value.param_type() {
-                    Some("out of range")
-                } else if matches!(
-                    param.value.same_type_from_field(d.param_value, self.config.param_encoding),
-                    ParamValue::Int32(v) if rcmap::out_of_range(&param.name, v)
-                ) {
+                } else if d.param_type != param.value.param_type()
+                    || matches!(
+                        param.value.same_type_from_field(d.param_value, self.config.param_encoding),
+                        ParamValue::Int32(v) if rcmap::out_of_range(&param.name, v)
+                    )
+                {
                     Some("out of range")
                 } else {
                     None
