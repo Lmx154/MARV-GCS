@@ -59,6 +59,26 @@ Parameters
   STATUSTEXT with the reason, "NAME: reason" (WARNING in the simulator), right after the PARAM_VALUE. An accepted
   write sends none. A text belongs to the session, not to the command: the command line prints every text that
   arrives, also one that came before its request.
+- The RC block (amendment 2026-11-16): 44 parameters of device `MARV_DEVICE_RC` (7), appended after all others,
+  so no existing parameter changes its index. All INT32, all applied live (no reboot, no save: the value is in
+  effect at once and goes to flash only on command 245 with param1 = 1). `RCn_MIN`, `RCn_TRIM` and `RCn_MAX`
+  are calibration parameters: command 245 with param1 = 3 resets them to their defaults. n is 1 to 8. Their
+  meaning is section 12.
+
+  | Name | Unit | Default | Range |
+  |---|---|---|---|
+  | `RCn_MIN` | us | 1100 | 800..2200 |
+  | `RCn_TRIM` | us | 1500 | 800..2200 |
+  | `RCn_MAX` | us | 1900 | 800..2200 |
+  | `RCn_REVERSED` | 0/1 | 0 | 0..1 |
+  | `RCn_DZ` | us | 0 | 0..200 |
+  | `RCMAP_ROLL` | channel | 1 | 1..8 |
+  | `RCMAP_PITCH` | channel | 2 | 1..8 |
+  | `RCMAP_THROTTLE` | channel | 3 | 1..8 |
+  | `RCMAP_YAW` | channel | 4 | 1..8 |
+
+  Order: for n = 1 to 8 the five `RCn_*` as MIN, TRIM, MAX, REVERSED, DZ; then `RCMAP_ROLL`, `RCMAP_PITCH`,
+  `RCMAP_THROTTLE`, `RCMAP_YAW`.
 - Amendments by the lead after review (2026-11-12). (1) Withdrawn 2026-11-15: a different echo used to be
   retried (a stale copy of the old value in flight would read as a refusal); the vehicle answers every PARAM_SET
   with exactly one PARAM_VALUE, so a differing one after the send is the refusal. (2) A write waits
@@ -66,10 +86,17 @@ Parameters
   answers the list request with one PARAM_VALUE whose param_count is 0; the ground station shows an empty,
   complete list. The device layer must do this: silence would read as "no answer".
 
-Sensors (default rate, fastest allowed). Amendment 2026-11-16: this paragraph is what the demonstration program of `mavlink-device`
-sent. The real firmware (`MARV-V2-firmware`, USB port) sends HIGHRES_IMU `id` 0 only (IMU1, with the magnetometer in `xmag`/`ymag`/`zmag`, gauss),
-SCALED_IMU2 (IMU2, mG and mrad/s) and SCALED_PRESSURE at 25 Hz each, SYS_STATUS and GPS_RAW_INT at 1 Hz and RC_CHANNELS at 5 Hz; the
-simulator's default streams are those, and the window's Sensors and Radio tabs read them.
+Sensors (default rate, fastest allowed). Amendment 2026-11-16: the contract is what the real firmware
+(`MARV-V2-firmware`) sends on its USB port, in the first list below. The second list is the demonstration
+program of `mavlink-device`, kept for what still uses it.
+What the real firmware sends on its USB port (the simulator's default streams are the same; the window's Sensors and Radio tabs read them):
+- HIGHRES_IMU (105) `id` 0 only: IMU1, with the magnetometer in `xmag`/`ymag`/`zmag`, in gauss.
+  SCALED_IMU2: IMU2, in mG and mrad/s. SCALED_PRESSURE. All three at 25 Hz.
+- SYS_STATUS and GPS_RAW_INT at 1 Hz. RC_CHANNELS at 5 Hz.
+- MANUAL_CONTROL (69) at 5 Hz (fastest 50 Hz), USB only, sent only while a CRSF stick report is younger than
+  1 s. Its fields and scaling are in section 12.
+
+The demonstration program of `mavlink-device` (not the contract; amendment 2026-11-16: it is still what `tools/board_check.sh` and `tests/board.rs` use):
 - HIGHRES_IMU (105), SI units, one instance per sensor in its `id` field, 50 Hz per instance (200 Hz):
   id 0 ICM-45686 acceleration, gyro, temperature; id 1 LSM6DSK320X low-g acceleration, gyro, temperature;
   id 2 high-g acceleration (+-320 g); id 3 BMM350 magnetic field, temperature. A field the sensor does not
@@ -105,7 +132,7 @@ link only; the contract for it is section 11.
 Not now, each with its trigger: SYS_STATUS and battery (battery data exists); ATTITUDE (an estimator);
 TIMESYNC (timestamps must line up with the computer); parameter metadata (descriptions or ranges wanted);
 parameter persistence (the first parameter that must survive a reboot; firmware scope); signing (a radio
-link); more parameter types (a value that fits neither INT32 nor REAL32); per-instance rates.
+link); more parameter types (a value that fits neither INT32 nor REAL32); per-instance rates; RC channels 9 to 16 calibration (trigger: a use for them).
 
 ## 3. The USB crate (`usb-cdc`, own repo: https://github.com/Lmx154/usb-cdc)
 
@@ -249,6 +276,10 @@ REAL32 sets echoed, rates within 5 %, a `.tlog` written, and the ELF has no `Mav
    reader gets is the 0xFD of a whole frame. This is a rule of the USB link task, not of the wire: a
    ground station must still resynchronise at the start of any session (a USB-serial adapter on the
    computer has the same cooked window and the vehicle cannot see it).
+9. MANUAL_CONTROL from the vehicle is a report: the firmware acts on no inbound MANUAL_CONTROL or
+   RC_CHANNELS_OVERRIDE, and nothing in the firmware reads the normalised sticks except its encoder
+   (amendment 2026-11-16).
+10. Only CRSF stick reports feed MANUAL_CONTROL (amendment 2026-11-16).
 
 ## 6. Not known yet, and what settles it
 
@@ -371,6 +402,9 @@ a Refresh the user asks for is allowed (reads are operate-class). On a Configure
 downloaded at connect as before. An Operate session
 still shows a `PARAM_VALUE` it did not ask for, so a replayed log fills the table as before: the entry
 is stored and the status follows the count, but no list is requested and no missing entry is read by index.
+
+The Radio tab (section 12): Calibrate, Apply, the mapping edits and Save to flash are Configure controls. No rule
+changes: `Command::SetParam` and `Command::SendCommand` are already Configure-class (amendment 2026-11-16).
 
 Views. Every configure control is SHOWN DISABLED, with the reason next to it or as hover text ("Configure
 needs a serial or TCP link; this link is operate-only"), never hidden. The Link view and the connection bar
@@ -554,3 +588,128 @@ The firmware side was run against this client on the real board on 2026-11-16 (i
 matched the card; `logs get` of two closed logs (1.26 MB and 1.17 MB) was byte-identical (sha256) to the
 card-reader copies, at about 70 kB/s; the log being written downloads up to its flushed size. Not seen yet: a
 USB drop in the middle of a transfer, and a card with hundreds of logs.
+
+## 12. RC mapping
+
+Decision of 2026-11-16 (the lead, from the architect's consult). It binds both ends: the firmware computes and
+reports, the station (the Radio tab) displays and writes the parameters, the simulator (`gcs-sim`) follows it.
+The owner's rules: "I want to keep logic in firmware."; "settings should be saved when the user saves them via
+apply or save button."; "mavlink is telemetry only. crsf is for sticks." The mapped sticks are reported, not
+used: no arming, failsafe, flight mode, control loop, motor or actuator output. Parameters: section 2,
+Parameters (the RC block). References: ArduPilot's `RC_Channel.cpp` (`AP`, line numbers of the copy kept with
+the decision).
+
+Input. The 16 microsecond values (880 to 2159 us) of the latest CRSF stick report. For each function f
+(roll, pitch, throttle, yaw) the channel is c = `RCMAP_f`; `MIN`, `TRIM`, `MAX`, `REV` (`RCc_REVERSED`) and
+`DZ` are those of channel c. Arithmetic on integers, the division in f32. Which function is which type is fixed
+by the function (throttle is "range", the others are "angle"), not by a parameter; `DZ` means "around trim"
+for an angle and "above the bottom" for a range.
+
+Roll, pitch, yaw (angle; ArduPilot `pwm_to_angle_dz_trim`, `AP` 345-362, divided by `high_in`):
+```
+if MAX <= MIN: v = 0                                   (AP 462-464)
+r  = min(max(pwm, MIN), MAX)                           (AP 353; not a clamp that panics when MIN > MAX)
+hi = TRIM + DZ;  lo = TRIM - DZ;  s = REV ? -1 : 1     (AP 347-350)
+if   r > hi and MAX != hi:  v = s * (r - hi) / (MAX - hi)   (AP 355-356)
+elif r < lo and lo != MIN:  v = s * (r - lo) / (lo - MIN)   (AP 357-358)
+else:                       v = 0                            (AP 359-360)
+v = min(max(v, -1), 1)                                 (AP 454)
+```
+Throttle (range; ArduPilot `pwm_to_range_dz`, `AP` 387-401, divided by `high_in`; TRIM is not used):
+```
+if MAX <= MIN: v = 0
+r  = min(max(pwm, MIN), MAX)                           (AP 389)
+if REV: r = MAX - (r - MIN)                            (AP 391-393)
+lo = MIN + DZ                                          (AP 395)
+v  = (r > lo) ? (r - lo) / (MAX - lo) : 0              (AP 397-400)
+v  = min(max(v, 0), 1)
+```
+No cross-parameter check exists (neither MIN < TRIM < MAX nor a unique map): the formulas are defined for every
+in-range value, and no division by zero is reachable. A map with two functions on one channel is accepted; both
+read that channel.
+
+Sign convention (that of MANUAL_CONTROL and of PX4). Reported pitch is positive for stick FORWARD, roll positive
+for stick RIGHT, yaw positive for CLOCKWISE (right), throttle 0 at the bottom. The firmware applies no sign
+change beyond `REV`; the user sets `RCn_REVERSED` so that the station shows these directions.
+
+Stale or absent. Without a CRSF stick report younger than 1 s (strictly less) there are no values and no
+message. No neutral or held values are invented. Only stick reports whose source is CRSF feed the
+normalisation: MAVLink RC_CHANNELS_OVERRIDE never does. RC_CHANNELS (raw) keeps its behaviour.
+
+What is reported. MANUAL_CONTROL (69), on the firmware's USB link only, no dialect change. Stream: default
+interval 200 000 us (5 Hz), fastest 20 000 us (50 Hz), changeable by SET_MESSAGE_INTERVAL like every stream.
+Fields:
+- `target` = 1 (the vehicle's own system id).
+- `x` = round(1000 pitch); `y` = round(1000 roll); `z` = round(1000 throttle), 0 to 1000; `r` = round(1000 yaw).
+- `buttons` = 0; the extension fields 0 (`enabled_extensions` = 0).
+- Rounding to nearest, halves away from zero.
+RC_CHANNELS (raw, 5 Hz) stays as it is: the station needs it for the calibration capture.
+
+Worked examples (computed with an independent script from the formulas above; output = round(1000 v), halves
+away from zero). They are binding for the firmware, the simulator and the station's tests.
+
+| Angle: MIN, TRIM, MAX, REV, DZ | pwm -> output |
+|---|---|
+| 1100, 1500, 1900, 0, 0 (defaults) | 1500->0, 1700->500, 1300->-500, 1900->1000, 2012->1000, 1100->-1000, 988->-1000 |
+| 988, 1500, 2012, 0, 0 | 2012->1000, 1756->500, 1244->-500, 1600->195, 1400->-195, 988->-1000 |
+| 988, 1500, 2012, 0, 20 | 1510->0, 1520->0, 1521->2, 1766->500, 1234->-500, 2012->1000 |
+| 988, 1500, 2012, 1, 0 | 1756->-500, 1244->500, 2012->-1000 |
+| 1000, 1600, 2000, 0, 0 | 1800->500, 1300->-500, 1000->-1000, 2000->1000 |
+| 1100, 1000, 1900, 0, 0 (TRIM below MIN) | 1100->111, 1550->611, 1900->1000 |
+| 1400, 1500, 1600, 0, 200 (DZ wider than sides) | 1400->0, 1500->0, 1600->0 |
+| 1900, 1500, 1100, 0, 0 (MIN above MAX) | 988->0, 1500->0, 2012->0 |
+
+| Throttle: MIN, MAX, REV, DZ | pwm -> output |
+|---|---|
+| 1100, 1900, 0, 0 (defaults) | 988->0, 1100->0, 1500->500, 1900->1000, 2012->1000 |
+| 988, 2012, 0, 0 | 988->0, 1244->250, 1500->500, 2012->1000 |
+| 988, 2012, 0, 30 | 1018->0, 1515->500, 2012->1000 |
+| 988, 2012, 1, 0 | 988->1000, 1244->750, 2012->0 |
+| 1400, 1600, 0, 200 (DZ >= span) | 1400->0, 1500->0, 1600->0 |
+| 1900, 1100, 0, 0 (MIN above MAX) | 988->0, 1500->0, 2012->0 |
+
+Map example (defaults): channels 1..4 = 1700, 1300, 1500, 1900 give roll 500, pitch -500, throttle 500, yaw
+1000; with RCMAP_ROLL = 2 and RCMAP_PITCH = 1: roll -500, pitch 500. A duplicate map (RCMAP_ROLL = RCMAP_YAW =
+1) is accepted and both read channel 1, as in ArduPilot and PX4 (neither checks).
+
+The station, and where the logic lives
+- Firmware: all normalisation (map, reversal, end points, trim, dead zone, clamp), the freshness and source
+  rule, the report. The station computes no normalised value: the four function bars show MANUAL_CONTROL.
+- Station: during a calibration it captures per-channel extremes and centre from RC_CHANNELS, checks that a
+  channel was moved, stages the values, writes them with PARAM_SET when the user presses Apply, and sends
+  command 245 with param1 = 1 when the user presses Save to flash. Nothing is saved automatically.
+- The station sends no radio-calibration command.
+
+Display (Radio tab, read only, Operate and Configure)
+- The 16 raw bars stay. On channels 1 to 8, once the parameter list is complete, markers at that channel's
+  `MIN`, `TRIM` and `MAX`, and the channel tagged with its function (from `RCMAP_*`).
+- Four function bars from MANUAL_CONTROL: Roll (`y`), Pitch (`x`), Yaw (`r`) on -1000..1000, Throttle (`z`) on
+  0..1000, each with its expected direction ("stick forward: +", "stick right: +", "yaw right: +", "throttle
+  up: 1000"). Stale after 2 s, as RC_CHANNELS; "no data" otherwise.
+- A vehicle with no `RC1_MIN`: the mapping section says "this firmware has no RC mapping parameters".
+
+Calibration (Configure sessions only)
+1. "Calibrate radio": disabled, with its reason, on an Operate session (section 9) and while the sticks are
+   stale. The text says: transmitter on in its CRSF model; battery unplugged, no propellers.
+2. Capturing: per channel 1 to 16 the running minimum and maximum of RC_CHANNELS are drawn on the bars. The user
+   moves every stick and switch slowly to both ends and holds each end briefly (5 Hz report), then "Done".
+3. Centre: "Centre the sticks, throttle down, then OK"; OK takes the current value of each channel as its trim.
+4. Review: a table for channels 1 to 8 (current `MIN`/`TRIM`/`MAX` -> captured). A channel whose captured range
+   does not reach below 1300 AND above 1700 is "not moved" and is not written. `TRIM` is clamped into
+   [`MIN`, `MAX`]. Channels 9 to 16 are shown, never written (they have no parameters).
+5. Apply: one PARAM_SET per value that differs (at most 24), through the existing write path and its
+   confirmation rules (section 2, Parameters); or Cancel: nothing is sent.
+6. After Apply the tab shows "Applied in RAM; not saved to flash" with a "Save to flash" button (command 245
+   with param1 = 1, the same command and gate as the Parameters tab), until a save is ACCEPTED in this session.
+- Reversal is not inferred during the capture: it is an explicit checkbox in the mapping section, judged against
+  the function bars.
+
+Mapping (Configure sessions only; staged edits, then Apply, then Save to flash)
+- Four drop-downs Roll / Pitch / Throttle / Yaw -> channel 1 to 8 (`RCMAP_*`).
+- Per function: "Reversed" (`RCn_REVERSED` of the channel it maps to) and "Dead zone (us)" (`RCn_DZ`, 0 to 200).
+- A duplicate map shows a warning line; it does not block.
+- The same "Apply" / "Save to flash" pair and the same "not saved" line as the calibration.
+
+The simulator (`gcs-sim`) has the 44 parameters with these defaults and ranges, and a MANUAL_CONTROL stream at
+5 Hz computed from its own RC_CHANNELS and parameters with the formulas above (a test double: it reproduces the
+worked-example tables).
