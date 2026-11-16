@@ -1,13 +1,16 @@
 //! Headless test of the Radio view with a hand-built message store.
 
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::time::Duration;
 
+use eframe::egui;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
-use gcs_mavlink::Access;
-use gcs_mavlink::VehicleState;
+use egui_kittest::kittest::{NodeT, Queryable};
+use gcs_mavlink::dialect::MavCmd;
 use gcs_mavlink::services::messages::{Field, FieldValue, MessageEntry, MessageKey};
-use gcs_mavlink::services::params::{FetchStatus, Param, ParamTable, ParamType};
+use gcs_mavlink::services::params::{FetchStatus, Param, ParamTable, ParamType, ParamValue};
+use gcs_mavlink::{Access, Command, CommandRecord, CommandStatus, VehicleState};
 use marv_gcs::views::{self, ViewCtx};
 
 fn number(name: &str, v: f64) -> Field {
@@ -293,4 +296,324 @@ fn a_vehicle_without_rc1_min_says_it_has_no_rc_mapping_parameters() {
     draw(&state, Some(Duration::from_secs(10)), |h| {
         h.get_by_label(NO_RC);
     });
+}
+
+// The calibration (docs/link-contract.md section 12, "Calibration").
+
+/// A complete list with the contract's defaults: MIN 1100, TRIM 1500, MAX 1900 on channels 1 to 8.
+fn default_params() -> ParamTable {
+    let mut table = rc_params([1, 2, 3, 4], FetchStatus::Complete);
+    for n in 1..=8 {
+        for (suffix, value) in [("MIN", 1100), ("TRIM", 1500), ("MAX", 1900)] {
+            let param = table.params.get_mut(&format!("RC{n}_{suffix}")).unwrap();
+            param.raw = i32::to_le_bytes(value);
+        }
+    }
+    table
+}
+
+type Shared<T> = Rc<RefCell<T>>;
+
+/// The Radio view in a window whose state and clock the test changes between frames.
+struct Rig {
+    harness: Harness<'static>,
+    state: Shared<VehicleState>,
+    now: Rc<Cell<Duration>>,
+    commands: Shared<Vec<Command>>,
+}
+
+impl Rig {
+    fn new(access: Access) -> Rig {
+        let mut vehicle = state(16.0, 10);
+        vehicle.params = default_params();
+        let state = Rc::new(RefCell::new(vehicle));
+        let now = Rc::new(Cell::new(Duration::from_secs(10)));
+        let commands: Shared<Vec<Command>> = Rc::default();
+        let mut view = views::all()
+            .into_iter()
+            .find(|v| v.name() == "Radio")
+            .expect("Radio view is registered");
+        let (s, n, c) = (state.clone(), now.clone(), commands.clone());
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1000.0, 1800.0))
+            .build_ui(move |ui| {
+                let state = s.borrow();
+                let mut out = c.borrow_mut();
+                let mut cx = ViewCtx {
+                    state: &state,
+                    commands: &mut out,
+                    now: Some(n.get()),
+                    access,
+                };
+                view.ui(ui, &mut cx);
+            });
+        harness.run();
+        Rig {
+            harness,
+            state,
+            now,
+            commands,
+        }
+    }
+
+    /// One RC_CHANNELS with these microseconds, received now; the clock moves 200 ms.
+    fn feed(&mut self, values: [u16; 16]) {
+        self.now.set(self.now.get() + Duration::from_millis(200));
+        let mut state = self.state.borrow_mut();
+        let entry = state.messages.entries.get_mut(&key(65, 0)).unwrap();
+        entry.last_seen = self.now.get();
+        for (i, v) in values.iter().enumerate() {
+            let name = format!("chan{}_raw", i + 1);
+            entry
+                .fields
+                .iter_mut()
+                .find(|f| f.name == name)
+                .unwrap()
+                .value = FieldValue::Number(f64::from(*v));
+        }
+        drop(state);
+        self.harness.run();
+    }
+
+    fn click(&mut self, label: &str) {
+        self.harness.get_by_label(label).click();
+        self.harness.run();
+    }
+
+    fn enabled(&self, label: &str) -> bool {
+        !self
+            .harness
+            .get_by_label(label)
+            .accesskit_node()
+            .is_disabled()
+    }
+
+    fn has(&self, text: &str) -> bool {
+        self.harness.query_by_label_contains(text).is_some()
+    }
+
+    /// The `SetParam`s sent so far, sorted, and the other commands.
+    fn sent(&self) -> (Vec<(String, i32)>, Vec<String>) {
+        let mut writes = Vec::new();
+        let mut others = Vec::new();
+        for command in self.commands.borrow().iter() {
+            match command {
+                Command::SetParam {
+                    name,
+                    value: ParamValue::I32(v),
+                } => writes.push((name.clone(), *v)),
+                other => others.push(format!("{other:?}")),
+            }
+        }
+        writes.sort();
+        (writes, others)
+    }
+
+    /// Calibrate, sweep channels 1 to 4 between 988 and 2012 (9 to 16 too), leave 5 to 8 still, press
+    /// Done, centre channels 1 to 4 at `centre` and press OK. Stops at the review.
+    fn calibrate(&mut self, centre: u16) {
+        let still = |a: u16| {
+            let mut v = [1500; 16];
+            v[..4].fill(a);
+            v[8..].fill(a);
+            v
+        };
+        self.click("Calibrate radio");
+        self.feed(still(988));
+        self.feed(still(2012));
+        self.feed(still(1500));
+        self.click("Done");
+        let mut at_centre = [1500; 16];
+        at_centre[..4].fill(centre);
+        self.feed(at_centre);
+        self.click("OK");
+    }
+}
+
+fn names(writes: &[(String, i32)]) -> Vec<&str> {
+    writes.iter().map(|(n, _)| n.as_str()).collect()
+}
+
+#[test]
+fn the_whole_flow_writes_twelve_values_and_nothing_else_and_never_a_save() {
+    let mut rig = Rig::new(Access::Configure);
+    assert!(rig.enabled("Calibrate radio"));
+    assert!(rig.has(views::radio::PREPARE_TEXT));
+    rig.calibrate(1520);
+    assert!(rig.has("CH  1: MIN 1100 -> 988  TRIM 1500 -> 1520  MAX 1900 -> 2012"));
+    assert!(rig.has("CH  5: not moved"));
+    assert!(rig.has("CH  9: captured 988 to 2012 (not written"));
+    assert!(
+        rig.commands.borrow().is_empty(),
+        "nothing is sent before Apply"
+    );
+    rig.click("Apply");
+    let (writes, others) = rig.sent();
+    let mut want = Vec::new();
+    for n in 1..=4 {
+        want.push((format!("RC{n}_MAX"), 2012));
+        want.push((format!("RC{n}_MIN"), 988));
+        want.push((format!("RC{n}_TRIM"), 1520));
+    }
+    assert_eq!(writes, want);
+    assert!(
+        others.is_empty(),
+        "no command besides the writes: {others:?}"
+    );
+    assert!(rig.has(views::radio::NOT_SAVED_TEXT));
+    assert!(rig.enabled("Save to flash"));
+}
+
+#[test]
+fn a_value_equal_to_the_vehicles_is_not_written() {
+    let mut rig = Rig::new(Access::Configure);
+    rig.calibrate(1500);
+    rig.click("Apply");
+    let (writes, others) = rig.sent();
+    assert_eq!(writes.len(), 8, "{writes:?}");
+    assert!(names(&writes).iter().all(|n| !n.ends_with("_TRIM")));
+    assert!(others.is_empty());
+}
+
+#[test]
+fn trim_is_clamped_into_min_and_max_and_a_narrow_channel_is_not_moved() {
+    let mut rig = Rig::new(Access::Configure);
+    rig.click("Calibrate radio");
+    let mut v = [1500; 16];
+    v[0] = 988;
+    v[4] = 1400;
+    rig.feed(v);
+    v[0] = 2012;
+    v[4] = 1600;
+    rig.feed(v);
+    rig.click("Done");
+    v[0] = 2100;
+    rig.feed(v);
+    rig.click("OK");
+    assert!(rig.has("CH  5: not moved"));
+    rig.click("Apply");
+    let (writes, _) = rig.sent();
+    assert_eq!(
+        writes,
+        [
+            ("RC1_MAX".to_string(), 2012),
+            ("RC1_MIN".to_string(), 988),
+            ("RC1_TRIM".to_string(), 2012),
+        ]
+    );
+}
+
+#[test]
+fn cancel_in_every_step_sends_nothing_and_goes_back_to_the_button() {
+    for steps in 0..3 {
+        let mut rig = Rig::new(Access::Configure);
+        rig.click("Calibrate radio");
+        rig.feed([988; 16]);
+        rig.feed([2012; 16]);
+        if steps > 0 {
+            rig.click("Done");
+        }
+        if steps > 1 {
+            rig.click("OK");
+        }
+        rig.click("Cancel");
+        assert!(rig.commands.borrow().is_empty(), "step {steps}");
+        assert!(rig.enabled("Calibrate radio"), "step {steps}");
+    }
+}
+
+#[test]
+fn an_operate_session_has_the_button_disabled_with_its_reason_and_writes_nothing() {
+    let mut rig = Rig::new(Access::Operate);
+    assert!(!rig.enabled("Calibrate radio"));
+    assert!(rig.has("Configure needs a serial or TCP link"));
+    rig.click("Calibrate radio");
+    rig.feed([988; 16]);
+    rig.feed([2012; 16]);
+    assert!(rig.harness.query_by_label("Done").is_none());
+    assert!(rig.commands.borrow().is_empty());
+}
+
+#[test]
+fn stale_sticks_or_an_incomplete_list_disable_the_button_with_the_reason() {
+    let mut rig = Rig::new(Access::Configure);
+    assert!(rig.enabled("Calibrate radio"));
+    rig.now.set(Duration::from_secs(20));
+    rig.harness.run();
+    assert!(!rig.enabled("Calibrate radio"));
+    assert!(rig.harness.query_by_label("no stick data").is_some());
+    rig.feed([1500; 16]);
+    assert!(rig.enabled("Calibrate radio"));
+    rig.state.borrow_mut().params.fetch = FetchStatus::Fetching {
+        received: 1,
+        expected: 44,
+    };
+    rig.harness.run();
+    assert!(!rig.enabled("Calibrate radio"));
+    assert!(rig.has("the parameter list is not complete"));
+}
+
+fn storage_record(started: Duration, status: CommandStatus) -> CommandRecord {
+    CommandRecord {
+        command: 245,
+        name: None,
+        params: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        status,
+        sends: 1,
+        started,
+        ended: None,
+        refused: None,
+        cancel: None,
+    }
+}
+
+#[test]
+fn save_to_flash_sends_one_command_and_the_line_stays_until_an_accepted_save() {
+    let mut rig = Rig::new(Access::Configure);
+    // An accepted save from before the Apply does not count.
+    rig.state.borrow_mut().command = Some(storage_record(
+        Duration::from_secs(1),
+        CommandStatus::Finished {
+            text: "accepted",
+            accepted: true,
+        },
+    ));
+    rig.calibrate(1520);
+    rig.click("Apply");
+    assert!(rig.has(views::radio::NOT_SAVED_TEXT));
+    rig.click("Save to flash");
+    let (_, others) = rig.sent();
+    assert_eq!(others.len(), 1, "{others:?}");
+    assert!(others[0].contains(&format!("{:?}", MavCmd::MAV_CMD_PREFLIGHT_STORAGE)));
+    assert!(others[0].contains("[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]"));
+    let started = rig.now.get();
+    rig.state.borrow_mut().command = Some(storage_record(started, CommandStatus::Waiting));
+    rig.harness.run();
+    assert!(
+        rig.has(views::radio::NOT_SAVED_TEXT),
+        "waiting is not saved"
+    );
+    assert!(!rig.enabled("Save to flash"), "a command is running");
+    rig.state.borrow_mut().command = Some(storage_record(
+        started,
+        CommandStatus::Finished {
+            text: "denied",
+            accepted: false,
+        },
+    ));
+    rig.harness.run();
+    assert!(
+        rig.has(views::radio::NOT_SAVED_TEXT),
+        "a refused save is not saved"
+    );
+    rig.state.borrow_mut().command = Some(storage_record(
+        started,
+        CommandStatus::Finished {
+            text: "accepted",
+            accepted: true,
+        },
+    ));
+    rig.harness.run();
+    assert!(!rig.has(views::radio::NOT_SAVED_TEXT));
+    assert!(rig.harness.query_by_label("Save to flash").is_none());
 }

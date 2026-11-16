@@ -42,7 +42,8 @@ pub const MOVED_ABOVE_US: u16 = 1700;
 /// Shown next to "Calibrate radio".
 pub const PREPARE_TEXT: &str =
     "Transmitter on in its CRSF model; battery unplugged, no propellers.";
-pub const CAPTURE_TEXT: &str = "Move every stick and switch slowly to both ends and hold each end briefly, then press Done.";
+pub const CAPTURE_TEXT: &str =
+    "Move every stick and switch slowly to both ends and hold each end briefly, then press Done.";
 pub const CENTRE_TEXT: &str = "Centre the sticks, throttle down, then OK";
 pub const NOT_SAVED_TEXT: &str = "Applied in RAM; not saved to flash";
 /// The drawn range of a captured channel.
@@ -383,7 +384,8 @@ fn apply_gate(cx: &ViewCtx, writes: usize) -> Option<&'static str> {
     if cx.now.is_none() {
         return Some(status::NOT_CONNECTED);
     }
-    (writes == 0).then_some("nothing to write: no channel was moved, or the vehicle already has the values")
+    (writes == 0)
+        .then_some("nothing to write: no channel was moved, or the vehicle already has the values")
 }
 
 /// The review: channels 1 to 8 as current -> captured, channels 9 to 16 as captured only.
@@ -417,7 +419,10 @@ fn review_table(ui: &mut egui::Ui, capture: &Capture, mapping: &Mapping) {
                     "CH {:>2}: captured {lo} to {hi} (not written: no parameters)",
                     channel + 1
                 ),
-                None => format!("CH {:>2}: no data (not written: no parameters)", channel + 1),
+                None => format!(
+                    "CH {:>2}: no data (not written: no parameters)",
+                    channel + 1
+                ),
             }
         };
         ui.monospace(text);
