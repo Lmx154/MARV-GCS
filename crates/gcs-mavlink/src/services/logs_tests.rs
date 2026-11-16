@@ -12,6 +12,8 @@ struct Shared {
     flushes: Arc<Mutex<u32>>,
     /// Fail every write once this many bytes are in.
     fail_after: Option<usize>,
+    /// Fail every flush.
+    fail_flush: bool,
 }
 
 impl Shared {
@@ -36,6 +38,9 @@ impl Write for Shared {
 
     fn flush(&mut self) -> io::Result<()> {
         *self.flushes.lock().unwrap() += 1;
+        if self.fail_flush {
+            return Err(io::Error::other("flush failed"));
+        }
         Ok(())
     }
 }
@@ -767,4 +772,24 @@ fn a_download_can_follow_a_download() {
     assert_eq!(rig.download().number, 6);
     assert_eq!(rig.status(), DownloadStatus::Done);
     assert_eq!(rig.sink.bytes(), second);
+}
+
+#[test]
+fn a_final_flush_that_fails_ends_the_download_and_stops_the_vehicle() {
+    let data = log_bytes(300);
+    let mut rig = Rig::new();
+    let sink = Shared {
+        fail_flush: true,
+        ..Shared::default()
+    };
+    rig.get_with(sink, 5, 300, 0);
+    rig.serve_last(&data, &[], 10);
+    assert_eq!(
+        rig.status(),
+        DownloadStatus::Failed(DownloadError::Sink("flush failed".into()))
+    );
+    assert_eq!(rig.ends(), vec![10]);
+    rig.tick_range(50, 8000);
+    assert_eq!(rig.requests().len(), 1);
+    assert_eq!(rig.ends().len(), 1);
 }

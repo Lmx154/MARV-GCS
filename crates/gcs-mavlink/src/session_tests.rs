@@ -894,6 +894,67 @@ mod access {
         rig.vehicle.stop();
     }
 
+    fn download_log() -> Command {
+        Command::DownloadLog {
+            number: 2,
+            size: 1000,
+            sink: crate::tlog::LogSink::new(Vec::new()),
+        }
+    }
+
+    /// Log requests (list, data, end) that the vehicle fake received.
+    fn log_requests(rig: &Rig) -> usize {
+        count(rig, |m| {
+            matches!(
+                m,
+                Message::LOG_REQUEST_LIST(_)
+                    | Message::LOG_REQUEST_DATA(_)
+                    | Message::LOG_REQUEST_END(_)
+            )
+        })
+    }
+
+    #[test]
+    fn an_operate_session_refuses_a_log_download_and_a_cancel_and_writes_nothing() {
+        let mut rig = rig_access(Access::Operate);
+        rig.session.send(download_log());
+        rig.session.send(Command::CancelLogDownload);
+        std::thread::sleep(QUIET);
+        assert_eq!(log_requests(&rig), 0);
+        assert_eq!(rig.session.state().logs.downloads, 0);
+        assert!(rig.session.state().logs.download.is_none());
+        assert_eq!(
+            rig.session.state().link.refused,
+            Some(Refused {
+                command: "CancelLogDownload",
+                count: 2
+            })
+        );
+        rig.vehicle.stop();
+    }
+
+    #[test]
+    fn negative_control_without_the_gate_the_log_download_goes_out_on_an_operate_session() {
+        let mut rig = rig_access(Access::Operate);
+        rig.session.send_ungated(download_log());
+        assert!(
+            wait_until(LIMIT, || count(&rig, |m| matches!(
+                m,
+                Message::LOG_REQUEST_DATA(_)
+            )) >= 1),
+            "the ungated download did not go out"
+        );
+        rig.session.send_ungated(Command::CancelLogDownload);
+        assert!(
+            wait_until(LIMIT, || count(&rig, |m| matches!(
+                m,
+                Message::LOG_REQUEST_END(_)
+            )) >= 1),
+            "the ungated cancel did not go out"
+        );
+        rig.vehicle.stop();
+    }
+
     #[test]
     fn a_configure_session_sends_the_command() {
         let mut rig = rig_access(Access::Configure);

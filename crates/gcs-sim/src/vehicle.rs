@@ -632,13 +632,15 @@ impl SimVehicle {
     }
 
     /// LOG_REQUEST_LIST: one LOG_ENTRY per log in `start..=end`, in number order; one with id 0 when the
-    /// card has no log. A new list replaces the entries not yet sent.
+    /// card has no log. A new list replaces the entries not yet sent and a running transfer (one
+    /// activity at a time).
     fn list_logs(&mut self, start: u16, end: u16) {
         let mut logs = self.config.logs.clone();
         logs.sort_by_key(|l| l.number);
         let last_log_num = logs.last().map_or(0, |l| l.number);
         let num_logs = logs.len() as u16;
         self.wake_logs();
+        self.logs_out.transfer = None;
         self.logs_out
             .queue
             .retain(|q| !matches!(q, Queued::Entry { .. }));

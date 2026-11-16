@@ -130,7 +130,7 @@ stderr (a command whose own stdout shows texts does not echo them). A text belon
 | `device restart NAME` / `device selftest NAME` | `MAV_CMD_MARV_DEVICE`; NAME is IMU1, IMU2, BARO, MAG, GNSS, BATT, RC, SD, PSRAM, LED or ESC (any case); every name is sent and the vehicle decides (it denies a restart of RC; the window's buttons offer only the ones it accepts) |
 | `reboot --yes` | `MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN` param1 = 1; without `--yes` it refuses (exit 2) before connecting |
 | `logs list` | the logs on the vehicle's card, one line each, `NUMBER<TAB>SIZE` (bytes), then `last<TAB>N`: the number of the log being written, or the highest present when none is open; numbers have gaps; an empty card prints nothing on stdout and `marv-cli: no logs on the vehicle` on stderr, exit 0. Configure links only (`serial:`, `tcp:`) |
-| `logs get N [-o FILE] [--force]` | lists, then downloads log N to FILE (default `NNNNNNNN.BIN`, the card's name, in the current directory); prints `downloaded<TAB>FILE<TAB>SIZE bytes`. Progress on stderr, at most twice a second: `log N: DONE of SIZE bytes (P %)`. An existing file is refused (exit 1) unless `--force`; a log that is not in the list is exit 1 and creates no file; a download that ends without all its bytes is exit 1 and keeps the partial file, saying how many bytes are in it. Configure links only. See "Logs" below |
+| `logs get N [-o FILE] [--force]` | lists, then downloads log N to FILE (default `NNNNNNNN.BIN`, the card's name, in the current directory); prints `downloaded<TAB>FILE<TAB>SIZE bytes`. Progress on stderr, at most twice a second: `log N: DONE of SIZE bytes (P %)`. An existing file is refused (exit 1) unless `--force`, which truncates it when the download starts, so a failed download leaves the partial new data in its place; a log that is not in the list is exit 1 and creates no file; a download that ends without all its bytes is exit 1 and keeps the partial file, saying how many bytes are in it. Configure links only. See "Logs" below |
 | `record FILE [--for s]` | records the link to a `.tlog` (the session's own recording) for `--for` (default 60 s), then prints `recorded<TAB>FILE<TAB>N frames<TAB>N bytes`; an existing file is never overwritten (exit 1) |
 
 Output is one record per line; fields are separated by a TAB, so `cut -f`, `awk -F'\t'` and `grep` do. A
@@ -167,8 +167,10 @@ behind), and logging goes on meanwhile.
   that is not listed. Ctrl-C ends the process; the vehicle stops sending 3 s after the last heartbeat.
 - Only on the USB cable (`serial:`) and TCP (the simulator): the radio's node does not serve these messages, and
   on a `udp:` link both commands are refused with exit 4, nothing sent. The window (`marv-gcs`) has no logs tab yet.
-- Not verified against a board: the firmware side does not exist yet. It has been run against the SIMULATOR
-  only (`gcs-sim`, which follows the contract, including lost frames).
+- Run against the real board on 2026-11-16 (by the firmware's implementer): `logs list` matched the card; `logs get` of
+  two closed logs (1.26 MB and 1.17 MB) was byte-identical (sha256) to the card-reader copies, at about 70 kB/s; the
+  log being written downloads up to its flushed size. Not seen yet: a USB drop in the middle of a transfer, and a card
+  with hundreds of logs. Lost frames and a silent vehicle are tested against the simulator (`gcs-sim`) only.
 
 There is no JSON or other structured mode: the tab-separated lines are what the session holds, and a structured
 form would need a new dependency.

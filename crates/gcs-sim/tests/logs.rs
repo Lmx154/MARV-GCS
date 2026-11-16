@@ -345,3 +345,21 @@ fn chosen_frames_are_lost_the_chosen_number_of_times() {
         "{offsets:?}"
     );
 }
+
+#[test]
+fn a_list_request_during_a_download_replaces_the_transfer() {
+    let mut vehicle = vehicle();
+    let first = log_data(&run(
+        &mut vehicle,
+        100,
+        120,
+        &request_data(8, 0, 0xFFFF_FFFF),
+    ));
+    assert!(!first.is_empty());
+    let listed = run(&mut vehicle, 121, 400, &request_list(0, 0xFFFF));
+    assert_eq!(entries(&listed).len(), 5, "{listed:?}");
+    // At most the frames of the step that carried the request, none after it.
+    assert!(log_data(&listed).len() <= 4, "{}", log_data(&listed).len());
+    let later = run(&mut vehicle, 401, 800, &[]);
+    assert!(log_data(&later).is_empty());
+}

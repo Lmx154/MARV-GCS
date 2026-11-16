@@ -407,7 +407,13 @@ impl Logs {
         };
         let status = match transfer.writer.flush() {
             Ok(()) => DownloadStatus::Done,
-            Err(error) => DownloadStatus::Failed(DownloadError::Sink(error.to_string())),
+            Err(error) => {
+                cx.out.push(Message::LOG_REQUEST_END(LOG_REQUEST_END_DATA {
+                    target_system: transfer.target.0,
+                    target_component: transfer.target.1,
+                }));
+                DownloadStatus::Failed(DownloadError::Sink(error.to_string()))
+            }
         };
         if let Some(download) = cx.state.logs.download.as_mut() {
             download.status = status;

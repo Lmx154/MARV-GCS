@@ -547,4 +547,7 @@ The simulator (`gcs-sim`) behaves as above, in virtual time: five logs with numb
 12 345, 0, 9 000, 60 001 and 450), answered through a slot of 4 frames per 5 ms, a request replacing the running
 one, a zero-count LOG_DATA at or past the end, nothing for a missing log, the 3 s heartbeat rule. Its
 configuration can drop chosen LOG_DATA frames by offset (`drop_log_data`) and replace the logs (`logs`).
-It has been the only vehicle this was run against: the firmware side does not exist yet.
+The firmware side was run against this client on the real board on 2026-11-16 (its implementer): `logs list`
+matched the card; `logs get` of two closed logs (1.26 MB and 1.17 MB) was byte-identical (sha256) to the
+card-reader copies, at about 70 kB/s; the log being written downloads up to its flushed size. Not seen yet: a
+USB drop in the middle of a transfer, and a card with hundreds of logs.
