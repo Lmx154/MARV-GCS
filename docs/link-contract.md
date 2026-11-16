@@ -66,7 +66,10 @@ Parameters
   answers the list request with one PARAM_VALUE whose param_count is 0; the ground station shows an empty,
   complete list. The device layer must do this: silence would read as "no answer".
 
-Sensors (default rate, fastest allowed)
+Sensors (default rate, fastest allowed). Amendment 2026-11-16: this paragraph is what the demonstration program of `mavlink-device`
+sent. The real firmware (`MARV-V2-firmware`, USB port) sends HIGHRES_IMU `id` 0 only (IMU1, with the magnetometer in `xmag`/`ymag`/`zmag`, gauss),
+SCALED_IMU2 (IMU2, mG and mrad/s) and SCALED_PRESSURE at 25 Hz each, SYS_STATUS and GPS_RAW_INT at 1 Hz and RC_CHANNELS at 5 Hz; the
+simulator's default streams are those, and the window's Sensors and Radio tabs read them.
 - HIGHRES_IMU (105), SI units, one instance per sensor in its `id` field, 50 Hz per instance (200 Hz):
   id 0 ICM-45686 acceleration, gyro, temperature; id 1 LSM6DSK320X low-g acceleration, gyro, temperature;
   id 2 high-g acceleration (+-320 g); id 3 BMM350 magnetic field, temperature. A field the sensor does not

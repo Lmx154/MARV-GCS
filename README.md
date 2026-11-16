@@ -12,9 +12,9 @@ The flight-controller end of the link is three small crates, each in its own rep
 [`marv-dialect`](https://github.com/Lmx154/marv-dialect) (the message definitions) and
 [`mavlink-device`](https://github.com/Lmx154/mavlink-device) (the MAVLink layer, on any byte stream). The
 ground station has been run against the MARV V2 board's real firmware (the `MARV-V2-firmware` repository)
-over its USB port and over the radio: it runs seven device rows (IMU1, IMU2, BARO, MAG, GNSS, BATT and the
-radio receiver RC), the parameters, the commands, the calibrations and the self-test. The automated board
-check (`tools/board_check.sh`) still uses the small demonstration program of `mavlink-device`. Without a board it runs against the simulated vehicle in this repo, which behaves as
+over its USB port and over the radio: it runs eight device rows (IMU1, IMU2, BARO, MAG, GNSS, BATT, the radio receiver RC and the SD card),
+the parameters, the commands, the calibrations, the self-test and the log download. The automated board
+check (`tools/board_check.sh`) still uses the small demonstration program of `mavlink-device`. Without a board it runs against the simulated vehicle in this repo, which sends the real firmware's streams (below) and behaves as
 `docs/link-contract.md` says the real one does.
 
 ## Quick start
@@ -65,12 +65,18 @@ Building needs Rust 1.99 or newer (the `rust-version` of `marv-dialect`). On Lin
 
 | Tab | What it shows |
 |---|---|
-| Sensors | Live plots of both IMUs, the high-g accelerometer, the magnetometer and the barometer, and one line of GPS. The plots are a table of presets; one row adds a plot. |
+| Sensors | Live plots, a table of presets (one row adds a plot), each a message and fields the real firmware sends: IMU1 acceleration and rotation and the magnetic field (gauss) from `HIGHRES_IMU` (`id` 0; the magnetometer is in its `xmag`/`ymag`/`zmag`), IMU2 acceleration and rotation from `SCALED_IMU2` (mG and mrad/s, converted to m/s² and rad/s as the titles say), pressure from `SCALED_PRESSURE`, battery voltage (V) and current (A) from `SYS_STATUS` (65535 mV and -1 cA mean "not available" and are left out); one line of GPS and one of the battery. There is no high-g plot: the firmware sends nothing of that sensor. |
+| Radio | Read only. 16 channel bars from `RC_CHANNELS` (microseconds, scale 800 to 2200 with marks at 1000, 1500 and 2000, the number beside each bar, `chancount` respected, 65535 = unused), the link quality (`rssi`, 255 = unknown), the age of the last `RC_CHANNELS` ("no stick data" when it is older than 2 s or was never seen: the bars are then empty), the RC row of `MARV_DEVICE_STATUS` (id 7) and `RADIO_STATUS` when that message arrives. No mapping or calibration yet. |
 | Messages | Every message that arrives: rate, count, age and all its fields. Any numeric field can be plotted. Nothing here knows a particular message. |
-| Devices | The health of each device of the flight controller (`MARV_DEVICE_STATUS`, `docs/link-contract.md` section 8): one row per device in `device_id` order with its state (coloured), last error, samples and samples per second (computed from two successive rows), age of the last sample, errors, timeouts, recoveries, attempts, overflows, configuration restores, flags (HIL, self-test) and how long ago the row arrived (a row older than 15 s is shown as stale, not removed). The table is read only; above it the buttons Calibrate gyro, Calibrate accelerometer (level) and Cancel calibration, and per row Restart (IMU1, IMU2, BARO, MAG, GNSS, BATT) and Self-test (IMU1, IMU2, MAG), all Configure-only (section "Commands" below). The simulator sends seven devices; no firmware sends the message yet, so it has not been seen from a board. |
+| Devices | The health of each device of the flight controller (`MARV_DEVICE_STATUS`, `docs/link-contract.md` section 8): one row per device in `device_id` order with its state (coloured), last error, samples and samples per second (computed from two successive rows), age of the last sample, errors, timeouts, recoveries, attempts, overflows, configuration restores, flags (HIL, self-test) and how long ago the row arrived (a row older than 15 s is shown as stale, not removed). The table is read only; above it the buttons Calibrate gyro, Calibrate accelerometer (level) and Cancel calibration, and per row Restart (IMU1, IMU2, BARO, MAG, GNSS, BATT, SD) and Self-test (IMU1, IMU2, MAG), all Configure-only (section "Commands" below). The real board sends rows for ids 1 to 7 and 9; the simulator sends the same eight. |
 | Parameters | Whatever parameters the vehicle reports: search, group by name prefix, edit, write with confirmation (a refused or unanswered write says so), save to and load from a file; the storage buttons Save to flash, Reload from flash, Reset all to defaults and Reset calibration (the two resets ask for a second click). Nothing here knows a particular parameter. On an operate-only link the list is not downloaded at connect (press Refresh) and the editing controls are shown disabled with the reason. |
-| Log | The vehicle's text messages, and the recording. Every session is recorded automatically to `logs/<UTC time>.tlog`, the telemetry-log format Mission Planner, QGroundControl and pymavlink read. A log can be opened and replayed through the same tabs. |
+| Log | Two kinds of log, in two sections. "Station recording (.tlog)": every session is recorded automatically to `logs/<UTC time>.tlog`, the telemetry-log format Mission Planner, QGroundControl and pymavlink read; a log can be opened and replayed through the same tabs. "On-board logs (SD card)": the SD row (state, last error, blocks written, age) or "no SD row yet"; Restart SD; Refresh list and a table of the card's logs (number, bytes, MiB, the last one marked "being written"); per row Download to `<folder>/NNNNNNNN.BIN` (the folder is a text field, default the window's log directory; an existing file is never overwritten, the reason is shown), one download at a time with a progress bar (bytes, kB/s), Cancel, and the result or error in words. All Configure-only. Below, the vehicle's text messages. |
 | Link | Connection state and counters: frames received and sent, checksum errors, discarded bytes; the session's role (Access) and the last command it refused; the Reboot vehicle button (asks for a second click). |
+
+What the real firmware sends on its USB port, and so what the tabs and the simulator's default streams show: HEARTBEAT and
+SYS_STATUS 1 Hz, `MARV_DEVICE_STATUS` (every row at least once a second), GPS_RAW_INT 1 Hz, HIGHRES_IMU, SCALED_IMU2 and
+SCALED_PRESSURE 25 Hz each, RC_CHANNELS 5 Hz while the receiver delivers sticks, STATUSTEXT. (An older demonstration program
+sent four HIGHRES_IMU instances at 50 Hz; the window no longer looks for them.)
 
 The status at the top right says `Connecting`, `Connected` (with the vehicle's ids), `Lost` (no heartbeat
 for 5 s) or `Closed` (with the reason), then the role of the session.
@@ -83,7 +89,7 @@ Every button above is a MAVLink command to the flight controller (`docs/link-con
 20 s of silence. All are Configure-class: on an Operate link they are shown disabled with the reason, and
 while a command is running every command button is disabled ("a command is running"), except Cancel
 calibration during a calibration. The Devices tab has Calibrate gyro, Calibrate accelerometer (level) and
-Calibrate compass; while the compass calibration waits or runs it shows "rotate the vehicle through all
+Calibrate compass, and the Log tab Restart SD; while the compass calibration waits or runs it shows "rotate the vehicle through all
 orientations" next to the status line. The last command, in words ("Gyro calibration: 40 %", "Compass
 calibration: accepted", "Reboot: no answer after 3 sends"), is shown under the buttons of the Parameters, Devices and Link tabs and is
 `VehicleState.command`. The simulator answers them as the vehicle will, and the firmware answers them too.
@@ -166,7 +172,7 @@ behind), and logging goes on meanwhile.
   A vehicle that does not have the log gives the same silence, so `logs get` lists first and refuses a number
   that is not listed. Ctrl-C ends the process; the vehicle stops sending 3 s after the last heartbeat.
 - Only on the USB cable (`serial:`) and TCP (the simulator): the radio's node does not serve these messages, and
-  on a `udp:` link both commands are refused with exit 4, nothing sent. The window (`marv-gcs`) has no logs tab yet.
+  on a `udp:` link both commands are refused with exit 4, nothing sent. The window's Log tab does the same with buttons (see "What it does").
 - Run against the real board on 2026-11-16 (by the firmware's implementer): `logs list` matched the card; `logs get` of
   two closed logs (1.26 MB and 1.17 MB) was byte-identical (sha256) to the card-reader copies, at about 70 kB/s; the
   log being written downloads up to its flushed size. Not seen yet: a USB drop in the middle of a transfer, and a card
@@ -226,7 +232,7 @@ Six crates; the dependency graph enforces the layers (`docs/architecture.md`).
 ## Tests
 
 ```
-cargo test --workspace          # 615 tests, about 60 s; needs /usr/bin/socat for the serial tests
+cargo test --workspace          # TESTCOUNT tests, about 60 s; needs /usr/bin/socat for the serial tests
 cargo clippy --workspace --all-targets -- -D warnings
 tools/board_check.sh <dir>      # with the board on its debug probe and its USB port cabled: about 3 minutes
 ```
@@ -246,21 +252,21 @@ What the tests stand on:
   message rates and values, the full parameter list with 20 % of frames dropped in each direction, writes
   confirmed, refused and unanswered, both parameter encodings, recording and replay.
 - The command line (`crates/marv-cli/tests`, 46 tests): every command and option and every error of the arguments; every command against the simulator over TCP, the log download included (byte for byte, with lost frames, a stalled vehicle, an existing file); no vehicle (nothing listening, a silent peer); the negative control, where a counting writer on an Operate session sees no `PARAM_SET`, no log message and no `COMMAND_LONG` but the capability request while `devices`, `status` and `param list` work; and the dependency rule (no GUI crate in `cargo tree -p marv-cli`).
-- The views are drawn and clicked without a window (`egui_kittest`).
+- The views are drawn and clicked without a window (`egui_kittest`). Nobody has looked at the new Log section, the Radio tab or the changed Sensors tab on a screen: they are checked by tests of the views' logic and by one ignored test that replays a recording of the real vehicle (`MARV_TLOG=file.tlog cargo test -p marv-gcs --test real_recording -- --ignored --nocapture`; 2026-11-16: every Sensors preset, RC_CHANNELS, and the SD and RC rows found their data in a 20 s recording; RADIO_STATUS is not sent on USB). The layout, the colours and the bars' look are unseen.
 - Checked with independent implementations: framing against the `mavlink` crate's own reader and writer
   for all 234 message types; the simulator's output with a hand-written decoder; a recorded log read with
   pymavlink (every frame decoded, same counts, both directions).
 - On the MARV V2 board over USB (`tools/board_check.sh`, 2026-11-12, one Linux computer): connected within
   20 ms of the open; first byte of the first session after a restart is the start of frame 0, and the
   first 20 s carry 4343 frames with 0 checksum errors, 0 discarded bytes and 0 lost frames; rates 50.000 to
-  50.002 Hz per IMU instance, 10.000 Hz pressure, 5.000 Hz GPS, 1.000 Hz heartbeat; 13 parameters listed
+  50.002 Hz per IMU instance, 10.000 Hz pressure, 5.000 Hz GPS, 1.000 Hz heartbeat (that was the demonstration program, not the real firmware's rates above); 13 parameters listed
   in 20 ms; writes confirmed in 20 ms, a read-only one refused, an out-of-range one answered with the
   clamped value; a recording of 1100 frames decoded completely by pymavlink; reconnect in 20 ms.
 
 ## Not covered, and known limits
 
-- Not built: missions, a map, joystick input, firmware upload, a logs tab in the window (the command line downloads the logs: see "Logs"),
-  changing message rates from the ground station. None is needed by the firmware yet.
+- Not built: RC mapping and calibration, a motors view, a map, parameter descriptions and ranges, missions, joystick input,
+  firmware upload, changing message rates from the ground station. (On-board log download is built, in the window and in `marv-cli`.)
 - `marv-link-test` has been run on localhost and, once (2026-11-15, 30 s), over a real radio; the UDP link
   has not been run for longer than that against a real radio. The deframer releases a frame of an id the dialect does not have only when the next frame
   starts, so a count of such frames can be one frame late until the next frame arrives (`MARV_TEST` is
