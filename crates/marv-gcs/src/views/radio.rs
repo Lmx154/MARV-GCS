@@ -2,18 +2,23 @@
 //! report, the RC row of `MARV_DEVICE_STATUS` and `RADIO_STATUS` when it is present. The four function
 //! bars (roll, pitch, yaw, throttle) show what the vehicle's `MANUAL_CONTROL` carries, and on channels 1
 //! to 8 the markers `MIN`, `TRIM` and `MAX` and the function of the channel come from the vehicle's RC
-//! parameters (`docs/link-contract.md` section 12). Read only: no mapping editor and no calibration; the
-//! station computes no normalised value.
+//! parameters (`docs/link-contract.md` section 12). The station computes no normalised value. The
+//! calibration (Configure sessions): capture the extremes of the raw channels, centre, review, then Apply
+//! writes the values that differ with `PARAM_SET` and Save to flash sends command 245; nothing is saved
+//! or sent before the user presses a button. No mapping editor yet.
 
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, Rect, Sense, Stroke, StrokeKind, vec2};
+use gcs_mavlink::dialect::MavCmd;
 use gcs_mavlink::services::messages::{MessageEntry, MessageStore};
-use gcs_mavlink::services::params::{FetchStatus, ParamTable};
+use gcs_mavlink::services::params::{FetchStatus, ParamTable, ParamValue, WriteStatus};
+use gcs_mavlink::{Command, CommandStatus, VehicleState};
 
+use super::actions;
 use super::devices;
 use super::{View, ViewCtx};
-use crate::status::{GREY, YELLOW};
+use crate::status::{self, GREY, YELLOW};
 
 /// The RC row's `device_id` in `MARV_DEVICE_STATUS`.
 const RC_DEVICE: u8 = 7;
@@ -31,13 +36,126 @@ const MARKER: Color32 = Color32::from_rgb(235, 160, 40);
 /// Shown in place of the markers and tags when the vehicle has no `RC1_MIN`.
 pub const NO_RC_PARAMS: &str = "this firmware has no RC mapping parameters";
 const BAR_SIZE: egui::Vec2 = vec2(420.0, 16.0);
+/// A channel counts as moved when its captured range reaches below the first and above the second.
+pub const MOVED_BELOW_US: u16 = 1300;
+pub const MOVED_ABOVE_US: u16 = 1700;
+/// Shown next to "Calibrate radio".
+pub const PREPARE_TEXT: &str =
+    "Transmitter on in its CRSF model; battery unplugged, no propellers.";
+pub const CAPTURE_TEXT: &str = "Move every stick and switch slowly to both ends and hold each end briefly, then press Done.";
+pub const CENTRE_TEXT: &str = "Centre the sticks, throttle down, then OK";
+pub const NOT_SAVED_TEXT: &str = "Applied in RAM; not saved to flash";
+/// The drawn range of a captured channel.
+const CAPTURED: Color32 = Color32::from_rgba_premultiplied(40, 110, 60, 140);
 
 #[derive(Default)]
-pub struct Radio;
+pub struct Radio {
+    flow: Flow,
+    /// The last Apply, until a save is accepted.
+    applied: Option<Applied>,
+}
+
+/// Where the calibration stands.
+#[derive(Default)]
+enum Flow {
+    #[default]
+    Idle,
+    Capturing(Capture),
+    Centre(Capture),
+    Review(Capture),
+}
+
+/// What the user has moved so far, per channel 1 to 16.
+#[derive(Debug, Clone, Default)]
+pub struct Capture {
+    pub ranges: [Option<(u16, u16)>; CHANNELS],
+    pub trims: [Option<u16>; CHANNELS],
+}
+
+impl Capture {
+    /// Widen every channel's range by the latest values.
+    pub fn observe(&mut self, values: &[Option<u16>]) {
+        for (range, value) in self.ranges.iter_mut().zip(values) {
+            if let Some(v) = *value {
+                *range = Some(match *range {
+                    Some((lo, hi)) => (lo.min(v), hi.max(v)),
+                    None => (v, v),
+                });
+            }
+        }
+    }
+
+    /// Take the current value of each channel as its trim.
+    pub fn centre(&mut self, values: &[Option<u16>]) {
+        for (trim, value) in self.trims.iter_mut().zip(values) {
+            *trim = *value;
+        }
+    }
+
+    /// The new (`MIN`, `TRIM`, `MAX`) of a channel (0 for channel 1) that was moved; `None` for "not moved".
+    /// `TRIM` is clamped into [`MIN`, `MAX`].
+    pub fn moved(&self, channel: usize) -> Option<(i64, Option<i64>, i64)> {
+        let (lo, hi) = self.ranges.get(channel).copied().flatten()?;
+        if !(lo < MOVED_BELOW_US && hi > MOVED_ABOVE_US) {
+            return None;
+        }
+        let (lo, hi) = (i64::from(lo), i64::from(hi));
+        let trim = self.trims[channel].map(|t| i64::from(t).clamp(lo, hi));
+        Some((lo, trim, hi))
+    }
+
+    /// The writes of Apply: for channels 1 to 8 that were moved, each of `RCn_MIN`, `RCn_TRIM` and
+    /// `RCn_MAX` whose value differs from the vehicle's current one. Channels 9 to 16 never.
+    pub fn writes(&self, mapping: &Mapping) -> Vec<(String, i64)> {
+        let mut out = Vec::new();
+        for channel in 0..MAPPED_CHANNELS {
+            let (Some((min, trim, max)), Some(current)) =
+                (self.moved(channel), mapping.channel(channel))
+            else {
+                continue;
+            };
+            for (suffix, new, now) in [
+                ("MIN", Some(min), current.min),
+                ("TRIM", trim, current.trim),
+                ("MAX", Some(max), current.max),
+            ] {
+                if let (Some(new), Some(now)) = (new, now)
+                    && new != now
+                {
+                    out.push((format!("RC{}_{suffix}", channel + 1), new));
+                }
+            }
+        }
+        out
+    }
+}
+
+/// An Apply that was sent.
+struct Applied {
+    /// Session time of the press.
+    at: Duration,
+    sent: Vec<(String, i64)>,
+    /// A save of this session was accepted after `at`.
+    saved: bool,
+}
+
+/// Whether the vehicle's last command is an accepted "Save to flash" started at or after `at`.
+fn saved_since(state: &VehicleState, at: Duration) -> bool {
+    state.command.as_ref().is_some_and(|r| {
+        r.command == 245
+            && r.params[0] == 1.0
+            && r.started >= at
+            && matches!(r.status, CommandStatus::Finished { accepted: true, .. })
+    })
+}
 
 impl View for Radio {
     fn name(&self) -> &'static str {
         "Radio"
+    }
+
+    fn session_changed(&mut self) {
+        *self = Radio::default();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx) {
@@ -84,6 +202,12 @@ impl View for Radio {
         if mapping == Mapping::Missing {
             ui.label(NO_RC_PARAMS);
         }
+        self.calibration(ui, cx, &sticks, &mapping);
+        ui.separator();
+        let capture = match &self.flow {
+            Flow::Capturing(c) | Flow::Centre(c) | Flow::Review(c) => Some(c),
+            Flow::Idle => None,
+        };
         marks_header(ui);
         egui::ScrollArea::vertical().show(ui, |ui| {
             for channel in 0..sticks.shown() {
@@ -94,10 +218,14 @@ impl View for Radio {
                     .flatten()
                     .filter(|_| sticks.fresh);
                 let marks = mapping.channel(channel);
+                let captured = capture.and_then(|c| c.ranges[channel]);
                 ui.horizontal(|ui| {
                     ui.monospace(format!("CH {:>2}", channel + 1));
-                    bar(ui, value, marks);
+                    bar(ui, value, marks, captured);
                     ui.label(value_text(value));
+                    if let Some((lo, hi)) = captured {
+                        ui.label(format!("captured {lo} to {hi}"));
+                    }
                     if let Some(marks) = marks {
                         ui.label(marks.text());
                     }
@@ -105,6 +233,234 @@ impl View for Radio {
             }
         });
     }
+}
+
+impl Radio {
+    /// The calibration: the button and its reason, the steps, and the "not saved" line.
+    fn calibration(
+        &mut self,
+        ui: &mut egui::Ui,
+        cx: &mut ViewCtx,
+        sticks: &Sticks,
+        mapping: &Mapping,
+    ) {
+        let live: Vec<Option<u16>> = sticks
+            .values
+            .iter()
+            .map(|v| v.filter(|_| sticks.fresh))
+            .collect();
+        if let Some(applied) = &mut self.applied
+            && !applied.saved
+            && saved_since(cx.state, applied.at)
+        {
+            applied.saved = true;
+        }
+        ui.strong("Calibration");
+        let flow = std::mem::take(&mut self.flow);
+        self.flow = match flow {
+            Flow::Idle => {
+                let reason = calibrate_gate(cx, sticks, mapping);
+                ui.horizontal(|ui| {
+                    let start = actions::button(ui, "Calibrate radio", reason);
+                    if let Some(reason) = reason {
+                        ui.colored_label(YELLOW, reason);
+                    }
+                    ui.label(PREPARE_TEXT);
+                    if start {
+                        Flow::Capturing(Capture::default())
+                    } else {
+                        Flow::Idle
+                    }
+                })
+                .inner
+            }
+            Flow::Capturing(mut capture) => {
+                capture.observe(&live);
+                ui.label(CAPTURE_TEXT);
+                if !sticks.fresh {
+                    ui.colored_label(YELLOW, "no stick data");
+                }
+                let (done, cancel) = ui
+                    .horizontal(|ui| {
+                        (
+                            actions::button(ui, "Done", None),
+                            actions::button(ui, "Cancel", None),
+                        )
+                    })
+                    .inner;
+                if cancel {
+                    Flow::Idle
+                } else if done {
+                    Flow::Centre(capture)
+                } else {
+                    Flow::Capturing(capture)
+                }
+            }
+            Flow::Centre(mut capture) => {
+                ui.label(CENTRE_TEXT);
+                let reason = (!sticks.fresh).then_some("no stick data");
+                let (ok, cancel) = ui
+                    .horizontal(|ui| {
+                        (
+                            actions::button(ui, "OK", reason),
+                            actions::button(ui, "Cancel", None),
+                        )
+                    })
+                    .inner;
+                if cancel {
+                    Flow::Idle
+                } else if ok {
+                    capture.centre(&live);
+                    Flow::Review(capture)
+                } else {
+                    Flow::Centre(capture)
+                }
+            }
+            Flow::Review(capture) => {
+                review_table(ui, &capture, mapping);
+                let writes = capture.writes(mapping);
+                let reason = apply_gate(cx, writes.len());
+                let (apply, cancel) = ui
+                    .horizontal(|ui| {
+                        let apply = actions::button(ui, "Apply", reason);
+                        if let Some(reason) = reason {
+                            ui.colored_label(YELLOW, reason);
+                        }
+                        (apply, actions::button(ui, "Cancel", None))
+                    })
+                    .inner;
+                if apply {
+                    for (name, value) in &writes {
+                        cx.commands.push(Command::SetParam {
+                            name: name.clone(),
+                            value: ParamValue::I32(*value as i32),
+                        });
+                    }
+                    self.applied = Some(Applied {
+                        at: cx.now.unwrap_or_default(),
+                        sent: writes,
+                        saved: false,
+                    });
+                }
+                if apply || cancel {
+                    Flow::Idle
+                } else {
+                    Flow::Review(capture)
+                }
+            }
+        };
+        if let Some(applied) = &self.applied
+            && !applied.saved
+        {
+            applied_section(ui, cx, applied);
+        }
+    }
+}
+
+/// Why "Calibrate radio" is disabled; `None` when it may be pressed.
+fn calibrate_gate(cx: &ViewCtx, sticks: &Sticks, mapping: &Mapping) -> Option<&'static str> {
+    if let Some(reason) = status::configure_blocked(cx.access) {
+        return Some(reason);
+    }
+    if cx.now.is_none() {
+        return Some(status::NOT_CONNECTED);
+    }
+    if !sticks.fresh {
+        return Some("no stick data");
+    }
+    match mapping {
+        Mapping::NotReady => Some("the parameter list is not complete"),
+        Mapping::Missing => Some(NO_RC_PARAMS),
+        Mapping::Marks(_) => None,
+    }
+}
+
+/// Why "Apply" is disabled; `None` when it may be pressed.
+fn apply_gate(cx: &ViewCtx, writes: usize) -> Option<&'static str> {
+    if let Some(reason) = status::configure_blocked(cx.access) {
+        return Some(reason);
+    }
+    if cx.now.is_none() {
+        return Some(status::NOT_CONNECTED);
+    }
+    (writes == 0).then_some("nothing to write: no channel was moved, or the vehicle already has the values")
+}
+
+/// The review: channels 1 to 8 as current -> captured, channels 9 to 16 as captured only.
+fn review_table(ui: &mut egui::Ui, capture: &Capture, mapping: &Mapping) {
+    ui.label("Review (current -> captured)");
+    let number = |v: Option<i64>| v.map_or_else(|| "—".to_string(), |v| v.to_string());
+    for channel in 0..CHANNELS {
+        let text = if channel < MAPPED_CHANNELS {
+            let current = mapping.channel(channel);
+            let cur = |f: fn(&ChannelMarks) -> Option<i64>| number(current.and_then(f));
+            match capture.moved(channel) {
+                Some((min, trim, max)) => format!(
+                    "CH {:>2}: MIN {} -> {min}  TRIM {} -> {}  MAX {} -> {max}",
+                    channel + 1,
+                    cur(|m| m.min),
+                    cur(|m| m.trim),
+                    number(trim),
+                    cur(|m| m.max),
+                ),
+                None => format!(
+                    "CH {:>2}: not moved (MIN {} TRIM {} MAX {} kept)",
+                    channel + 1,
+                    cur(|m| m.min),
+                    cur(|m| m.trim),
+                    cur(|m| m.max),
+                ),
+            }
+        } else {
+            match capture.ranges[channel] {
+                Some((lo, hi)) => format!(
+                    "CH {:>2}: captured {lo} to {hi} (not written: no parameters)",
+                    channel + 1
+                ),
+                None => format!("CH {:>2}: no data (not written: no parameters)", channel + 1),
+            }
+        };
+        ui.monospace(text);
+    }
+}
+
+/// After Apply, until a save is accepted: the "not saved" line, what the vehicle did with the writes,
+/// and "Save to flash" (the Parameters tab's command and gate).
+fn applied_section(ui: &mut egui::Ui, cx: &mut ViewCtx, applied: &Applied) {
+    ui.colored_label(YELLOW, NOT_SAVED_TEXT);
+    let table = &cx.state.params;
+    for (name, value) in &applied.sent {
+        match table.writes.get(name) {
+            Some(WriteStatus::Pending { .. }) => {
+                ui.label(format!("{name}: writing…"));
+            }
+            Some(WriteStatus::Refused { in_effect, .. }) => {
+                ui.colored_label(
+                    status::RED,
+                    format!("{name}: refused: vehicle uses {in_effect} (wanted {value})"),
+                );
+            }
+            Some(WriteStatus::Unanswered { .. }) => {
+                ui.colored_label(status::RED, format!("{name}: no answer"));
+            }
+            None => {}
+        }
+    }
+    let gate = status::command_gate(cx.access, cx.state, cx.now.is_some());
+    ui.horizontal(|ui| {
+        if actions::button(ui, "Save to flash", gate) {
+            cx.commands.push(Command::SendCommand {
+                command: MavCmd::MAV_CMD_PREFLIGHT_STORAGE,
+                params: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            });
+        }
+        if let Some(reason) = gate
+            && cx.access == gcs_mavlink::Access::Configure
+        {
+            ui.colored_label(YELLOW, reason);
+        }
+    });
+    actions::status_line(ui, cx.state);
 }
 
 /// What the latest `RC_CHANNELS` says.
@@ -415,10 +771,22 @@ fn marks_header(ui: &mut egui::Ui) {
     });
 }
 
-fn bar(ui: &mut egui::Ui, value: Option<u16>, marks: Option<&ChannelMarks>) {
+fn bar(
+    ui: &mut egui::Ui,
+    value: Option<u16>,
+    marks: Option<&ChannelMarks>,
+    captured: Option<(u16, u16)>,
+) {
     let (rect, _) = ui.allocate_exact_size(BAR_SIZE, Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+    if let Some((lo, hi)) = captured {
+        let span = Rect::from_min_max(
+            egui::pos2(rect.left() + fraction(lo) * rect.width(), rect.top()),
+            egui::pos2(rect.left() + fraction(hi) * rect.width(), rect.bottom()),
+        );
+        painter.rect_filled(span, 0.0, CAPTURED);
+    }
     if let Some(us) = value {
         let filled =
             Rect::from_min_size(rect.min, vec2(rect.width() * fraction(us), rect.height()));

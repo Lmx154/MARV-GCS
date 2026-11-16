@@ -38,7 +38,7 @@ pub trait View {
 pub fn all() -> Vec<Box<dyn View>> {
     vec![
         Box::new(sensors::Sensors),
-        Box::new(radio::Radio),
+        Box::<radio::Radio>::default(),
         Box::<messages::Messages>::default(),
         Box::<devices::Devices>::default(),
         Box::<params::Params>::default(),
