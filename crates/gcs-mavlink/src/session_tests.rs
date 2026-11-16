@@ -944,9 +944,12 @@ mod access {
             Command::StartLog { .. } => 2,
             Command::StopLog => 3,
             Command::SendCommand { .. } => 4,
+            Command::ListLogs => 5,
+            Command::DownloadLog { .. } => 6,
+            Command::CancelLogDownload => 7,
         }
     }
-    const COUNT: usize = 5;
+    const COUNT: usize = 8;
 
     #[test]
     fn every_command_has_its_class_in_the_table() {
@@ -963,6 +966,21 @@ mod access {
             ),
             (Command::StopLog, Access::Operate, "StopLog"),
             (save_to_flash(), Access::Configure, "SendCommand"),
+            (Command::ListLogs, Access::Configure, "ListLogs"),
+            (
+                Command::DownloadLog {
+                    number: 1,
+                    size: 0,
+                    sink: crate::tlog::LogSink::new(Vec::new()),
+                },
+                Access::Configure,
+                "DownloadLog",
+            ),
+            (
+                Command::CancelLogDownload,
+                Access::Configure,
+                "CancelLogDownload",
+            ),
         ];
         let mut seen = [false; COUNT];
         for (command, access, name) in &rows {

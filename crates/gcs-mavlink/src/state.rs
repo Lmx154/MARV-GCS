@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use crate::RxStats;
 use crate::dialect::MavCmd;
+use crate::services::logs::LogsState;
 use crate::services::messages::MessageStore;
 use crate::services::params::{ParamTable, ParamValue};
 use crate::services::texts::TextLog;
@@ -17,6 +18,8 @@ pub struct VehicleState {
     pub params: ParamTable,
     pub texts: TextLog,
     pub log: LogState,
+    /// The vehicle's logs: the last listing and the current or last download.
+    pub logs: LogsState,
     /// The current or last MAVLink command the user sent; `None` before the first.
     pub command: Option<CommandRecord>,
 }
@@ -174,6 +177,18 @@ pub enum Command {
         command: MavCmd,
         params: [f32; 7],
     },
+    /// List the logs on the vehicle's card (docs/link-contract.md section 11). The outcome shows in
+    /// `VehicleState.logs.list`.
+    ListLogs,
+    /// Download log `number`, of `size` bytes as the listing said, to `sink`. The outcome and the progress
+    /// show in `VehicleState.logs.download`.
+    DownloadLog {
+        number: u16,
+        size: u32,
+        sink: LogSink,
+    },
+    /// Abandon the running download and tell the vehicle to stop sending.
+    CancelLogDownload,
 }
 
 impl Command {
@@ -188,6 +203,10 @@ impl Command {
             Command::StopLog => Access::Operate,
             // Every command id: an unknown one counts as Configure too.
             Command::SendCommand { .. } => Access::Configure,
+            // The vehicle offers log download on its USB link only (section 11).
+            Command::ListLogs => Access::Configure,
+            Command::DownloadLog { .. } => Access::Configure,
+            Command::CancelLogDownload => Access::Configure,
         }
     }
 
@@ -199,6 +218,9 @@ impl Command {
             Command::StartLog { .. } => "StartLog",
             Command::StopLog => "StopLog",
             Command::SendCommand { .. } => "SendCommand",
+            Command::ListLogs => "ListLogs",
+            Command::DownloadLog { .. } => "DownloadLog",
+            Command::CancelLogDownload => "CancelLogDownload",
         }
     }
 }

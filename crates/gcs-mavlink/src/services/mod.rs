@@ -7,6 +7,7 @@ use crate::{Command, Frame, Message, VehicleState};
 
 pub mod commands;
 pub mod heartbeat;
+pub mod logs;
 pub mod messages;
 pub mod params;
 pub mod texts;
@@ -37,6 +38,7 @@ pub fn default_services(config: &SessionConfig) -> Vec<Box<dyn Service>> {
     vec![
         Box::new(heartbeat::Heartbeat::new(config)),
         Box::new(commands::Commands::new(config)),
+        Box::new(logs::Logs::new()),
         Box::new(messages::Messages::new()),
         Box::new(params::Params::new(config)),
         Box::new(texts::Texts::new()),
