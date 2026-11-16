@@ -12,6 +12,7 @@ mod log;
 mod messages;
 mod params;
 mod plot;
+pub mod radio;
 pub mod sensors;
 
 pub struct ViewCtx<'a> {
@@ -37,6 +38,7 @@ pub trait View {
 pub fn all() -> Vec<Box<dyn View>> {
     vec![
         Box::new(sensors::Sensors),
+        Box::new(radio::Radio),
         Box::<messages::Messages>::default(),
         Box::<devices::Devices>::default(),
         Box::<params::Params>::default(),
