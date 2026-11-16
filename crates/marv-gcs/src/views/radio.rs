@@ -5,8 +5,11 @@
 //! parameters (`docs/link-contract.md` section 12). The station computes no normalised value. The
 //! calibration (Configure sessions): capture the extremes of the raw channels, centre, review, then Apply
 //! writes the values that differ with `PARAM_SET` and Save to flash sends command 245; nothing is saved
-//! or sent before the user presses a button. No mapping editor yet.
+//! or sent before the user presses a button. The mapping editor (Configure sessions) stages the four
+//! `RCMAP_*` channels and, per function, `RCn_REVERSED` and `RCn_DZ` of the channel the function is
+//! mapped to in the staged map; Apply writes the staged values that differ, Revert drops them.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, Rect, Sense, Stroke, StrokeKind, vec2};
@@ -46,6 +49,19 @@ pub const CAPTURE_TEXT: &str =
     "Move every stick and switch slowly to both ends and hold each end briefly, then press Done.";
 pub const CENTRE_TEXT: &str = "Centre the sticks, throttle down, then OK";
 pub const NOT_SAVED_TEXT: &str = "Applied in RAM; not saved to flash";
+/// Why "Calibrate radio" is disabled while mapping edits are staged.
+pub const STAGED_TEXT: &str = "mapping edits are staged: Apply or Revert them first";
+/// Why the mapping section is disabled during a calibration.
+pub const CALIBRATING_TEXT: &str = "a calibration is in progress";
+/// The largest `RCn_DZ`, in microseconds.
+pub const DEAD_ZONE_MAX: i64 = 200;
+/// The order of the four drop-downs.
+const MAP_ORDER: [Function; 4] = [
+    Function::Roll,
+    Function::Pitch,
+    Function::Throttle,
+    Function::Yaw,
+];
 /// The drawn range of a captured channel.
 const CAPTURED: Color32 = Color32::from_rgba_premultiplied(40, 110, 60, 140);
 
@@ -54,6 +70,8 @@ pub struct Radio {
     flow: Flow,
     /// The last Apply, until a save is accepted.
     applied: Option<Applied>,
+    /// Mapping edits not yet written, by parameter name.
+    staged: BTreeMap<String, i64>,
 }
 
 /// Where the calibration stands.
@@ -140,6 +158,30 @@ struct Applied {
     saved: bool,
 }
 
+impl Applied {
+    /// An unsaved Apply takes the new writes into the same line; a saved or absent one is replaced.
+    fn record(slot: &mut Option<Applied>, at: Duration, writes: Vec<(String, i64)>) {
+        match slot {
+            Some(applied) if !applied.saved => {
+                applied.at = at;
+                for (name, value) in writes {
+                    match applied.sent.iter_mut().find(|(n, _)| *n == name) {
+                        Some(entry) => entry.1 = value,
+                        None => applied.sent.push((name, value)),
+                    }
+                }
+            }
+            _ => {
+                *slot = Some(Applied {
+                    at,
+                    sent: writes,
+                    saved: false,
+                });
+            }
+        }
+    }
+}
+
 /// Whether the vehicle's last command is an accepted "Save to flash" started at or after `at`.
 fn saved_since(state: &VehicleState, at: Duration) -> bool {
     state.command.as_ref().is_some_and(|r| {
@@ -204,6 +246,12 @@ impl View for Radio {
             ui.label(NO_RC_PARAMS);
         }
         self.calibration(ui, cx, &sticks, &mapping);
+        self.mapping_editor(ui, cx, &mapping);
+        if let Some(applied) = &self.applied
+            && !applied.saved
+        {
+            applied_section(ui, cx, applied);
+        }
         ui.separator();
         let capture = match &self.flow {
             Flow::Capturing(c) | Flow::Centre(c) | Flow::Review(c) => Some(c),
@@ -257,10 +305,11 @@ impl Radio {
             applied.saved = true;
         }
         ui.strong("Calibration");
+        let staged = !self.staged_writes(&cx.state.params).is_empty();
         let flow = std::mem::take(&mut self.flow);
         self.flow = match flow {
             Flow::Idle => {
-                let reason = calibrate_gate(cx, sticks, mapping);
+                let reason = calibrate_gate(cx, sticks, mapping, staged);
                 ui.horizontal(|ui| {
                     let start = actions::button(ui, "Calibrate radio", reason);
                     if let Some(reason) = reason {
@@ -337,11 +386,7 @@ impl Radio {
                             value: ParamValue::I32(*value as i32),
                         });
                     }
-                    self.applied = Some(Applied {
-                        at: cx.now.unwrap_or_default(),
-                        sent: writes,
-                        saved: false,
-                    });
+                    Applied::record(&mut self.applied, cx.now.unwrap_or_default(), writes);
                 }
                 if apply || cancel {
                     Flow::Idle
@@ -350,16 +395,201 @@ impl Radio {
                 }
             }
         };
-        if let Some(applied) = &self.applied
-            && !applied.saved
-        {
-            applied_section(ui, cx, applied);
+    }
+
+    /// The staged values that differ from the vehicle's current ones.
+    fn staged_writes(&self, params: &ParamTable) -> Vec<(String, i64)> {
+        self.staged
+            .iter()
+            .filter(|(name, value)| current_number(params, name).is_some_and(|now| now != **value))
+            .map(|(name, value)| (name.clone(), *value))
+            .collect()
+    }
+
+    /// Stage `value` of `name`; a value equal to the vehicle's is no edit.
+    fn stage(&mut self, params: &ParamTable, name: &str, value: i64) {
+        if current_number(params, name) == Some(value) {
+            self.staged.remove(name);
+        } else {
+            self.staged.insert(name.to_string(), value);
         }
+    }
+
+    /// The mapping: a channel for each function, and its reversal and dead zone, as staged edits.
+    fn mapping_editor(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx, mapping: &Mapping) {
+        ui.separator();
+        ui.strong("Mapping");
+        let reason = self.mapping_gate(cx, mapping);
+        if let Some(reason) = reason {
+            ui.colored_label(YELLOW, reason);
+        }
+        let Mapping::Marks(_) = mapping else {
+            return;
+        };
+        let params = &cx.state.params;
+        let effective = |staged: &BTreeMap<String, i64>, name: &str| {
+            staged
+                .get(name)
+                .copied()
+                .or_else(|| current_number(params, name))
+        };
+        let channel_of = |staged: &BTreeMap<String, i64>, function: Function| {
+            effective(staged, function.map_param())
+                .and_then(|n| usize::try_from(n).ok())
+                .filter(|n| (1..=MAPPED_CHANNELS).contains(n))
+        };
+        ui.add_enabled_ui(reason.is_none(), |ui| {
+            for function in MAP_ORDER {
+                let channel = channel_of(&self.staged, function);
+                let reversed_name = channel.map(|n| format!("RC{n}_REVERSED"));
+                let dz_name = channel.map(|n| format!("RC{n}_DZ"));
+                let value_of = |name: &Option<String>| {
+                    name.as_deref()
+                        .and_then(|n| effective(&self.staged, n))
+                        .unwrap_or(0)
+                };
+                let (reversed_now, dz_now) = (value_of(&reversed_name), value_of(&dz_name));
+                let known = |name: &Option<String>| {
+                    name.as_deref()
+                        .is_some_and(|n| current_number(params, n).is_some())
+                };
+                ui.horizontal(|ui| {
+                    ui.label(function.name());
+                    ui.label("on channel");
+                    let mut pick = None;
+                    egui::ComboBox::from_id_salt(("rcmap", function.name()))
+                        .selected_text(channel.map_or_else(|| "—".to_string(), |n| n.to_string()))
+                        .show_ui(ui, |ui| {
+                            for n in 1..=MAPPED_CHANNELS {
+                                if ui
+                                    .selectable_label(channel == Some(n), n.to_string())
+                                    .clicked()
+                                {
+                                    pick = Some(n);
+                                }
+                            }
+                        });
+                    if let Some(n) = pick {
+                        self.stage(params, function.map_param(), n as i64);
+                    }
+                    let mut reversed = reversed_now != 0;
+                    let changed = ui
+                        .add_enabled(
+                            known(&reversed_name),
+                            egui::Checkbox::new(&mut reversed, "Reversed"),
+                        )
+                        .changed();
+                    if changed && let Some(name) = &reversed_name {
+                        self.stage(params, name, i64::from(reversed));
+                    }
+                    ui.label("Dead zone (us)");
+                    let mut dz = dz_now;
+                    let changed = ui
+                        .add_enabled(
+                            known(&dz_name),
+                            egui::DragValue::new(&mut dz).range(0..=DEAD_ZONE_MAX),
+                        )
+                        .changed();
+                    if changed && let Some(name) = &dz_name {
+                        self.stage(params, name, dz.clamp(0, DEAD_ZONE_MAX));
+                    }
+                });
+            }
+        });
+        let mut shared: Vec<(usize, Vec<&str>)> = Vec::new();
+        for function in MAP_ORDER {
+            if let Some(n) = channel_of(&self.staged, function) {
+                match shared.iter_mut().find(|(c, _)| *c == n) {
+                    Some((_, names)) => names.push(function.name()),
+                    None => shared.push((n, vec![function.name()])),
+                }
+            }
+        }
+        for (n, names) in shared.iter().filter(|(_, names)| names.len() > 1) {
+            ui.colored_label(
+                YELLOW,
+                format!(
+                    "Warning: {} are all mapped to channel {n}; each reads that channel (Apply is not blocked)",
+                    names.join(", ")
+                ),
+            );
+        }
+        let writes = self.staged_writes(&cx.state.params);
+        if !writes.is_empty() {
+            let list: Vec<_> = writes.iter().map(|(n, v)| format!("{n} = {v}")).collect();
+            ui.label(format!("Staged: {}", list.join(", ")));
+        }
+        let apply_reason = reason.or_else(|| mapping_apply_gate(cx, writes.len()));
+        let (apply, revert) = ui
+            .horizontal(|ui| {
+                let apply = actions::button(ui, "Apply mapping", apply_reason);
+                if reason.is_none()
+                    && let Some(reason) = apply_reason
+                {
+                    ui.colored_label(YELLOW, reason);
+                }
+                let revert = actions::button(
+                    ui,
+                    "Revert",
+                    self.staged.is_empty().then_some("nothing staged"),
+                );
+                (apply, revert)
+            })
+            .inner;
+        if apply {
+            for (name, value) in &writes {
+                cx.commands.push(Command::SetParam {
+                    name: name.clone(),
+                    value: ParamValue::I32(*value as i32),
+                });
+            }
+            Applied::record(&mut self.applied, cx.now.unwrap_or_default(), writes);
+            self.staged.clear();
+        } else if revert {
+            self.staged.clear();
+        }
+    }
+
+    /// Why the mapping section is disabled; `None` when it may be edited.
+    fn mapping_gate(&self, cx: &ViewCtx, mapping: &Mapping) -> Option<&'static str> {
+        if let Some(reason) = status::configure_blocked(cx.access) {
+            return Some(reason);
+        }
+        if cx.now.is_none() {
+            return Some(status::NOT_CONNECTED);
+        }
+        match mapping {
+            Mapping::NotReady => return Some("the parameter list is not complete"),
+            Mapping::Missing => return Some(NO_RC_PARAMS),
+            Mapping::Marks(_) => {}
+        }
+        (!matches!(self.flow, Flow::Idle)).then_some(CALIBRATING_TEXT)
     }
 }
 
+/// The vehicle's current value of a parameter, as an integer.
+fn current_number(params: &ParamTable, name: &str) -> Option<i64> {
+    params.value(name).map(|v| v.as_f64() as i64)
+}
+
+/// Why "Apply mapping" is disabled; `None` when it may be pressed.
+fn mapping_apply_gate(cx: &ViewCtx, writes: usize) -> Option<&'static str> {
+    if let Some(reason) = status::configure_blocked(cx.access) {
+        return Some(reason);
+    }
+    if cx.now.is_none() {
+        return Some(status::NOT_CONNECTED);
+    }
+    (writes == 0).then_some("nothing staged: change a channel, Reversed or Dead zone")
+}
+
 /// Why "Calibrate radio" is disabled; `None` when it may be pressed.
-fn calibrate_gate(cx: &ViewCtx, sticks: &Sticks, mapping: &Mapping) -> Option<&'static str> {
+fn calibrate_gate(
+    cx: &ViewCtx,
+    sticks: &Sticks,
+    mapping: &Mapping,
+    staged: bool,
+) -> Option<&'static str> {
     if let Some(reason) = status::configure_blocked(cx.access) {
         return Some(reason);
     }
@@ -370,10 +600,11 @@ fn calibrate_gate(cx: &ViewCtx, sticks: &Sticks, mapping: &Mapping) -> Option<&'
         return Some("no stick data");
     }
     match mapping {
-        Mapping::NotReady => Some("the parameter list is not complete"),
-        Mapping::Missing => Some(NO_RC_PARAMS),
-        Mapping::Marks(_) => None,
+        Mapping::NotReady => return Some("the parameter list is not complete"),
+        Mapping::Missing => return Some(NO_RC_PARAMS),
+        Mapping::Marks(_) => {}
     }
+    staged.then_some(STAGED_TEXT)
 }
 
 /// Why "Apply" is disabled; `None` when it may be pressed.
@@ -590,6 +821,16 @@ impl Function {
         Function::Yaw,
         Function::Throttle,
     ];
+
+    /// The parameter that maps the function to a channel.
+    fn map_param(self) -> &'static str {
+        match self {
+            Function::Roll => "RCMAP_ROLL",
+            Function::Pitch => "RCMAP_PITCH",
+            Function::Yaw => "RCMAP_YAW",
+            Function::Throttle => "RCMAP_THROTTLE",
+        }
+    }
 
     pub fn name(self) -> &'static str {
         match self {
