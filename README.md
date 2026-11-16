@@ -234,7 +234,7 @@ Six crates; the dependency graph enforces the layers (`docs/architecture.md`).
 ## Tests
 
 ```
-cargo test --workspace          # 674 tests (8 more are ignored: they need a board or a recording), about 60 s; needs /usr/bin/socat for the serial tests
+cargo test --workspace          # 683 tests (8 more are ignored: they need a board or a recording), about 60 s; needs /usr/bin/socat for the serial tests
 cargo clippy --workspace --all-targets -- -D warnings
 tools/board_check.sh <dir>      # with the board on its debug probe and its USB port cabled: about 3 minutes
 ```
