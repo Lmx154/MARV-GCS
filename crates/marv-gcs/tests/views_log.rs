@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use gcs_mavlink::services::texts::{Severity, TextEntry};
 use gcs_mavlink::tlog::LogState;
 use gcs_mavlink::{Command, VehicleState};
@@ -331,4 +331,264 @@ fn start_is_disabled_with_a_reason_while_a_log_is_replayed() {
     h.get_by_label("Start").hover();
     h.run();
     h.get_by_label_contains("Nothing is recorded while a log file is replayed");
+}
+
+// ---- the on-board logs (SD card) section ----
+
+use gcs_mavlink::Access;
+use gcs_mavlink::services::logs::{DownloadState, DownloadStatus, ListStatus, LogInfo, LogList};
+use gcs_mavlink::services::messages::{Field, FieldValue, MessageEntry, MessageKey};
+
+fn sd_row(state: &str) -> (MessageKey, MessageEntry) {
+    let text = |n: &str, v: &str| Field {
+        name: n.into(),
+        value: FieldValue::Text(v.into()),
+    };
+    (
+        MessageKey {
+            system_id: 1,
+            component_id: 1,
+            message_id: 42_421,
+            instance: 9,
+        },
+        MessageEntry {
+            name: "MARV_DEVICE_STATUS".into(),
+            label: "MARV_DEVICE_STATUS[9]".into(),
+            count: 3,
+            rate_hz: 1.0,
+            last_seen: Duration::from_secs(9),
+            fields: vec![
+                text("device_id", "MARV_DEVICE_SD"),
+                text("state", &format!("MARV_DEVICE_STATE_{state}")),
+                text("last_error", "MARV_DEVICE_ERROR_NONE"),
+                Field {
+                    name: "samples".into(),
+                    value: FieldValue::Number(4321.0),
+                },
+            ],
+        },
+    )
+}
+
+fn card_state() -> VehicleState {
+    let mut state = VehicleState::default();
+    let (key, entry) = sd_row("OK");
+    state.messages.entries.insert(key, entry);
+    state.logs.list = ListStatus::Done(LogList {
+        logs: vec![
+            LogInfo {
+                number: 1,
+                size: 1_048_576,
+            },
+            LogInfo {
+                number: 4,
+                size: 2_097_152,
+            },
+        ],
+        last_log_num: 4,
+    });
+    state
+}
+
+fn run_with(
+    state: &VehicleState,
+    access: Access,
+    now: Option<Duration>,
+    folder: &str,
+    f: impl FnOnce(&mut Harness<'_>),
+) -> Vec<Command> {
+    let mut commands = Vec::new();
+    {
+        let mut view = log_view();
+        let mut h = Harness::new_ui(|ui| {
+            logfile::set_log_dir(ui.ctx(), std::path::Path::new(folder));
+            let mut cx = ViewCtx {
+                state,
+                commands: &mut commands,
+                now,
+                access,
+            };
+            view.ui(ui, &mut cx);
+        });
+        h.run();
+        f(&mut h);
+        h.run();
+    }
+    commands
+}
+
+const NOW: Option<Duration> = Some(Duration::from_secs(10));
+
+#[test]
+fn the_two_kinds_of_log_have_their_own_sections() {
+    run_with(
+        &VehicleState::default(),
+        Access::Configure,
+        NOW,
+        "logs",
+        |h| {
+            h.get_by_label("Station recording (.tlog)");
+            h.get_by_label("On-board logs (SD card)");
+            h.get_by_label("no SD row yet");
+        },
+    );
+}
+
+#[test]
+fn the_sd_row_is_one_line() {
+    run_with(&card_state(), Access::Configure, NOW, "logs", |h| {
+        h.get_by_label("SD: OK, last error NONE, 4321 blocks written, 1.0 s");
+    });
+}
+
+#[test]
+fn restart_sd_sends_the_device_restart_for_id_9() {
+    let commands = run_with(&card_state(), Access::Configure, NOW, "logs", |h| {
+        h.get_by_label("Restart SD").click();
+    });
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    let Command::SendCommand { command, params } = &commands[0] else {
+        panic!("{:?}", commands[0])
+    };
+    assert_eq!(*command as u32, 42_430);
+    assert_eq!(*params, [9.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+}
+
+#[test]
+fn on_an_operate_link_the_logs_buttons_are_disabled_and_send_nothing() {
+    let commands = run_with(&card_state(), Access::Operate, NOW, "logs", |h| {
+        for label in ["Restart SD", "Refresh list"] {
+            assert!(
+                h.get_by_label(label).accesskit_node().is_disabled(),
+                "{label}"
+            );
+            h.get_by_label(label).click();
+        }
+        for b in h.get_all_by_label("Download") {
+            assert!(b.accesskit_node().is_disabled());
+        }
+    });
+    assert!(commands.is_empty(), "{commands:?}");
+}
+
+#[test]
+fn refresh_list_sends_list_logs() {
+    let commands = run_with(
+        &VehicleState::default(),
+        Access::Configure,
+        NOW,
+        "logs",
+        |h| {
+            h.get_by_label("Refresh list").click();
+        },
+    );
+    assert!(matches!(commands[..], [Command::ListLogs]), "{commands:?}");
+}
+
+#[test]
+fn the_table_shows_number_bytes_mib_and_marks_the_log_being_written() {
+    run_with(&card_state(), Access::Configure, NOW, "logs", |h| {
+        h.get_by_label("1048576");
+        h.get_by_label("2097152");
+        h.get_by_label("1.00");
+        h.get_by_label("2.00");
+        assert_eq!(h.get_all_by_label("being written").count(), 1);
+        assert_eq!(h.get_all_by_label("Download").count(), 2);
+    });
+}
+
+fn temp_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("marv-views-log-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+#[test]
+fn download_sends_the_command_and_creates_the_file_in_the_folder() {
+    let dir = temp_dir("dl");
+    let commands = run_with(
+        &card_state(),
+        Access::Configure,
+        NOW,
+        dir.to_str().unwrap(),
+        |h| {
+            h.get_all_by_label("Download").nth(1).unwrap().click();
+        },
+    );
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    let Command::DownloadLog { number, size, .. } = &commands[0] else {
+        panic!("{:?}", commands[0])
+    };
+    assert_eq!((*number, *size), (4, 2_097_152));
+    assert!(dir.join("00000004.BIN").is_file());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn download_refuses_to_overwrite_and_shows_why() {
+    let dir = temp_dir("exists");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("00000001.BIN"), b"mine").unwrap();
+    let commands = run_with(
+        &card_state(),
+        Access::Configure,
+        NOW,
+        dir.to_str().unwrap(),
+        |h| {
+            h.get_all_by_label("Download").next().unwrap().click();
+            h.run();
+            h.get_by_label_contains("00000001.BIN exists and is not overwritten");
+        },
+    );
+    assert!(commands.is_empty(), "{commands:?}");
+    assert_eq!(std::fs::read(dir.join("00000001.BIN")).unwrap(), b"mine");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn downloading(status: DownloadStatus, ended: Option<u64>) -> VehicleState {
+    let mut state = card_state();
+    state.logs.download = Some(DownloadState {
+        number: 4,
+        size: 2_000,
+        done: 500,
+        status,
+        requests: 1,
+        started: Duration::from_secs(8),
+        ended: ended.map(Duration::from_secs),
+    });
+    state
+}
+
+#[test]
+fn a_running_download_shows_progress_cancel_and_blocks_other_downloads() {
+    let state = downloading(DownloadStatus::Running, None);
+    let commands = run_with(&state, Access::Configure, NOW, "logs", |h| {
+        assert!(
+            h.get_all_by_label_contains("500 of 2000 bytes, 0.2 kB/s")
+                .count()
+                >= 1
+        );
+        for b in h.get_all_by_label("Download") {
+            assert!(b.accesskit_node().is_disabled());
+        }
+        assert!(
+            h.get_by_label("Refresh list")
+                .accesskit_node()
+                .is_disabled()
+        );
+        h.get_by_label("Cancel").click();
+    });
+    assert!(
+        matches!(commands[..], [Command::CancelLogDownload]),
+        "{commands:?}"
+    );
+}
+
+#[test]
+fn the_end_of_a_download_is_said_in_words_and_cancel_goes_away() {
+    let state = downloading(DownloadStatus::Cancelled, Some(9));
+    run_with(&state, Access::Configure, NOW, "logs", |h| {
+        h.get_by_label_contains("Log 4 cancelled at byte 500 of 2000");
+        assert!(h.query_by_label("Cancel").is_none());
+    });
 }
