@@ -139,6 +139,10 @@ pub struct LogsState {
     pub download: Option<DownloadState>,
     /// Requests refused because a listing or a download was running.
     pub refused: u32,
+    /// Listings started, and downloads started (a failed start counts): a caller that sent a command
+    /// waits for its counter to move before it believes the status.
+    pub lists: u32,
+    pub downloads: u32,
 }
 
 struct ListTrack {
@@ -202,6 +206,7 @@ impl Logs {
             return;
         }
         cx.changed = true;
+        cx.state.logs.lists += 1;
         let Some(target) = Self::target(cx) else {
             cx.state.logs.list = ListStatus::Failed(ListError::NoVehicle);
             return;
@@ -317,6 +322,7 @@ impl Logs {
             ended: None,
         };
         cx.changed = true;
+        cx.state.logs.downloads += 1;
         let target = Self::target(cx);
         let failure = match (&target, &writer) {
             (None, _) => Some(DownloadError::NoVehicle),

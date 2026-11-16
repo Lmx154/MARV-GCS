@@ -1,9 +1,11 @@
 //! The commands, run on a started session. Every wait is bounded by a deadline.
 
 use std::fs::OpenOptions;
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use gcs_mavlink::services::logs::{DownloadStatus, ListStatus, LogList};
 use gcs_mavlink::services::messages::{FieldValue, MessageEntry};
 use gcs_mavlink::services::params::FetchStatus;
 use gcs_mavlink::services::texts::TextEntry;
@@ -29,6 +31,15 @@ const WRITE_DEADLINE: Duration = Duration::from_secs(8);
 /// The longest a command is followed (the compass calibration takes up to 40 s on the vehicle); the
 /// session itself ends one by 20 s of silence.
 const COMMAND_DEADLINE: Duration = Duration::from_secs(90);
+/// How long a listing of the logs may take (the service gives up by itself after about 4 s).
+const LOGS_LIST_DEADLINE: Duration = Duration::from_secs(15);
+/// A download is followed for this long plus 1 s for every 5 000 bytes, a pace the link beats by far.
+const LOGS_GET_BASE: Duration = Duration::from_secs(30);
+const LOGS_GET_BYTES_PER_S: u64 = 5_000;
+/// The progress lines of `logs get` are at least this far apart.
+const PROGRESS_EVERY: Duration = Duration::from_millis(500);
+/// The buffer between the log's frames and the file.
+const FILE_BUFFER: usize = 256 * 1024;
 const DEVICE_MESSAGE: &str = "MARV_DEVICE_STATUS";
 /// The last texts `status` shows.
 const STATUS_TEXTS: usize = 3;
@@ -139,6 +150,12 @@ fn run_command(
             param_set(session, name, *number, out, echo)
         }
         Command::Record(path) => record(session, path, duration(DEFAULT_RECORD), out, echo),
+        Command::LogsList => logs_list(session, out, echo),
+        Command::LogsGet {
+            number,
+            output,
+            force,
+        } => logs_get(session, *number, output.as_deref(), *force, out, echo),
         command => {
             let Some((label, mav, params)) = mav_command(command) else {
                 return Err(Fail::new(exit::FAILED, "internal error: no such command"));
@@ -775,4 +792,173 @@ fn record(
         state.log.bytes
     )?;
     result
+}
+
+/// Lists the logs: sends the request through the gate and waits for the service's result.
+fn fetch_logs(session: &Session, echo: &mut Echo) -> Result<LogList, Fail> {
+    let before = session.state().logs.lists;
+    send(session, SessionCommand::ListLogs)?;
+    let result = wait_with(
+        LOGS_LIST_DEADLINE,
+        || {
+            let state = session.state();
+            if let Some(fail) = closed(&state) {
+                return Some(Err(fail));
+            }
+            if state.logs.lists == before {
+                return None;
+            }
+            match &state.logs.list {
+                ListStatus::Done(list) => Some(Ok(list.clone())),
+                ListStatus::Failed(why) => Some(Err(Fail::new(
+                    exit::FAILED,
+                    format!("the list of logs failed: {why}"),
+                ))),
+                _ => None,
+            }
+        },
+        &mut || echo.pump(session),
+    );
+    result.unwrap_or_else(|| {
+        Err(Fail::new(
+            exit::FAILED,
+            "the list of logs did not arrive in time",
+        ))
+    })
+}
+
+fn logs_list(session: &Session, out: &mut dyn Write, echo: &mut Echo) -> Outcome {
+    let list = fetch_logs(session, echo)?;
+    if list.logs.is_empty() {
+        return Err(Fail::new(exit::OK, "no logs on the vehicle"));
+    }
+    for log in &list.logs {
+        writeln!(out, "{}\t{}", log.number, log.size)?;
+    }
+    writeln!(out, "last\t{}", list.last_log_num)?;
+    Ok(())
+}
+
+/// `NNNNNNNN.BIN`, the name of a log on the card.
+fn log_file_name(number: u16) -> PathBuf {
+    PathBuf::from(format!("{number:08}.BIN"))
+}
+
+fn logs_get(
+    session: &Session,
+    number: u16,
+    output: Option<&Path>,
+    force: bool,
+    out: &mut dyn Write,
+    echo: &mut Echo,
+) -> Outcome {
+    let list = fetch_logs(session, echo)?;
+    let Some(log) = list.logs.iter().find(|log| log.number == number) else {
+        let listed: Vec<String> = list.logs.iter().map(|l| l.number.to_string()).collect();
+        let listed = if listed.is_empty() {
+            "none".to_string()
+        } else {
+            listed.join(" ")
+        };
+        return Err(Fail::new(
+            exit::FAILED,
+            format!("log {number} is not on the vehicle (logs: {listed})"),
+        ));
+    };
+    let size = log.size;
+    let path = output.map_or_else(|| log_file_name(number), Path::to_path_buf);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true);
+    if force {
+        options.create(true).truncate(true);
+    } else {
+        options.create_new(true);
+    }
+    let file = options.open(&path).map_err(|e| {
+        let hint = if e.kind() == io::ErrorKind::AlreadyExists {
+            " (it exists: --force overwrites it)"
+        } else {
+            ""
+        };
+        Fail::new(
+            exit::FAILED,
+            format!("cannot create {}{hint}: {e}", path.display()),
+        )
+    })?;
+    let before = session.state().logs.downloads;
+    send(
+        session,
+        SessionCommand::DownloadLog {
+            number,
+            size,
+            sink: LogSink::new(BufWriter::with_capacity(FILE_BUFFER, file)),
+        },
+    )?;
+    let deadline = LOGS_GET_BASE + Duration::from_secs(u64::from(size) / LOGS_GET_BYTES_PER_S);
+    let mut last_line: Option<Instant> = None;
+    let result = wait_with(
+        deadline,
+        || {
+            let state = session.state();
+            if let Some(fail) = closed(&state) {
+                return Some(Err(fail));
+            }
+            if state.logs.downloads == before {
+                return None;
+            }
+            let download = state.logs.download.as_ref()?;
+            match &download.status {
+                DownloadStatus::Running => None,
+                DownloadStatus::Done => Some(Ok(())),
+                DownloadStatus::Failed(why) => Some(Err(Fail::new(
+                    exit::FAILED,
+                    format!(
+                        "log {number}: {why}; {} of {size} bytes are in {}",
+                        download.done,
+                        path.display()
+                    ),
+                ))),
+                DownloadStatus::Cancelled => Some(Err(Fail::new(
+                    exit::FAILED,
+                    format!("log {number}: cancelled"),
+                ))),
+            }
+        },
+        &mut || {
+            echo.pump(session);
+            if last_line.is_some_and(|at| at.elapsed() < PROGRESS_EVERY) {
+                return;
+            }
+            let state = session.state();
+            let Some(download) = state.logs.download.as_ref() else {
+                return;
+            };
+            if state.logs.downloads == before {
+                return;
+            }
+            if download.status == DownloadStatus::Running {
+                last_line = Some(Instant::now());
+                let percent = u64::from(download.done) * 100 / u64::from(size.max(1));
+                let _ = writeln!(
+                    echo.err,
+                    "log {number}: {} of {size} bytes ({percent} %)",
+                    download.done
+                );
+            }
+        },
+    );
+    let result = result.unwrap_or_else(|| {
+        session.send(SessionCommand::CancelLogDownload);
+        let done = session.state().logs.download.as_ref().map_or(0, |d| d.done);
+        Err(Fail::new(
+            exit::FAILED,
+            format!(
+                "log {number}: gave up waiting; {done} of {size} bytes are in {}",
+                path.display()
+            ),
+        ))
+    });
+    result?;
+    writeln!(out, "downloaded\t{}\t{size} bytes", path.display())?;
+    Ok(())
 }

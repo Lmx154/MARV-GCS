@@ -215,3 +215,50 @@ fn the_mavlink_commands_carry_the_contracts_parameters() {
     assert!(mav_command(&Command::Status).is_none());
     assert_eq!(device_id("RC"), Some(7));
 }
+
+#[test]
+fn the_logs_commands_parse() {
+    assert_eq!(command("logs list"), Command::LogsList);
+    assert_eq!(
+        command("logs get 7"),
+        Command::LogsGet {
+            number: 7,
+            output: None,
+            force: false
+        }
+    );
+    // The options may stand anywhere on the line.
+    for words in [
+        "logs get 12 -o /tmp/a.bin --force",
+        "-o /tmp/a.bin logs get 12 --force",
+        "--force logs get 12 --output /tmp/a.bin",
+    ] {
+        assert_eq!(
+            command(words),
+            Command::LogsGet {
+                number: 12,
+                output: Some(PathBuf::from("/tmp/a.bin")),
+                force: true
+            },
+            "{words}"
+        );
+    }
+    assert!(USAGE.contains("logs list") && USAGE.contains("logs get"));
+}
+
+#[test]
+fn the_logs_errors() {
+    let e = |words: &str| error(&format!("--connect tcp:127.0.0.1:5760 {words}"));
+    assert!(e("logs").contains("list or get"));
+    assert!(e("logs erase").contains("unknown logs command"));
+    assert!(e("logs list 3").contains("unexpected argument"));
+    assert!(e("logs get").contains("needs a log NUMBER"));
+    assert!(e("logs get 0").contains("1 to 65535"));
+    assert!(e("logs get -3").contains("1 to 65535"));
+    assert!(e("logs get 70000").contains("1 to 65535"));
+    assert!(e("logs get two").contains("1 to 65535"));
+    assert!(e("logs get 3 4").contains("unexpected argument"));
+    assert!(e("logs get 3 -o").contains("-o needs a value"));
+    assert!(e("logs list -o /tmp/a").contains("only applies to logs get"));
+    assert!(e("status --force").contains("only applies to logs get"));
+}

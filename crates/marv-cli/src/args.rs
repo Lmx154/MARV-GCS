@@ -28,12 +28,16 @@ Commands:
   device selftest <NAME>
   reboot --yes
   record <FILE> [--for <s>]        record the link to a .tlog (default 60 s)
+  logs list                        the logs on the vehicle's card: NUMBER<TAB>SIZE, then last<TAB>N (USB or TCP only)
+  logs get <N> [-o FILE] [--force] download log N (default file NNNNNNNN.BIN here; an existing file is kept without --force)
 
 Options:
   --connect <endpoint>   where the vehicle is (required)
   --timeout <s>          wait this long for the vehicle's heartbeat (default 5)
   --for <s>              how long a collecting command runs
   --yes                  confirm reset-all, reset-calibration and reboot
+  -o, --output <file>    where logs get writes the log
+  --force                let logs get overwrite an existing file
   --help                 this text
 
 Exit status: 0 success; 1 the command failed or the vehicle did not accept it;
@@ -86,6 +90,13 @@ pub enum Command {
     },
     Reboot,
     Record(PathBuf),
+    LogsList,
+    LogsGet {
+        number: u16,
+        /// `None`: `NNNNNNNN.BIN` in the current directory.
+        output: Option<PathBuf>,
+        force: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -136,6 +147,8 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
     let mut timeout = DEFAULT_TIMEOUT;
     let mut duration = None;
     let mut yes = false;
+    let mut output = None;
+    let mut force = false;
     let mut words: Vec<&str> = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -153,6 +166,8 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             "--timeout" => timeout = seconds("--timeout", value("--timeout")?)?,
             "--for" => duration = Some(seconds("--for", value("--for")?)?),
             "--yes" => yes = true,
+            "-o" | "--output" => output = Some(PathBuf::from(value(arg)?)),
+            "--force" => force = true,
             option if option.starts_with("--") => return Err(format!("unknown option {option}")),
             word => words.push(word),
         }
@@ -160,7 +175,20 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
     let Some(endpoint) = connect else {
         return Err("missing --connect <endpoint>".to_string());
     };
-    let (command, takes_for) = command(&words, yes)?;
+    let (mut command, takes_for) = command(&words, yes)?;
+    match &mut command {
+        Command::LogsGet {
+            output: file,
+            force: forced,
+            ..
+        } => {
+            *file = output;
+            *forced = force;
+        }
+        _ if output.is_some() => return Err("-o only applies to logs get".to_string()),
+        _ if force => return Err("--force only applies to logs get".to_string()),
+        _ => {}
+    }
     if yes
         && !matches!(
             &command,
@@ -292,6 +320,27 @@ fn command(words: &[&str], yes: bool) -> Result<(Command, bool), String> {
             [file] => Ok((Command::Record(PathBuf::from(file)), true)),
             [] => Err("record needs a FILE".to_string()),
             [_, extra, ..] => Err(format!("unexpected argument {extra:?}")),
+        },
+        "logs" => match rest {
+            ["list"] => Ok((Command::LogsList, false)),
+            ["list", extra, ..] => Err(format!("unexpected argument {extra:?}")),
+            ["get", number] => match number.parse::<u16>() {
+                Ok(number) if number > 0 => Ok((
+                    Command::LogsGet {
+                        number,
+                        output: None,
+                        force: false,
+                    },
+                    false,
+                )),
+                _ => Err(format!(
+                    "logs get needs a log number from 1 to 65535, not {number:?}"
+                )),
+            },
+            ["get"] => Err("logs get needs a log NUMBER".to_string()),
+            ["get", _, extra, ..] => Err(format!("unexpected argument {extra:?}")),
+            [] => Err("logs needs list or get".to_string()),
+            [other, ..] => Err(format!("unknown logs command {other:?}: list or get")),
         },
         other => Err(format!("unknown command {other:?}")),
     }

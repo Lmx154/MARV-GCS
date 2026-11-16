@@ -3,6 +3,7 @@
 
 use std::io::Write;
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -96,5 +97,27 @@ impl Write for Shared {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+/// A directory of its own under the system's temporary directory, removed when dropped.
+pub struct TempDir(pub PathBuf);
+
+impl TempDir {
+    pub fn new(name: &str) -> TempDir {
+        let dir = std::env::temp_dir().join(format!("marv-cli-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the temporary directory");
+        TempDir(dir)
+    }
+
+    pub fn file(&self, name: &str) -> PathBuf {
+        self.0.join(name)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }

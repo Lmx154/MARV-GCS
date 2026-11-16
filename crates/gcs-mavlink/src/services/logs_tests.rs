@@ -239,6 +239,7 @@ fn info(number: u16, size: u32) -> LogInfo {
 fn a_listing_asks_for_all_logs_and_collects_one_entry_each() {
     let mut rig = Rig::new();
     rig.list(100);
+    assert_eq!(rig.state.logs.lists, 1);
     let Message::LOG_REQUEST_LIST(ask) = &rig.log[0].1 else {
         panic!("{:?}", rig.log);
     };
@@ -392,6 +393,7 @@ fn a_clean_download_is_one_window_and_the_bytes_in_order() {
     let data = log_bytes(1000); // 11 frames and 10 bytes: not a multiple of 90
     let mut rig = Rig::new();
     rig.get(5, 1000, 200);
+    assert_eq!(rig.state.logs.downloads, 1);
     assert_eq!(rig.requests(), vec![(200, 5, 0, 1000)]);
     let Message::LOG_REQUEST_DATA(ask) = &rig.log[0].1 else {
         panic!("{:?}", rig.log);

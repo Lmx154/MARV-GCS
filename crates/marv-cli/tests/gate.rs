@@ -12,7 +12,7 @@ use std::time::Duration;
 use gcs_mavlink::dialect::MavMessage;
 use gcs_mavlink::{Access, Body, Deframer, Session, SessionConfig};
 
-use common::{Rig, Shared};
+use common::{Rig, Shared, TempDir};
 
 /// Passes every write on and keeps a copy of the bytes.
 struct Tee {
@@ -163,4 +163,59 @@ fn positive_control_on_a_configure_session_the_same_commands_write() {
         frames.iter().any(|f| f == "COMMAND_LONG(42430)"),
         "{frames:?}"
     );
+}
+
+#[test]
+fn on_an_operate_session_both_log_commands_are_refused_with_nothing_sent() {
+    let rig = Rig::start();
+    let dir = TempDir::new("gate-logs");
+    let file = dir.file("out.bin");
+    let (session, seen) = session(&rig, Access::Operate);
+    for words in [
+        "logs list".to_string(),
+        format!("logs get 2 -o {}", file.display()),
+    ] {
+        let (code, out, err) = invoke(&words, &session, Access::Operate);
+        assert_eq!(code, marv_cli::exit::REFUSED, "{words}: {out:?} {err:?}");
+        assert!(
+            err.contains("refused: this link is operate-only"),
+            "{words}: {err:?}"
+        );
+        assert_eq!(out, "", "{words}");
+    }
+    assert!(!file.exists(), "the file is not even created");
+    assert_eq!(
+        session.state().link.refused.as_ref().map(|r| r.count),
+        Some(2)
+    );
+    // The reads still work on the same session.
+    let (code, _, _) = invoke("status --for 0.2", &session, Access::Operate);
+    assert_eq!(code, 0);
+    std::thread::sleep(Duration::from_millis(100));
+    let frames = frames_written(&seen);
+    assert!(
+        !frames.iter().any(|f| f.starts_with("LOG_")),
+        "no log message on the link: {frames:?}"
+    );
+}
+
+#[test]
+fn positive_control_on_a_configure_session_the_log_commands_send() {
+    let rig = Rig::start();
+    let dir = TempDir::new("gate-logs-configure");
+    let file = dir.file("out.bin");
+    let (session, seen) = session(&rig, Access::Configure);
+    let (code, out, err) = invoke("logs list", &session, Access::Configure);
+    assert_eq!(code, 0, "{out:?} {err:?}");
+    let (code, out, err) = invoke(
+        &format!("logs get 11 -o {}", file.display()),
+        &session,
+        Access::Configure,
+    );
+    assert_eq!(code, 0, "{out:?} {err:?}");
+    std::thread::sleep(Duration::from_millis(100));
+    let frames = frames_written(&seen);
+    for name in ["LOG_REQUEST_LIST", "LOG_REQUEST_DATA"] {
+        assert!(frames.iter().any(|f| f == name), "{name}: {frames:?}");
+    }
 }
