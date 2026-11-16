@@ -195,7 +195,7 @@ fn emitted_message_is_the_signal_at_that_time() {
             seen += 1;
         }
     }
-    assert!(seen > 400);
+    assert!(seen > 200);
 }
 
 #[test]
@@ -207,7 +207,7 @@ fn frames_are_mavlink2_with_one_consecutive_sequence() {
     }
     assert_eq!(bytes[0], 0xFD);
     let headers: Vec<_> = decode(&bytes).into_iter().map(|(h, _)| h).collect();
-    assert!(headers.len() > 600);
+    assert!(headers.len() > 400);
     for (i, h) in headers.iter().enumerate() {
         assert_eq!(h.sequence, (i % 256) as u8, "frame {i}");
     }

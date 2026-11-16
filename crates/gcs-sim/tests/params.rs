@@ -351,8 +351,8 @@ fn list_is_complete_in_order_and_paced_while_telemetry_flows() {
     }
     assert_eq!(name(&all[13]), "P0000");
     assert_eq!(name(&all[total - 1]), "P0499");
-    // About 1026 ms (513 parameters, one per 2 ms) at 50 Hz, instance 0.
-    assert!((49..=53).contains(&telemetry), "{telemetry} IMU messages");
+    // About 1026 ms (513 parameters, one per 2 ms) at 25 Hz.
+    assert!((24..=28).contains(&telemetry), "{telemetry} IMU messages");
 }
 
 #[test]
@@ -640,7 +640,7 @@ fn lossy(percent: u8, seed: u64) -> SimConfig {
 #[test]
 fn tx_loss_rate_is_close_to_the_setting() {
     let (_, sent) = frame_count(lossy(0, 7), 20_000);
-    assert!(sent >= 10_000, "{sent}");
+    assert!(sent >= 5_000, "{sent}");
     let (_, arrived) = frame_count(lossy(20, 7), 20_000);
     let dropped = (sent - arrived) as f64 / sent as f64 * 100.0;
     assert!((18.0..=22.0).contains(&dropped), "{dropped} %");
@@ -744,9 +744,9 @@ fn silent_vehicle_sends_nothing_but_still_acts() {
     vehicle.set_silent(false);
     let after = run(&mut vehicle, 2101, 3100, &[]);
     let frames = decode(&after);
-    // About one second of the default streams (1 + 4 * 50 + 10 + 5), with no replay of what was
+    // About one second of the default streams (1 + 1 + 3 * 25 + 1 + 5), with no replay of what was
     // missed.
-    assert!(frames.len().abs_diff(216) <= 10, "{}", frames.len());
+    assert!(frames.len().abs_diff(83) <= 6, "{}", frames.len());
     assert!(values(&after).is_empty());
 }
 

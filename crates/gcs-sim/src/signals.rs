@@ -12,8 +12,9 @@
 use mavlink::MessageData;
 use mavlink::dialects::common::{
     GPS_RAW_INT_DATA, GpsFixType, HEARTBEAT_DATA, HIGHRES_IMU_DATA, HighresImuUpdatedFlags,
-    MavAutopilot, MavMessage, MavModeFlag, MavState, MavType, RC_CHANNELS_DATA, SCALED_IMU_DATA,
-    SCALED_IMU2_DATA, SCALED_PRESSURE_DATA, SYS_STATUS_DATA,
+    MavAutopilot, MavMessage, MavModeFlag, MavState, MavSysStatusSensor,
+    MavSysStatusSensorExtended, MavType, RC_CHANNELS_DATA, SCALED_IMU_DATA, SCALED_IMU2_DATA,
+    SCALED_PRESSURE_DATA, SYS_STATUS_DATA,
 };
 
 /// Mean barometric pressure in hPa.
@@ -144,6 +145,12 @@ pub fn sys_status() -> SYS_STATUS_DATA {
         voltage_battery: BATTERY_MV,
         current_battery: BATTERY_CA,
         battery_remaining: -1,
+        onboard_control_sensors_present: MavSysStatusSensor::empty(),
+        onboard_control_sensors_enabled: MavSysStatusSensor::empty(),
+        onboard_control_sensors_health: MavSysStatusSensor::empty(),
+        onboard_control_sensors_present_extended: MavSysStatusSensorExtended::empty(),
+        onboard_control_sensors_enabled_extended: MavSysStatusSensorExtended::empty(),
+        onboard_control_sensors_health_extended: MavSysStatusSensorExtended::empty(),
         ..SYS_STATUS_DATA::default()
     }
 }

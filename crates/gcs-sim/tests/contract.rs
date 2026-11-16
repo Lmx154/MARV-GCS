@@ -283,8 +283,8 @@ fn requesting_a_stream_gives_an_ack_and_one_copy() {
 fn every_other_command_is_unsupported() {
     let mut vehicle = booted(SimConfig::default());
     let cases = [
-        // An id that is no stream: SYS_STATUS is not a default stream any more.
-        (MavCmd::MAV_CMD_REQUEST_MESSAGE, 1.0),
+        // An id that is no stream: SCALED_IMU is not a default stream.
+        (MavCmd::MAV_CMD_REQUEST_MESSAGE, 26.0),
         (MavCmd::MAV_CMD_REQUEST_MESSAGE, 9999.0),
         (MavCmd::MAV_CMD_REQUEST_MESSAGE, 29.5),
         (MavCmd::MAV_CMD_REQUEST_MESSAGE, -1.0),
