@@ -52,6 +52,7 @@ impl App {
             auto_log: !cli.no_log,
             replaying: false,
         };
+        logfile::set_log_dir(&cc.egui_ctx, &app.log_dir);
         if let Some(endpoint) = cli.connect {
             app.bar.set_endpoint(&endpoint);
             app.connect(&endpoint, &cc.egui_ctx);

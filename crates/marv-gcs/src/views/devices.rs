@@ -113,10 +113,13 @@ impl View for Devices {
     }
 }
 
-/// The devices that can be restarted (`MARV_DEVICE`: IMU1, IMU2, BARO, MAG, GNSS, BATT).
+/// The devices that can be restarted (`MARV_DEVICE`: IMU1, IMU2, BARO, MAG, GNSS, BATT and SD).
 pub fn can_restart(device: u8) -> bool {
-    matches!(device, 1..=6)
+    matches!(device, 1..=6 | SD)
 }
+
+/// `MARV_DEVICE_SD`: the SD card, whose restart the Log view offers too.
+pub const SD: u8 = 9;
 
 /// The devices that have a self-test (IMU1, IMU2, MAG).
 pub fn can_self_test(device: u8) -> bool {
@@ -124,7 +127,7 @@ pub fn can_self_test(device: u8) -> bool {
 }
 
 /// `MAV_CMD_MARV_DEVICE`: param1 the device, param2 the action (1 restart, 2 self-test).
-fn device_command(device: u8, action: f32) -> Command {
+pub(super) fn device_command(device: u8, action: f32) -> Command {
     Command::SendCommand {
         command: MavCmd::MAV_CMD_MARV_DEVICE,
         params: [f32::from(device), action, 0.0, 0.0, 0.0, 0.0, 0.0],

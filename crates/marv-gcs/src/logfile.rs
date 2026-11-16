@@ -74,6 +74,42 @@ fn create_log(dir: &Path, unix_secs: u64) -> Result<Command, String> {
     }
 }
 
+/// The buffer of a downloaded log's writer (the one `marv-cli` uses).
+const DOWNLOAD_BUFFER: usize = 256 * 1024;
+
+/// The file a downloaded log is written to: `<dir>/NNNNNNNN.BIN`, the card's name.
+pub fn download_path(dir: &Path, number: u16) -> PathBuf {
+    dir.join(format!("{number:08}.BIN"))
+}
+
+/// Create the directory if needed and the new file of log `number`, never overwriting a file: the command
+/// that makes the session download the log of `size` bytes into it, and the path. An existing file is
+/// refused with its name in the text.
+pub fn download_command(dir: &Path, number: u16, size: u32) -> Result<(Command, PathBuf), String> {
+    fs::create_dir_all(dir).map_err(|e| format!("cannot create folder {}: {e}", dir.display()))?;
+    let path = download_path(dir, number);
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| {
+            if e.kind() == ErrorKind::AlreadyExists {
+                format!(
+                    "{} exists and is not overwritten: choose another folder or move the file",
+                    path.display()
+                )
+            } else {
+                format!("cannot create {}: {e}", path.display())
+            }
+        })?;
+    let command = Command::DownloadLog {
+        number,
+        size,
+        sink: LogSink::new(BufWriter::with_capacity(DOWNLOAD_BUFFER, file)),
+    };
+    Ok((command, path))
+}
+
 fn start_command_for(file: File, path: &Path) -> Command {
     Command::StartLog {
         sink: LogSink::new(BufWriter::new(file)),
@@ -91,6 +127,19 @@ fn replaying_id() -> egui::Id {
 
 fn error_id() -> egui::Id {
     egui::Id::unique("marv_gcs_log_error")
+}
+
+fn log_dir_id() -> egui::Id {
+    egui::Id::unique("marv_gcs_log_dir")
+}
+
+/// The app tells the Log view the window's log directory, the default folder of a downloaded log.
+pub fn set_log_dir(ctx: &egui::Context, dir: &Path) {
+    ctx.data_mut(|d| d.insert_temp(log_dir_id(), dir.display().to_string()));
+}
+
+pub fn log_dir(ctx: &egui::Context) -> Option<String> {
+    ctx.data(|d| d.get_temp::<String>(log_dir_id()))
 }
 
 /// The Log view asks the app for a new log file.
@@ -204,6 +253,58 @@ mod tests {
             ]
         );
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("marv-gcs-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn a_download_goes_to_the_cards_file_name_in_the_folder_and_makes_the_folder() {
+        let dir = temp("download").join("deep");
+        assert_eq!(
+            download_path(Path::new("x"), 31),
+            Path::new("x").join("00000031.BIN")
+        );
+        let (command, path) = download_command(&dir, 7, 1234).expect("created");
+        assert_eq!(path, dir.join("00000007.BIN"));
+        assert!(path.is_file());
+        let Command::DownloadLog { number, size, .. } = command else {
+            panic!("not DownloadLog")
+        };
+        assert_eq!((number, size), (7, 1234));
+        let _ = fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn a_download_never_overwrites_a_file_and_says_which() {
+        let dir = temp("download-exists");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("00000002.BIN"), b"mine").unwrap();
+        let e = download_command(&dir, 2, 10)
+            .map(|_| ())
+            .expect_err("refused");
+        assert!(
+            e.contains("00000002.BIN") && e.contains("not overwritten"),
+            "{e}"
+        );
+        assert_eq!(fs::read(dir.join("00000002.BIN")).unwrap(), b"mine");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_download_into_an_unusable_folder_is_an_error() {
+        let dir = temp("download-bad");
+        fs::create_dir_all(&dir).unwrap();
+        let blocker = dir.join("file");
+        fs::write(&blocker, b"x").unwrap();
+        let e = download_command(&blocker.join("sub"), 1, 1)
+            .map(|_| ())
+            .expect_err("fails");
+        assert!(e.contains("cannot create folder"), "{e}");
         let _ = fs::remove_dir_all(&dir);
     }
 
