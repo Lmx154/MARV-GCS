@@ -12,7 +12,7 @@ mod log;
 mod messages;
 mod params;
 mod plot;
-mod sensors;
+pub mod sensors;
 
 pub struct ViewCtx<'a> {
     /// Locked for the frame.

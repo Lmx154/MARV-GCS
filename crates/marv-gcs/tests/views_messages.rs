@@ -231,7 +231,8 @@ fn sensors_view_says_no_data_for_a_preset_without_series() {
     assert!(harness.query_all_by_label("no data").count() >= 1);
     let empty = run_view("Sensors", &VehicleState::default(), None);
     empty.get_by_label("GPS: no data");
-    assert_eq!(empty.get_all_by_label("no data").count(), 7);
+    assert_eq!(empty.get_all_by_label("no data").count(), 8);
+    empty.get_by_label("Battery: no data");
 }
 
 #[test]
