@@ -665,7 +665,7 @@ impl Rig {
         let channels = self
             .harness
             .get_all_by_role(Role::ComboBox)
-            .map(|n| n.accesskit_node().label().unwrap_or_default())
+            .map(|n| n.value().unwrap_or_default())
             .collect();
         let ticks = self
             .harness
@@ -736,10 +736,12 @@ fn a_duplicate_map_shows_a_warning_and_apply_still_works() {
 fn revert_sends_nothing_and_the_controls_show_the_vehicles_values_again() {
     let mut rig = Rig::new(Access::Configure);
     let before = rig.shown();
+    assert_eq!(before.0, ["1", "2", "3", "4"]);
     assert!(!rig.enabled("Revert"));
     rig.pick(0, 5);
     rig.tick_reversed(0);
     rig.set_dead_zone(1, 30.0);
+    assert_eq!(rig.shown().0, ["5", "2", "3", "4"]);
     assert_ne!(rig.shown(), before);
     assert!(!rig.enabled("Calibrate radio"));
     assert!(rig.has(views::radio::STAGED_TEXT));

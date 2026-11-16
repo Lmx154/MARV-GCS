@@ -11,6 +11,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
+use eframe::egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use gcs_mavlink::services::messages::FieldValue;
@@ -312,4 +313,91 @@ fn apply_writes_twelve_values_the_vehicle_follows_them_and_save_to_flash_is_one_
             .count(),
         1
     );
+}
+
+#[test]
+fn applying_rcmap_roll_2_makes_the_simulator_report_channel_2_as_roll() {
+    let rig = Rig::start();
+    let mut window = Window::open(rig.session.clone());
+
+    // Roll is the first drop-down; pick channel 2 and apply.
+    window
+        .harness
+        .get_all_by_role(Role::ComboBox)
+        .next()
+        .expect("the Roll drop-down")
+        .click();
+    window.harness.run();
+    window
+        .harness
+        .get_all_by_role_and_label(Role::Button, "2")
+        .next()
+        .expect("the list of channels")
+        .click();
+    window.harness.run();
+    assert!(
+        window.forwarded.borrow().is_empty(),
+        "staging sends nothing"
+    );
+    window.click("Apply mapping");
+    assert_eq!(window.forwarded.borrow().len(), 1);
+    assert!(window.forwarded.borrow()[0].contains("RCMAP_ROLL"));
+
+    // The simulator holds it, and the write is confirmed.
+    assert!(
+        rig.wait(5.0, |s| s.params.writes.is_empty()
+            && rig.param("RCMAP_ROLL") == Some(ParamValue::Int32(2)))
+            .is_some(),
+        "the simulator does not hold RCMAP_ROLL = 2"
+    );
+    assert_eq!(
+        rig.vehicle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .param_sets_received(),
+        1
+    );
+    window.harness.run();
+    assert!(window.shows("Applied in RAM; not saved to flash"));
+
+    // The tag moved to channel 2 (rows 1 and 2 are the first two with the default MIN 1100).
+    let rows: Vec<String> = window
+        .harness
+        .get_all_by_label_contains("MIN 1100")
+        .map(|n| n.value().unwrap_or_default())
+        .collect();
+    assert_eq!(rows[0], "MIN 1100 TRIM 1500 MAX 1900", "{rows:?}");
+    assert_eq!(
+        rows[1], "MIN 1100 TRIM 1500 MAX 1900  [Roll, Pitch]",
+        "{rows:?}"
+    );
+
+    // MANUAL_CONTROL `y` is the angle of channel 2 for the contract's formula (defaults: MIN 1100, TRIM 1500,
+    // MAX 1900), taken from a RC_CHANNELS and the MANUAL_CONTROL of the same instant after the write.
+    let count = |s: &VehicleState, name: &str| s.messages.entry(name, 0).map(|e| e.count);
+    let baseline = count(&rig.session.state(), "MANUAL_CONTROL").expect("MANUAL_CONTROL arrives");
+    let mut checked = false;
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < deadline && !checked {
+        std::thread::sleep(POLL);
+        let state = rig.session.state();
+        let (Some(rc), Some(mc)) = (
+            state.messages.entry("RC_CHANNELS", 0),
+            state.messages.entry("MANUAL_CONTROL", 0),
+        ) else {
+            continue;
+        };
+        if mc.count <= baseline + 1 || rc.count != mc.count {
+            continue;
+        }
+        let channel2 = rc.number("chan2_raw").expect("channel 2") as u16;
+        let want = i32::from(angle(channel2, 1100, 1500, 1900, false, 0));
+        assert_eq!(
+            mc.number("y").expect("y") as i32,
+            want,
+            "channel 2 = {channel2}"
+        );
+        checked = true;
+    }
+    assert!(checked, "no matching RC_CHANNELS and MANUAL_CONTROL pair");
 }
