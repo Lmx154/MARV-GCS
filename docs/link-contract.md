@@ -815,7 +815,7 @@ Physical values (from datasheet and driver numbers; MODEL and BOUND are shown as
 - IMU noise: `sigma = sqrt(ND^2 * B + LSB^2 / 12)`, gyro and accelerometer separately; ND the datasheet's noise density
   (ICM gyro 0.0038 dps/rtHz, accel 70 / 80 / 110 ug/rtHz up to 8 g / 16 g / 32 g; LSM gyro 3.8 mdps/rtHz, accel
   60 ug/rtHz), LSB the driver's scale (full scale / 32768 for the ICM; the sensitivity of the range for the LSM).
-- IMU Light load: ODR x bytes per sample: ICM 18, LSM 21.
+- IMU Light load: ODR x bytes per sample: ICM 18, LSM 27 (the driver's `read_all`: 26 bytes + address; amendment 2026-11-17, measured: the design said 21).
 - BARO Low noise: `sigma_T9(OSR_P) / sqrt(2c + 1)`, sigma_T9 the datasheet's Table 9 value for the pressure
   oversampling, c the pressure IIR coefficient. Altitude shown beside it: 0.083 m per Pa (display only).
 - BARO Fast response: `tconv_p(OSR_P) + tconv_t(OSR_T) + c / ODR`, the typical conversion times of the datasheet's
@@ -843,10 +843,10 @@ INT1 low-g data-ready latched; no FIFO).
 
 | Id | Name | ACC_FS | GYR_FS | ODR_HZ | Accel range | Gyro range | Low noise | Bandwidth | Light load |
 |---|---|---|---|---|---|---|---|---|---|
-| 1 | Flight (default) | 16 | 2000 | 800 | 75 | 80 | 51 (0.079 dps, 1.21 mg) | 59 (400 Hz) | 36 (16 800 B/s) |
-| 2 | Bench (today; clips in flight) | 4 | 500 | 800 | 25 | 40 | 51 (0.076 dps, 1.20 mg) | 59 (400 Hz) | 36 (16 800 B/s) |
-| 3 | Max range (low-g limit 16 g) | 16 | 4000 | 800 | 75 | 100 | 50 (0.086 dps, 1.21 mg) | 59 (400 Hz) | 36 (16 800 B/s) |
-| 4 | Smooth | 8 | 1000 | 400 | 50 | 60 | 58 (0.055 dps, 0.85 mg) | 48 (200 Hz) | 46 (8 400 B/s) |
+| 1 | Flight (default) | 16 | 2000 | 800 | 75 | 80 | 51 (0.079 dps, 1.21 mg) | 59 (400 Hz) | 32 (21 600 B/s) |
+| 2 | Bench (today; clips in flight) | 4 | 500 | 800 | 25 | 40 | 51 (0.076 dps, 1.20 mg) | 59 (400 Hz) | 32 (21 600 B/s) |
+| 3 | Max range (low-g limit 16 g) | 16 | 4000 | 800 | 75 | 100 | 50 (0.086 dps, 1.21 mg) | 59 (400 Hz) | 32 (21 600 B/s) |
+| 4 | Smooth | 8 | 1000 | 400 | 50 | 60 | 58 (0.055 dps, 0.85 mg) | 48 (200 Hz) | 42 (10 800 B/s) |
 
 BARO, BMP581 (normal mode, FIFO off, data-ready pulsed).
 
