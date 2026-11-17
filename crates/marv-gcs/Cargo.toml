@@ -24,5 +24,6 @@ walkers.workspace = true
 
 [dev-dependencies]
 gcs-sim.workspace = true
+marv-presets.workspace = true
 egui_kittest.workspace = true
 serialport.workspace = true
