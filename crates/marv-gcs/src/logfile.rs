@@ -25,7 +25,7 @@ pub fn file_name(unix_secs: u64) -> String {
 }
 
 /// Year, month and day of a day count since 1970-01-01 (proleptic Gregorian calendar).
-fn civil_from_days(days: u64) -> (u64, u64, u64) {
+pub(crate) fn civil_from_days(days: u64) -> (u64, u64, u64) {
     let z = days + 719_468;
     let era = z / 146_097;
     let day_of_era = z % 146_097;
@@ -129,6 +129,10 @@ fn error_id() -> egui::Id {
     egui::Id::unique("marv_gcs_log_error")
 }
 
+fn review_id() -> egui::Id {
+    egui::Id::unique("marv_gcs_log_review")
+}
+
 fn log_dir_id() -> egui::Id {
     egui::Id::unique("marv_gcs_log_dir")
 }
@@ -140,6 +144,16 @@ pub fn set_log_dir(ctx: &egui::Context, dir: &Path) {
 
 pub fn log_dir(ctx: &egui::Context) -> Option<String> {
     ctx.data(|d| d.get_temp::<String>(log_dir_id()))
+}
+
+/// The app asks the Log view to open a `.BIN` file in its "Review a log file" section (`--review`).
+pub fn set_review(ctx: &egui::Context, path: &Path) {
+    ctx.data_mut(|d| d.insert_temp(review_id(), path.to_path_buf()));
+}
+
+/// The file the app asked to review, once.
+pub fn take_review(ctx: &egui::Context) -> Option<PathBuf> {
+    ctx.data_mut(|d| d.remove_temp::<PathBuf>(review_id()))
 }
 
 /// The Log view asks the app for a new log file.

@@ -9,6 +9,7 @@ mod actions;
 mod devices;
 mod link;
 mod log;
+mod log_review;
 mod messages;
 mod params;
 mod plot;

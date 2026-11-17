@@ -8,7 +8,8 @@ use gcs_transport::Endpoint;
 use crate::views;
 
 pub const USAGE: &str = "usage: marv-gcs [--connect <endpoint>] [--log-dir <dir>] [--no-log]
-                [--view <name>] [--screenshot <file.png>] [--after <seconds>]
+                [--view <name>] [--review <file.BIN>] [--screenshot <file.png>]
+                [--after <seconds>]
 
   --connect <endpoint>      connect at start: tcp:HOST:PORT, serial:PATH[:BAUD] or
                             udp:ADDR:PORT (the local address to listen on), or replay a log:
@@ -16,6 +17,8 @@ pub const USAGE: &str = "usage: marv-gcs [--connect <endpoint>] [--log-dir <dir>
   --log-dir <dir>           directory for the automatic .tlog recordings (default: logs)
   --no-log                  do not record sessions automatically
   --view <name>             tab shown at start: a tab title, in any case
+  --review <file.BIN>       open a DataFlash log in the Log tab's review section
+                            and start on that tab (unless --view says otherwise)
   --screenshot <file.png>   save a picture of the window and exit
   --after <seconds>         seconds from the start to the picture (default 3)
   --help                    print this text";
@@ -35,6 +38,8 @@ pub struct Cli {
     pub no_log: bool,
     /// Position in the view registry of the tab shown at start (`--view`).
     pub view: Option<usize>,
+    /// A DataFlash `.BIN` log to open in the Log tab's review section (`--review`).
+    pub review: Option<PathBuf>,
     pub screenshot: Option<PathBuf>,
     pub after_secs: f64,
 }
@@ -47,6 +52,7 @@ impl Default for Cli {
             log_dir: PathBuf::from(DEFAULT_LOG_DIR),
             no_log: false,
             view: None,
+            review: None,
             screenshot: None,
             after_secs: DEFAULT_AFTER_SECS,
         }
@@ -79,6 +85,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Parsed, String> 
             "--log-dir" => cli.log_dir = PathBuf::from(value(&mut args, &arg)?),
             "--no-log" => cli.no_log = true,
             "--view" => cli.view = Some(parse_view(&value(&mut args, &arg)?)?),
+            "--review" => cli.review = Some(PathBuf::from(value(&mut args, &arg)?)),
             "--screenshot" => cli.screenshot = Some(PathBuf::from(value(&mut args, &arg)?)),
             "--after" => {
                 let value = value(&mut args, &arg)?;
@@ -89,6 +96,9 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Parsed, String> 
             }
             _ => return Err(format!("unknown argument {arg:?}")),
         }
+    }
+    if cli.review.is_some() && cli.view.is_none() {
+        cli.view = Some(parse_view("log")?);
     }
     Ok(Parsed::Run(cli))
 }
@@ -277,6 +287,7 @@ mod tests {
             "--connect",
             "--log-dir",
             "--view",
+            "--review",
             "--screenshot",
             "--after",
         ] {
@@ -330,6 +341,35 @@ mod tests {
                 assert!(e.contains(&title.to_lowercase()), "{e}");
             }
         }
+    }
+
+    #[test]
+    fn review_opens_a_file_and_starts_on_the_log_tab() {
+        let log = views::all()
+            .iter()
+            .position(|view| view.name() == "Log")
+            .unwrap();
+        assert_eq!(Cli::default().review, None);
+        assert_eq!(
+            parse_strs(&["--review", "/tmp/a b/00000007.BIN"]),
+            Ok(Parsed::Run(Cli {
+                review: Some(PathBuf::from("/tmp/a b/00000007.BIN")),
+                view: Some(log),
+                ..Cli::default()
+            }))
+        );
+        for order in [
+            ["--view", "sensors", "--review", "x.BIN"],
+            ["--review", "x.BIN", "--view", "sensors"],
+        ] {
+            let Ok(Parsed::Run(cli)) = parse_strs(&order) else {
+                panic!("{order:?}")
+            };
+            assert_eq!(cli.review, Some(PathBuf::from("x.BIN")));
+            assert_ne!(cli.view, Some(log), "an explicit --view wins: {order:?}");
+            assert!(cli.view.is_some());
+        }
+        assert!(USAGE.contains("--review <file.BIN>"));
     }
 
     #[test]

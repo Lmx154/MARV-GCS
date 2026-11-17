@@ -1,6 +1,6 @@
 //! Log view: the vehicle's text messages and the state of the recording.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use eframe::egui::{self, Color32};
@@ -13,6 +13,7 @@ use gcs_mavlink::tlog::LogState;
 use gcs_mavlink::{Access, Command, VehicleState};
 
 use super::devices::{self, DeviceRow};
+use super::log_review::Review;
 use super::{View, ViewCtx, actions};
 use crate::{logfile, status};
 
@@ -42,12 +43,15 @@ struct OnBoard {
     start_error: Option<String>,
     /// The file the last download writes to, with the log's number.
     target: Option<(u16, String)>,
+    /// The file a finished download asked to have reviewed (its Review button).
+    review: Option<String>,
 }
 
 #[derive(Default)]
 pub struct Log {
     choices: Choices,
     on_board: OnBoard,
+    review: Review,
 }
 
 impl View for Log {
@@ -62,14 +66,24 @@ impl View for Log {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx) {
-        ui.heading("Station recording (.tlog)");
-        recording_part(ui, cx);
-        ui.separator();
-        ui.heading("On-board logs (SD card)");
-        on_board_part(ui, cx, &mut self.on_board);
-        ui.separator();
-        ui.heading("Vehicle messages");
-        texts_part(ui, cx, &mut self.choices);
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.heading("Station recording (.tlog)");
+                recording_part(ui, cx);
+                ui.separator();
+                ui.heading("On-board logs (SD card)");
+                on_board_part(ui, cx, &mut self.on_board);
+                if let Some(path) = self.on_board.review.take() {
+                    self.review.open(ui.ctx(), PathBuf::from(path));
+                }
+                ui.separator();
+                ui.heading("Review a log file");
+                self.review.ui(ui);
+                ui.separator();
+                ui.heading("Vehicle messages");
+                texts_part(ui, cx, &mut self.choices);
+            });
     }
 }
 
@@ -107,6 +121,9 @@ fn recording_part(ui: &mut egui::Ui, cx: &mut ViewCtx) {
 
 const MIB: f64 = 1_048_576.0;
 const LIST_HEIGHT: f32 = 170.0;
+/// The vehicle messages scroll in a box of this height: the whole tab scrolls, and a list without a limit would
+/// take all of it.
+const TEXTS_HEIGHT: f32 = 260.0;
 const LIST_BUSY: &str = "the list is being read";
 const DOWNLOAD_BUSY: &str = "a download is running";
 const MARKER_HELP: &str = "The vehicle's last log number: the log being written, or the highest present when none is open. Its size is as of the last flush.";
@@ -389,7 +406,7 @@ fn list_table(
         });
 }
 
-fn download_part(ui: &mut egui::Ui, cx: &mut ViewCtx, on_board: &OnBoard) {
+fn download_part(ui: &mut egui::Ui, cx: &mut ViewCtx, on_board: &mut OnBoard) {
     if let Some(error) = &on_board.start_error {
         ui.colored_label(status::RED, error);
     }
@@ -416,7 +433,17 @@ fn download_part(ui: &mut egui::Ui, cx: &mut ViewCtx, on_board: &OnBoard) {
         });
     }
     let (text, colour) = download_line(download, target, cx.now);
-    ui.colored_label(colour, text);
+    let review = (download.status == DownloadStatus::Done)
+        .then(|| target.map(str::to_string))
+        .flatten();
+    ui.horizontal(|ui| {
+        ui.colored_label(colour, text);
+        if let Some(path) = review
+            && ui.button("Review").clicked()
+        {
+            on_board.review = Some(path);
+        }
+    });
 }
 
 const REPLAY_NOTE: &str = "Nothing is recorded while a log file is replayed";
@@ -493,7 +520,9 @@ fn texts_part(ui: &mut egui::Ui, cx: &ViewCtx, choices: &mut Choices) {
         return;
     }
     egui::ScrollArea::vertical()
+        .id_salt("vehicle_messages")
         .auto_shrink([false, false])
+        .max_height(TEXTS_HEIGHT)
         .stick_to_bottom(true)
         .show(ui, |ui| {
             for entry in shown {

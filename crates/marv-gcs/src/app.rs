@@ -53,6 +53,9 @@ impl App {
             replaying: false,
         };
         logfile::set_log_dir(&cc.egui_ctx, &app.log_dir);
+        if let Some(path) = &cli.review {
+            logfile::set_review(&cc.egui_ctx, path);
+        }
         if let Some(endpoint) = cli.connect {
             app.bar.set_endpoint(&endpoint);
             app.connect(&endpoint, &cc.egui_ctx);

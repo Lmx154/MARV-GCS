@@ -1350,6 +1350,7 @@ dependencies = [
  "egui_extras",
  "egui_kittest",
  "egui_plot",
+ "gcs-dflog",
  "gcs-link",
  "gcs-mavlink",
  "gcs-sim",
