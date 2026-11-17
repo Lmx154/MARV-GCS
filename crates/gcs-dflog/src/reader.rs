@@ -254,7 +254,8 @@ impl<R: Read> Reader<R> {
             if let Some(f) = Format::from_fmt_payload(&self.buf[payload_start..start + len]) {
                 // A FMT does not redefine FMT itself.
                 if f.type_id != FMT_TYPE {
-                    self.formats[usize::from(f.type_id)] = Some(f);
+                    let id = usize::from(f.type_id);
+                    self.formats[id] = Some(f);
                 }
             }
         }

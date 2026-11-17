@@ -165,10 +165,13 @@ impl Format {
         } else {
             columns.split(',').map(str::to_owned).collect()
         };
-        let time_index = columns
-            .iter()
-            .position(|c| c == "TimeUS")
-            .filter(|&i| i < fields.len() && !matches!(fields[i].kind, Kind::Text4 | Kind::Text16 | Kind::Text64 | Kind::Array32));
+        let time_index = columns.iter().position(|c| c == "TimeUS").filter(|&i| {
+            i < fields.len()
+                && !matches!(
+                    fields[i].kind,
+                    Kind::Text4 | Kind::Text16 | Kind::Text64 | Kind::Array32
+                )
+        });
         Some(Format {
             type_id,
             length,
