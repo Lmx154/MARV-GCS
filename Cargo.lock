@@ -1164,7 +1164,6 @@ dependencies = [
 name = "gcs-sim"
 version = "0.1.0"
 dependencies = [
- "marv-presets",
  "mavlink",
 ]
 
@@ -1996,7 +1995,6 @@ dependencies = [
  "gcs-mavlink",
  "gcs-sim",
  "gcs-transport",
- "marv-presets",
 ]
 
 [[package]]
@@ -2027,15 +2025,10 @@ dependencies = [
  "gcs-sim",
  "gcs-transport",
  "marv-dialect",
- "marv-presets",
  "png 0.18.1",
  "serialport",
  "walkers",
 ]
-
-[[package]]
-name = "marv-presets"
-version = "0.1.0"
 
 [[package]]
 name = "mavlink"

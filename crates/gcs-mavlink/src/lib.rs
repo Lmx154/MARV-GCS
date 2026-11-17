@@ -6,6 +6,7 @@
 
 mod frame;
 pub mod param_file;
+pub mod presets;
 pub mod services;
 mod session;
 mod state;

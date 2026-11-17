@@ -16,7 +16,6 @@ gcs-mavlink.workspace = true
 gcs-link.workspace = true
 gcs-dflog.workspace = true
 marv-dialect.workspace = true
-marv-presets.workspace = true
 eframe.workspace = true
 egui_plot.workspace = true
 egui_extras.workspace = true

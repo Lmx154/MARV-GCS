@@ -14,7 +14,6 @@ path = "src/main.rs"
 gcs-transport.workspace = true
 gcs-mavlink.workspace = true
 gcs-link.workspace = true
-marv-presets.workspace = true
 
 [dev-dependencies]
 gcs-sim.workspace = true
