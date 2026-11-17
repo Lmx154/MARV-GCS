@@ -147,6 +147,7 @@ fn exact_bytes_of_a_small_export() {
             &[int(2000), int(65535), int(-100), V::Float(-0.25)],
         ),
         msg(3000, "x\ny"),
+        msg(4000, "p,q"),
         record(141, ARR, &[int(1500), V::Array(arr)]),
         imu(1, 0),
     ]);
@@ -156,7 +157,7 @@ fn exact_bytes_of_a_small_export() {
     assert_eq!(
         counts(&e),
         [
-            ("MSG", 3, 0, 0),
+            ("MSG", 4, 0, 0),
             ("XYZ", 2, 0, 0),
             ("ARR", 1, 0, 0),
             ("NOPE", 0, 0, 0)
@@ -171,7 +172,7 @@ fn exact_bytes_of_a_small_export() {
     );
     assert_eq!(
         t.file("log_MSG.csv"),
-        "TimeUS,Message\n1000,\"a,\"\"b\"\"\"\n2000,ok\n3000,\"x\ny\"\n"
+        "TimeUS,Message\n1000,\"a,\"\"b\"\"\"\n2000,ok\n3000,\"x\ny\"\n4000,\"p,q\"\n"
     );
     assert_eq!(
         t.file("log_XYZ.csv"),
