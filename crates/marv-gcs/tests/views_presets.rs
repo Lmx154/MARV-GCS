@@ -683,6 +683,8 @@ fn custom_fields_are_edited_one_set_per_changed_field_marked_for_the_imu_and_ref
 struct Pair {
     devices: Harness<'static>,
     params: Harness<'static>,
+    /// Everything either view sent.
+    sent: Shared<Vec<Command>>,
 }
 
 fn pair(table: ParamTable) -> Pair {
@@ -697,9 +699,11 @@ fn pair(table: ParamTable) -> Pair {
     };
     let (devices, params) = (take("Devices"), take("Parameters"));
     let (s1, s2) = (state.clone(), state);
+    let sent: Shared<Vec<Command>> = Rc::default();
     let build = |size, mut view: Box<dyn views::View>, state: Rc<VehicleState>| {
+        let sink = sent.clone();
         let mut h = Harness::builder().with_size(size).build_ui(move |ui| {
-            let mut out = Vec::new();
+            let mut out = sink.borrow_mut();
             let mut cx = ViewCtx {
                 state: &state,
                 commands: &mut out,
@@ -713,7 +717,11 @@ fn pair(table: ParamTable) -> Pair {
     };
     let devices = build(egui::vec2(1500.0, 1800.0), devices, s1);
     let params = build(egui::vec2(1200.0, 900.0), params, s2);
-    Pair { devices, params }
+    Pair {
+        devices,
+        params,
+        sent: sent.clone(),
+    }
 }
 
 #[test]
@@ -875,4 +883,67 @@ fn the_parameters_tab_shows_governed_fields_read_only_with_a_note_until_the_debu
         8,
         "the 4 IMU1 and 4 IMU2 rows are marked"
     );
+}
+
+/// A parameter file that stages `BARO_ODR_HZ` 25 (a governed field) and `BATT_CAP` (not governed).
+fn staged_file() -> String {
+    let path = std::env::temp_dir().join(format!("marv_s1c_load_{}.param", std::process::id()));
+    std::fs::write(&path, "BARO_ODR_HZ,25\nBATT_CAP,2200\n").expect("write the file");
+    path.to_string_lossy().into_owned()
+}
+
+fn load_and_write(pair: &mut Pair, path: &str) {
+    let field = pair.params.get_by_label("parameter file path");
+    field.focus();
+    pair.params.run();
+    pair.params.key_down_modifiers(Modifiers::COMMAND, Key::A);
+    pair.params.run();
+    pair.params
+        .get_by_label("parameter file path")
+        .type_text(path);
+    pair.params.run();
+    pair.params.get_by_label("Load").click();
+    pair.params.run();
+}
+
+fn set_params(pair: &Pair) -> Vec<String> {
+    pair.sent
+        .borrow()
+        .iter()
+        .filter_map(|c| match c {
+            Command::SetParam { name, value } => Some(format!("{name}={value}")),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_loaded_file_cannot_write_a_governed_field_while_the_debug_switch_is_off() {
+    let path = staged_file();
+    let table = || {
+        let mut t = loaded();
+        put(&mut t, "BATT_CAP", Value::I32(1000));
+        t
+    };
+    // Switch off: only the non-governed value goes out, and the tab says the other was held back.
+    let mut off = pair(table());
+    load_and_write(&mut off, &path);
+    assert!(
+        off.params
+            .query_by_label_contains("1 staged sensor preset setting(s) not sent")
+            .is_some()
+    );
+    off.params.get_by_label("Write changes (1)").click();
+    off.params.run();
+    assert_eq!(set_params(&off), ["BATT_CAP=2200"]);
+    // Switch on: the same Load sends both; the vehicle's lock may refuse the field.
+    let mut on = pair(table());
+    on.devices.get_by_label(DEBUG_TEXT).click();
+    on.devices.run();
+    load_and_write(&mut on, &path);
+    assert!(on.params.query_by_label_contains("not sent").is_none());
+    on.params.get_by_label("Write changes (2)").click();
+    on.params.run();
+    assert_eq!(set_params(&on), ["BARO_ODR_HZ=25", "BATT_CAP=2200"]);
+    let _ = std::fs::remove_file(path);
 }

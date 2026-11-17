@@ -491,6 +491,20 @@ fn draw(ui: &mut egui::Ui, cx: &mut ViewCtx, st: &mut State, debug: bool) {
     for problem in &st.problems {
         ui.colored_label(status::YELLOW, problem);
     }
+    let withheld = if debug {
+        0
+    } else {
+        st.edits.keys().filter(|n| presets::is_governed(n)).count()
+    };
+    if withheld > 0 {
+        ui.colored_label(
+            status::YELLOW,
+            format!(
+                "{withheld} staged sensor preset setting(s) not sent: {}",
+                presets::SET_IN_DEVICES_TEXT
+            ),
+        );
+    }
     ui.separator();
 
     let searching = !st.search.trim().is_empty();
