@@ -540,6 +540,7 @@ mod tests {
 
     #[test]
     fn the_track_drops_the_oldest_past_10_000() {
+        assert_eq!(TRACK_MAX, 10_000);
         let mut tracker = Tracker::default();
         let mut store = MessageStore::default();
         for i in 0..TRACK_MAX + 5 {
