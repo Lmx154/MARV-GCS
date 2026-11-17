@@ -11,9 +11,9 @@ use std::time::Duration;
 use eframe::egui::{
     self, Align2, Color32, FontId, Mesh, Painter, Pos2, Sense, Shape, Stroke, Vec2, vec2,
 };
+use gcs_mavlink::Command;
 use gcs_mavlink::dialect::MavCmd;
 use gcs_mavlink::services::params::{ParamTable, ParamValue, WriteStatus};
-use gcs_mavlink::Command;
 use marv_presets::{
     Axis, Kind, MARV_DEVICE_IMU1, MARV_DEVICE_IMU2, Preset, SENSORS, Sensor, Value, preset,
 };
@@ -110,8 +110,8 @@ impl SensorPresets {
                 if let Some(reason) = gate {
                     ui.colored_label(YELLOW, format!("Apply and Save to flash are off: {reason}"));
                 }
-                let columns = ((ui.available_width() / (CARD_WIDTH + 24.0)) as usize)
-                    .clamp(1, SENSORS.len());
+                let columns =
+                    ((ui.available_width() / (CARD_WIDTH + 24.0)) as usize).clamp(1, SENSORS.len());
                 let mut cards: Vec<_> = SENSORS.iter().zip(self.cards.iter_mut()).collect();
                 for row in cards.chunks_mut(columns) {
                     ui.horizontal_top(|ui| {
@@ -142,10 +142,18 @@ pub enum Flow {
 
 /// Where an Apply that was sent at `at` stands at `now`: the selector's write, then the table against
 /// the crate's preset.
-pub fn apply_flow(table: &ParamTable, sensor: &Sensor, id: i32, at: Duration, now: Duration) -> Flow {
+pub fn apply_flow(
+    table: &ParamTable,
+    sensor: &Sensor,
+    id: i32,
+    at: Duration,
+    now: Duration,
+) -> Flow {
     match table.writes.get(sensor.selector) {
         Some(WriteStatus::Pending { .. }) => return Flow::Writing,
-        Some(WriteStatus::Refused { in_effect, .. }) => return Flow::Refused(in_effect.to_string()),
+        Some(WriteStatus::Refused { in_effect, .. }) => {
+            return Flow::Refused(in_effect.to_string());
+        }
         Some(WriteStatus::Unanswered { .. }) => return Flow::NoAnswer,
         None => {}
     }
@@ -366,7 +374,10 @@ pub fn axis_line(axis: &Axis, preset: &Preset, i: usize) -> String {
     let mut text = format!(
         "{}: {} {}",
         axis.name,
-        preset.physical.get(i).map_or_else(String::new, |v| number_text(*v)),
+        preset
+            .physical
+            .get(i)
+            .map_or_else(String::new, |v| number_text(*v)),
         axis.unit
     );
     if let (Some(unit2), Some(Some(v2))) = (axis.unit2, preset.physical2.get(i)) {
@@ -411,7 +422,12 @@ pub fn fill_shape(vertices: &[Pos2], centre: Pos2, colour: Color32) -> Shape {
     Shape::mesh(mesh)
 }
 
-fn draw_chart(ui: &mut egui::Ui, sensor: &Sensor, selected: Option<&Preset>, hovered: Option<&Preset>) {
+fn draw_chart(
+    ui: &mut egui::Ui,
+    sensor: &Sensor,
+    selected: Option<&Preset>,
+    hovered: Option<&Preset>,
+) {
     let (response, painter) = ui.allocate_painter(CHART_SIZE, Sense::hover());
     let centre = response.rect.center();
     let n = sensor.axes.len();

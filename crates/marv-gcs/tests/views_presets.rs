@@ -5,10 +5,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
+use eframe::egui::accesskit::Role;
 use eframe::egui::{self, Color32, Shape, pos2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
-use eframe::egui::accesskit::Role;
 use gcs_mavlink::dialect::MavCmd;
 use gcs_mavlink::services::params::{FetchStatus, Param, ParamTable, ParamType, ParamValue};
 use gcs_mavlink::{Access, Command, CommandRecord, CommandStatus, VehicleState};
