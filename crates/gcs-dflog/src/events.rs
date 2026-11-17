@@ -1,24 +1,4 @@
-//! The event timeline: one pass over a log that lists what happened, from the records of the MARV
-//! firmware's table (`fw-core/src/dflog.rs`; the meanings of the numbers are in `marv.xml`).
-//!
-//! The rules, each on the record type of that name (a log without the type, or of another firmware whose
-//! type of that name lacks the columns, simply gives no events of that source):
-//!
-//! - `DEV`: per row (`Id`), a `State` or `Err` that differs from that row's previous record. Counters
-//!   growing is not an event. The row's first record gives one "initial" event (`IMU1 OK`).
-//! - `MSG`: every text.
-//! - `PARM`: a `Value` that differs from the last one seen for that `Name`. A name's first record is its
-//!   starting value, not an event (there is no initial event per parameter).
-//! - `GPS`: `Status` differs from the previous `GPS` record (0 none, 1 no fix, 2 2D, 3 3D). The first
-//!   record gives an initial event (`GPS no fix`).
-//! - `RCIN`: "sticks present" at the first record, or at the first after a gap of more than 1 s (the
-//!   firmware's freshness limit; a gap of exactly 1 s is none); "sticks absent" at the last record before such
-//!   a gap, or at the last record before the log's end when the log goes on for more than 1 s after it.
-//! - `DSF`: `Dp` greater than in the previous record: "N records dropped (M in all)". The first record gives an
-//!   initial event with the count so far.
-//!
-//! No coordinate or any other `GPS` field but `Status` appears in an event. Events are in order of `TimeUS`
-//! (a stable sort: equal times keep the order of the file).
+//! The event timeline: see [`events_with`].
 
 use std::collections::HashMap;
 use std::io::{self, Read};
@@ -305,6 +285,27 @@ impl Tracker {
     }
 }
 
+/// firmware's table (`fw-core/src/dflog.rs`; the meanings of the numbers are in `marv.xml`).
+///
+/// The rules, each on the record type of that name (a log without the type, or of another firmware whose
+/// type of that name lacks the columns, simply gives no events of that source):
+///
+/// - `DEV`: per row (`Id`), a `State` or `Err` that differs from that row's previous record. Counters
+///   growing is not an event. The row's first record gives one "initial" event (`IMU1 OK`).
+/// - `MSG`: every text.
+/// - `PARM`: a `Value` that differs from the last one seen for that `Name`. A name's first record is its
+///   starting value, not an event (there is no initial event per parameter).
+/// - `GPS`: `Status` differs from the previous `GPS` record (0 none, 1 no fix, 2 2D, 3 3D). The first
+///   record gives an initial event (`GPS no fix`).
+/// - `RCIN`: "sticks present" at the first record, or at the first after a gap of more than 1 s (the
+///   firmware's freshness limit; a gap of exactly 1 s is none); "sticks absent" at the last record before such
+///   a gap, or at the last record before the log's end when the log goes on for more than 1 s after it.
+/// - `DSF`: `Dp` greater than in the previous record: "N records dropped (M in all)". The first record gives an
+///   initial event with the count so far.
+///
+/// No coordinate or any other `GPS` field but `Status` appears in an event. Events are in order of `TimeUS`
+/// (a stable sort: equal times keep the order of the file).
+///
 /// One pass over `reader` with progress and cancellation; `None` if `on_progress` answered `Stop`.
 pub fn events_with<R: Read>(
     reader: &mut Reader<R>,

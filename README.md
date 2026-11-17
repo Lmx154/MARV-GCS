@@ -214,7 +214,7 @@ in `Command::access` (`crates/gcs-mavlink/src/state.rs`); the code does not comp
 
 ## How it is built
 
-Six crates; the dependency graph enforces the layers (`docs/architecture.md`).
+Seven crates; the dependency graph enforces the layers (`docs/architecture.md`).
 
 | Crate | What it is |
 |---|---|
@@ -222,9 +222,31 @@ Six crates; the dependency graph enforces the layers (`docs/architecture.md`).
 | `gcs-mavlink` | MAVLink 2 on any reader and writer: framing, one small state machine per sub-protocol (heartbeat, messages, parameters, commands, text, recorder, logs), the vehicle state, the log reader and replay. No transport, no window. |
 | `gcs-sim` | The simulated vehicle (`marv-sim`). Written from the specification and never using `gcs-mavlink`, so the two check each other. |
 | `gcs-link` | The join, with no GUI: the role an endpoint gives the station (`access_of`, the one mapping) and the start of a session on it. Used by both applications. |
-| `gcs-dflog` | Reads ArduPilot DataFlash `.BIN` logs, generically, from the file's own FMT records (`A3 95 <type> <payload>`; every format character decoded and scaled as pymavlink does; resynchronisation over bad bytes and a truncated last record counted, not an error), one record at a time in constant memory, with progress and cancellation; and a one-pass summary (records per type, first and last `TimeUS`, bad and tail bytes, the FMT list, the wall-clock start from a `GPS` record with `GWk` > 0). No GUI, no dependency; the events, the condition search, the export and the window come later. |
+| `gcs-dflog` | Reads ArduPilot DataFlash `.BIN` logs, generically, from the file's own FMT records (`A3 95 <type> <payload>`; every format character decoded and scaled as pymavlink does; resynchronisation over bad bytes and a truncated last record counted, not an error), one record at a time in constant memory, with progress and cancellation; and a one-pass summary (records per type, first and last `TimeUS`, bad and tail bytes, the FMT list, the wall-clock start from a `GPS` record with `GWk` > 0). The event timeline (device state changes, status texts, parameter changes, GPS fix changes, sticks present, dropped records) and the condition search (below), each one pass with progress and cancellation. No GUI, no dependency; the export and the window come later. |
 | `marv-cli` | The command line (`marv-cli`), for a computer with no display: see below. |
 | `marv-gcs` | The window: the connection bar and one file per tab; also the link test tool `marv-link-test` (`src/link_test.rs`, `src/bin/marv_link_test.rs`), which builds `MARV_TEST` with `marv-dialect`. |
+
+### Searching a log with a condition (`gcs-dflog`)
+
+A condition is a small expression over the fields of a log's records; the result is the list of stretches of
+the log where it held (start and end `TimeUS`, duration, and the smallest and largest value of each field the
+condition names; at most 10 000 are kept, the number of further ones is reported). Names are those of the log's
+own FMT records.
+
+| Write | Meaning |
+|---|---|
+| `TYPE.Field` | the field of the latest record of that type (of any instance) |
+| `TYPE[n].Field` | the same, of the latest record whose instance field (the first column after `TimeUS` named `I`, `Inst`, `Instance` or `Id`) is `n` |
+| `15`, `14.8`, `1e-3` | numbers |
+| `+ - * /`, `-x`, `abs(x)` | arithmetic (division by zero is NaN) |
+| `< <= > >= == !=` | comparisons, not chained; any comparison with a NaN is false |
+| `not`, `and`, `or`, `( )` | logic, in that order of precedence, weakest last |
+
+As in pymavlink, the condition is evaluated after each record of a type it names, over the latest record of each
+named type, and it is false until every named type has had a record. Examples: `BAT.Volt < 14.8` (low battery),
+`IMU[0].AccZ < -15` (a hard knock on the first IMU), `DEV[7].Errs > 100 and GPS.Status < 3` (the radio
+receiver's error counter is high while the GPS has no 3D fix). A wrong name, a text field used as a number or
+`[n]` on a type without an instance field is reported with its position before the pass starts.
 
 - `docs/link-contract.md`: what the flight controller and the ground station must do on the wire (the
   device diagnostics message and the Devices view are its section 8), and the design of the two crates on

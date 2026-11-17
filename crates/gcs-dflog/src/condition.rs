@@ -1,41 +1,4 @@
-//! The condition search: a small expression language over the fields of a log's records, and one pass that
-//! returns the intervals where the condition held. The semantics are pymavlink's `recv_match(condition=...)`
-//! (`DFReader.py`, `mavutil.evaluate_condition`): after each record of a type the condition names, it is
-//! evaluated over the LATEST record of each named type, and it is false until every named type has appeared.
-//!
-//! # Syntax
-//!
-//! ```text
-//! condition  = or
-//! or         = and { "or" and }
-//! and        = not { "and" not }
-//! not        = "not" not | comparison
-//! comparison = sum [ ("<" | "<=" | ">" | ">=" | "==" | "!=") sum ]
-//! sum        = product { ("+" | "-") product }
-//! product    = unary { ("*" | "/") unary }
-//! unary      = "-" unary | number | "abs" "(" or ")" | reference | "(" or ")"
-//! reference  = TYPE "." Field | TYPE "[" n "]" "." Field
-//! ```
-//!
-//! Names are those of the log's FMT records (case matters); numbers are integers, decimals and exponents
-//! (`15`, `14.8`, `1e-3`). A comparison is not chained (`a < b < c` is an error), and the two sides of a
-//! comparison, the operands of `+ - * /` and of `abs` are numbers while those of `and`, `or` and `not` are
-//! comparisons, so `BAT.Volt` alone, or `not BAT.Volt`, is an error (reported with its position).
-//!
-//! Examples:
-//!
-//! - `BAT.Volt < 14.8`: the battery voltage is low.
-//! - `IMU[0].AccZ < -15`: the first IMU's vertical acceleration is below -15 (instance 0 only).
-//! - `DEV[7].Errs > 100 and GPS.Status < 3`: the radio receiver's error counter is above 100 and the GPS has
-//!   no 3D fix.
-//!
-//! `TYPE[n]` is the latest record of `TYPE` whose instance field equals `n`; the instance field is the first
-//! column after `TimeUS` named `I`, `Inst`, `Instance` or `Id` (a type without one cannot be used with `[n]`);
-//! plain `TYPE.Field` is the latest record of any instance.
-//!
-//! Division by zero is NaN, and every comparison with a NaN (`!=` included) is false; `not` of that false
-//! comparison is true. Binding ([`Condition::bind`]) reports before the pass an unknown type or field, a text
-//! or array field used as a number, a `[n]` on a type without an instance field and a type without `TimeUS`.
+//! The condition search: see [`Condition`].
 
 use std::fmt;
 use std::io::{self, Read};
@@ -596,6 +559,44 @@ impl Parser {
     }
 }
 
+/// returns the intervals where the condition held. The semantics are pymavlink's `recv_match(condition=...)`
+/// (`DFReader.py`, `mavutil.evaluate_condition`): after each record of a type the condition names, it is
+/// evaluated over the LATEST record of each named type, and it is false until every named type has appeared.
+///
+/// # Syntax
+///
+/// ```text
+/// condition  = or
+/// or         = and { "or" and }
+/// and        = not { "and" not }
+/// not        = "not" not | comparison
+/// comparison = sum [ ("<" | "<=" | ">" | ">=" | "==" | "!=") sum ]
+/// sum        = product { ("+" | "-") product }
+/// product    = unary { ("*" | "/") unary }
+/// unary      = "-" unary | number | "abs" "(" or ")" | reference | "(" or ")"
+/// reference  = TYPE "." Field | TYPE "[" n "]" "." Field
+/// ```
+///
+/// Names are those of the log's FMT records (case matters); numbers are integers, decimals and exponents
+/// (`15`, `14.8`, `1e-3`). A comparison is not chained (`a < b < c` is an error), and the two sides of a
+/// comparison, the operands of `+ - * /` and of `abs` are numbers while those of `and`, `or` and `not` are
+/// comparisons, so `BAT.Volt` alone, or `not BAT.Volt`, is an error (reported with its position).
+///
+/// Examples:
+///
+/// - `BAT.Volt < 14.8`: the battery voltage is low.
+/// - `IMU[0].AccZ < -15`: the first IMU's vertical acceleration is below -15 (instance 0 only).
+/// - `DEV[7].Errs > 100 and GPS.Status < 3`: the radio receiver's error counter is above 100 and the GPS has
+///   no 3D fix.
+///
+/// `TYPE[n]` is the latest record of `TYPE` whose instance field equals `n`; the instance field is the first
+/// column after `TimeUS` named `I`, `Inst`, `Instance` or `Id` (a type without one cannot be used with `[n]`);
+/// plain `TYPE.Field` is the latest record of any instance.
+///
+/// Division by zero is NaN, and every comparison with a NaN (`!=` included) is false; `not` of that false
+/// comparison is true. Binding ([`Condition::bind`]) reports before the pass an unknown type or field, a text
+/// or array field used as a number, a `[n]` on a type without an instance field and a type without `TimeUS`.
+///
 /// A condition that parsed: not yet tied to a log's record types.
 #[derive(Clone, Debug)]
 pub struct Condition {

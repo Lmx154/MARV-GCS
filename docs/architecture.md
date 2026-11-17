@@ -1,6 +1,6 @@
 # Architecture
 
-The ground station is six crates. The dependency graph enforces the layers, so a rule that is broken
+The ground station is seven crates. The dependency graph enforces the layers, so a rule that is broken
 does not build or shows up in `cargo tree`.
 
 ```
@@ -11,6 +11,8 @@ does not build or shows up in `cargo tree`.
       gcs-transport     gcs-mavlink            gcs-sim (simulated vehicle; dev and tests only)
       bytes only        MAVLink on any         uses the `mavlink` crate directly,
       serial, TCP, UDP  Read / Write pair      never gcs-mavlink
+
+      gcs-dflog (reads DataFlash .BIN logs from a file; depends on no other crate and no external crate)
 ```
 
 ## Layer rules
@@ -29,8 +31,10 @@ does not build or shows up in `cargo tree`.
 6. **Nothing is specific to one parameter or one message** unless a view is about that message. The
    parameter list is whatever the vehicle reports. Every received message is listed and plottable by
    generic field access.
+7. **The log reader is independent.** `gcs-dflog` reads a file, not a link: it depends on no crate of the
+   workspace and on no external crate (the applications will use it for the Log tab's review section), and has no GUI.
 
-Check: `cargo tree -p gcs-transport | grep -c mavlink` is 0; `cargo tree -p gcs-mavlink | grep -cE 'serialport|egui|eframe'` is 0; `cargo tree -p gcs-sim | grep -c gcs-mavlink` is 0; `cargo tree -p gcs-link -e normal | grep -ciE 'eframe|egui|winit|wgpu|glow'` is 0; `cargo tree -p marv-cli -e normal | grep -ciE 'eframe|egui|winit|wgpu|glow'` is 0 (`crates/marv-cli/tests/dependencies.rs` runs the last two).
+Check: `cargo tree -p gcs-transport | grep -c mavlink` is 0; `cargo tree -p gcs-mavlink | grep -cE 'serialport|egui|eframe'` is 0; `cargo tree -p gcs-sim | grep -c gcs-mavlink` is 0; `cargo tree -p gcs-dflog -e normal | wc -l` is 1 (the crate has no dependency: only its own line is printed); `cargo tree -p gcs-link -e normal | grep -ciE 'eframe|egui|winit|wgpu|glow'` is 0; `cargo tree -p marv-cli -e normal | grep -ciE 'eframe|egui|winit|wgpu|glow'` is 0 (`crates/marv-cli/tests/dependencies.rs` runs the last two).
 
 ## How to extend (kept true as the code grows; details in `docs/extending.md`)
 
@@ -125,6 +129,20 @@ impl Encoder {
     pub fn new(system_id: u8, component_id: u8) -> Self;
     pub fn encode(&mut self, message: &Message) -> Vec<u8>;
 }
+```
+
+### `gcs-dflog`
+
+```rust
+// Any stream or file; every pass reports progress and can be cancelled (on_progress returns Control::Stop).
+pub struct Reader<R>;                       // Reader::open(path), Reader::new(read, total)
+pub fn scan(reader, on_record, on_progress) -> io::Result<bool>;
+pub fn summary(path) -> io::Result<Summary>;                       // counts, times, FMT list, wall clock
+pub fn events(path) -> io::Result<Vec<Event>>;                     // the event timeline (events_with: progress)
+pub struct Event { pub time_us: u64, pub source: EventSource, pub text: String, pub initial: bool }
+pub fn Condition::parse(text) -> Result<Condition, ConditionError>;       // syntax: see the README
+pub fn Condition::bind(&self, formats: &[Format]) -> Result<BoundCondition, ConditionError>;
+pub fn find_with(reader, &BoundCondition, on_progress) -> io::Result<Option<Found>>; // the intervals
 ```
 
 ### `gcs-sim`

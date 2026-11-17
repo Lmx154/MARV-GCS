@@ -671,7 +671,8 @@ fn firmware_table_cross_check() {
     assert_eq!((reader.bad_bytes(), reader.tail_bytes()), (0, 0));
 }
 
-/// Real log from the path in `MARV_BIN`; prints counts only, never a field value.
+/// Real log from the path in `MARV_BIN`; prints counts only (records, events per source, intervals of
+/// `BAT.Volt < 1`), never a field value or a text.
 /// `MARV_BIN=/path/file.BIN cargo test -p gcs-dflog --release -- --ignored --nocapture`
 #[test]
 #[ignore = "needs a real log: set MARV_BIN"]
@@ -687,6 +688,31 @@ fn real_log_counts() {
     println!("bad_bytes {}", s.bad_bytes);
     println!("tail_bytes {}", s.tail_bytes);
     println!("has_wall_clock {}", s.time_base_unix_us.is_some());
+    // counts only: never an event text, never a field value
+    let events = crate::events(&path).unwrap();
+    for source in crate::EventSource::ALL {
+        let n = events.iter().filter(|e| e.source == source).count();
+        println!("events {:<5} {n}", source.name());
+    }
+    match crate::Condition::parse("BAT.Volt < 1").and_then(|c| c.bind(&s.formats)) {
+        Ok(bound) => {
+            let mut reader = Reader::open(&path).unwrap();
+            let found = crate::find_with(&mut reader, &bound, |_| Control::Continue)
+                .unwrap()
+                .unwrap();
+            println!(
+                "intervals BAT.Volt < 1: {} (kept {}, open {})",
+                found.total(),
+                found.intervals.len(),
+                found
+                    .intervals
+                    .iter()
+                    .filter(|i| i.end_us.is_none())
+                    .count()
+            );
+        }
+        Err(e) => println!("BAT.Volt < 1 does not bind: {e}"),
+    }
 }
 
 /// Time one summary pass over a synthetic file of about 100 MB. Reported, not asserted.
