@@ -154,7 +154,7 @@ impl Rig {
                 FetchStatus::Complete | FetchStatus::Failed(_)
             )
         })
-        .map(|took| {
+        .inspect(|&took| {
             let s = self.state();
             assert!(
                 s.params.fetch == FetchStatus::Complete,
@@ -162,7 +162,6 @@ impl Rig {
                 s.params.fetch,
                 s.params.params.len()
             );
-            took
         })
         .unwrap_or_else(|| {
             let s = self.state();
