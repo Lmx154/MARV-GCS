@@ -947,3 +947,40 @@ fn a_loaded_file_cannot_write_a_governed_field_while_the_debug_switch_is_off() {
     assert_eq!(set_params(&on), ["BARO_ODR_HZ=25", "BATT_CAP=2200"]);
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn every_axis_label_of_every_chart_lies_inside_the_chart_area_and_the_radius_stays_about_70() {
+    let seen: Rc<RefCell<Vec<(&'static str, &'static str, egui::Rect, egui::Rect, f32)>>> =
+        Rc::default();
+    let out = seen.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(600.0, 400.0))
+        .build_ui(move |ui| {
+            out.borrow_mut().clear();
+            let (response, painter) =
+                ui.allocate_painter(presets::CHART_SIZE, egui::Sense::hover());
+            for sensor in SENSORS {
+                let g = presets::chart_geometry(&painter, sensor, response.rect);
+                for (name, rect, _) in &g.labels {
+                    out.borrow_mut()
+                        .push((sensor.selector, name, *rect, response.rect, g.radius));
+                }
+            }
+        });
+    harness.run();
+    let seen = seen.borrow();
+    assert_eq!(
+        seen.len(),
+        SENSORS.iter().map(|s| s.axes.len()).sum::<usize>()
+    );
+    for (sensor, name, rect, area, radius) in seen.iter() {
+        assert!(
+            area.contains_rect(*rect),
+            "{sensor}: label {name} {rect:?} is outside the chart {area:?}"
+        );
+        assert!(
+            (60.0..=70.0).contains(radius),
+            "{sensor}: radius {radius} is not about 70"
+        );
+    }
+}

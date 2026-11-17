@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use eframe::egui::{
-    self, Align2, Color32, FontId, Mesh, Painter, Pos2, Sense, Shape, Stroke, Vec2, vec2,
+    self, Align2, Color32, FontId, Mesh, Painter, Pos2, Rect, Sense, Shape, Stroke, Vec2, vec2,
 };
 use gcs_mavlink::Command;
 use gcs_mavlink::dialect::MavCmd;
@@ -72,9 +72,10 @@ pub const CUSTOM_TEXT: &str = "Custom (debug)";
 pub const READ_BACK_WAIT: Duration = Duration::from_secs(3);
 
 const CARD_WIDTH: f32 = 260.0;
-const CHART_SIZE: Vec2 = vec2(CARD_WIDTH, 180.0);
+pub const CHART_SIZE: Vec2 = vec2(CARD_WIDTH, 180.0);
 const CHART_RADIUS: f32 = 70.0;
 const LABEL_GAP: f32 = 4.0;
+const MIN_CHART_RADIUS: f32 = 30.0;
 const ORANGE: Color32 = Color32::from_rgb(235, 160, 40);
 const ORANGE_FILL: Color32 = Color32::from_rgba_premultiplied(94, 64, 16, 100);
 const COMPARE: Color32 = Color32::from_rgb(120, 190, 240);
@@ -718,6 +719,69 @@ pub fn fill_shape(vertices: &[Pos2], centre: Pos2, colour: Color32) -> Shape {
     Shape::mesh(mesh)
 }
 
+/// Where the chart of `sensor` puts its labels inside `area`: the radius is [`CHART_RADIUS`] where
+/// every label fits and smaller only as far as needed.
+pub struct ChartGeometry {
+    pub radius: f32,
+    /// Each axis' label text and the rectangle it occupies.
+    pub labels: Vec<(&'static str, Rect, Align2)>,
+}
+
+const LABEL_FONT_SIZE: f32 = 10.0;
+
+fn label_anchor(dir: Vec2) -> Align2 {
+    if dir.x > 0.3 {
+        Align2::LEFT_CENTER
+    } else if dir.x < -0.3 {
+        Align2::RIGHT_CENTER
+    } else if dir.y < 0.0 {
+        Align2::CENTER_BOTTOM
+    } else {
+        Align2::CENTER_TOP
+    }
+}
+
+pub fn chart_geometry(painter: &Painter, sensor: &Sensor, area: Rect) -> ChartGeometry {
+    let centre = area.center();
+    let n = sensor.axes.len();
+    let sizes: Vec<Vec2> = sensor
+        .axes
+        .iter()
+        .map(|axis| {
+            painter
+                .layout_no_wrap(
+                    axis.name.to_owned(),
+                    FontId::proportional(LABEL_FONT_SIZE),
+                    Color32::WHITE,
+                )
+                .size()
+        })
+        .collect();
+    let place = |radius: f32| -> Vec<(&'static str, Rect, Align2)> {
+        sensor
+            .axes
+            .iter()
+            .zip(&sizes)
+            .enumerate()
+            .map(|(i, (axis, size))| {
+                let dir = spoke(i, n);
+                let anchor = label_anchor(dir);
+                let rect = anchor.anchor_size(centre + dir * (radius + LABEL_GAP), *size);
+                (axis.name, rect, anchor)
+            })
+            .collect()
+    };
+    let mut radius = CHART_RADIUS;
+    while radius > MIN_CHART_RADIUS && !place(radius).iter().all(|(_, r, _)| area.contains_rect(*r))
+    {
+        radius -= 1.0;
+    }
+    ChartGeometry {
+        radius,
+        labels: place(radius),
+    }
+}
+
 fn draw_chart(
     ui: &mut egui::Ui,
     sensor: &Sensor,
@@ -729,52 +793,53 @@ fn draw_chart(
     let n = sensor.axes.len();
     let ring_colour = ui.visuals().widgets.noninteractive.bg_stroke.color;
     let text_colour = ui.visuals().text_color();
+    let geometry = chart_geometry(&painter, sensor, response.rect);
+    let radius = geometry.radius;
     for ring in RINGS {
         painter.add(Shape::closed_line(
-            radar_vertices(&vec![ring; n], centre, CHART_RADIUS),
+            radar_vertices(&vec![ring; n], centre, radius),
             Stroke::new(1.0, ring_colour),
         ));
     }
-    for (i, axis) in sensor.axes.iter().enumerate() {
+    for (i, (name, rect, anchor)) in geometry.labels.iter().enumerate() {
         let dir = spoke(i, n);
         painter.line_segment(
-            [centre, centre + dir * CHART_RADIUS],
+            [centre, centre + dir * radius],
             Stroke::new(1.0, ring_colour),
         );
-        let anchor = if dir.x > 0.3 {
-            Align2::LEFT_CENTER
-        } else if dir.x < -0.3 {
-            Align2::RIGHT_CENTER
-        } else if dir.y < 0.0 {
-            Align2::CENTER_BOTTOM
-        } else {
-            Align2::CENTER_TOP
-        };
         painter.text(
-            centre + dir * (CHART_RADIUS + LABEL_GAP),
-            anchor,
-            axis.name,
-            FontId::proportional(10.0),
+            anchor.pos_in_rect(rect),
+            *anchor,
+            name,
+            FontId::proportional(LABEL_FONT_SIZE),
             text_colour,
         );
     }
-    paint_polygon(&painter, centre, selected, Some((ORANGE_FILL, ORANGE)), 2.0);
+    paint_polygon(
+        &painter,
+        centre,
+        radius,
+        selected,
+        Some((ORANGE_FILL, ORANGE)),
+        2.0,
+    );
     if let Some(p) = hovered
         && selected.is_none_or(|s| s.id != p.id)
     {
-        paint_polygon(&painter, centre, Some(p), None, 1.5);
+        paint_polygon(&painter, centre, radius, Some(p), None, 1.5);
     }
 }
 
 fn paint_polygon(
     painter: &Painter,
     centre: Pos2,
+    radius: f32,
     preset: Option<&Preset>,
     fill: Option<(Color32, Color32)>,
     width: f32,
 ) {
     let Some(p) = preset else { return };
-    let vertices = radar_vertices(p.scores, centre, CHART_RADIUS);
+    let vertices = radar_vertices(p.scores, centre, radius);
     let outline = match fill {
         Some((fill, outline)) => {
             painter.add(fill_shape(&vertices, centre, fill));
