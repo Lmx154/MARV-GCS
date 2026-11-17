@@ -37,3 +37,8 @@ egui_extras = "0.37.0"
 egui_kittest = "0.37.0"
 png = "0.18"
 walkers = "0.65.0"
+
+[profile.dev]
+# Line tables only: backtraces keep file and line, and linking the many test binaries (each with the Map tab's
+# HTTP stack) stays under this machine's 4 GB build limit (see the workspace README, "Building").
+debug = "line-tables-only"

@@ -60,6 +60,9 @@ of the window after `--after` seconds and exits; it is how the pictures in a rep
 
 Building needs Rust 1.99 or newer (the `rust-version` of `marv-dialect`). On Linux the serial-port crate needs the libudev development package
 (`libudev-dev` on Ubuntu).
+Debug builds keep line tables only (`[profile.dev]` in `Cargo.toml`): backtraces still name file and line, and
+linking the test binaries (each carries the Map tab's HTTP stack) fits in 4 GB; with full debug information
+`cargo test --workspace` was killed for memory at 4 GB on 2026-11-17.
 
 AppImage: `tools/appimage.sh` builds `target/appimage/MARV-GCS-x86_64.AppImage`, the window as one file (about 8 MB)
 that starts with a double click or by its name, no flags. It is the AppImage project's type-2 runtime (release
