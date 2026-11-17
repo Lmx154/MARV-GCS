@@ -112,18 +112,14 @@ impl SensorPresets {
                 }
                 let columns = ((ui.available_width() / (CARD_WIDTH + 24.0)) as usize)
                     .clamp(1, SENSORS.len());
-                egui::Grid::new("sensor_presets")
-                    .num_columns(columns)
-                    .show(ui, |ui| {
-                        for (i, (sensor, card)) in
-                            SENSORS.iter().zip(self.cards.iter_mut()).enumerate()
-                        {
-                            ui.group(|ui| card.ui(ui, cx, sensor, gate));
-                            if (i + 1) % columns == 0 {
-                                ui.end_row();
-                            }
+                let mut cards: Vec<_> = SENSORS.iter().zip(self.cards.iter_mut()).collect();
+                for row in cards.chunks_mut(columns) {
+                    ui.horizontal_top(|ui| {
+                        for (sensor, card) in row.iter_mut() {
+                            ui.group(|ui| ui.vertical(|ui| card.ui(ui, cx, sensor, gate)));
                         }
                     });
+                }
             });
     }
 }
@@ -217,7 +213,7 @@ impl SensorPreset {
         let chosen_preset = chosen.and_then(|id| preset(sensor, id));
 
         ui.set_width(CARD_WIDTH);
-        ui.strong(title);
+        let named = ui.strong(title);
         let shown = match current {
             Current::NotLoaded => "—".to_string(),
             Current::Custom => CUSTOM_TEXT.to_string(),
@@ -226,7 +222,7 @@ impl SensorPreset {
         };
         let mut hovered = None;
         let mut pick = None;
-        ui.add_enabled_ui(enabled, |ui| {
+        let combo = ui.add_enabled_ui(enabled, |ui| {
             egui::ComboBox::from_id_salt(sensor.selector)
                 .selected_text(shown)
                 .width(CARD_WIDTH - 24.0)
@@ -240,8 +236,9 @@ impl SensorPreset {
                             pick = Some(p.id);
                         }
                     }
-                });
+                })
         });
+        combo.inner.response.labelled_by(named.id);
         if let Some(id) = pick {
             self.staged = Some(id);
             if matches!(

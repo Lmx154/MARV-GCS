@@ -16,6 +16,7 @@ gcs-mavlink.workspace = true
 gcs-link.workspace = true
 gcs-dflog.workspace = true
 marv-dialect.workspace = true
+marv-presets.workspace = true
 eframe.workspace = true
 egui_plot.workspace = true
 egui_extras.workspace = true
@@ -24,6 +25,5 @@ walkers.workspace = true
 
 [dev-dependencies]
 gcs-sim.workspace = true
-marv-presets.workspace = true
 egui_kittest.workspace = true
 serialport.workspace = true
