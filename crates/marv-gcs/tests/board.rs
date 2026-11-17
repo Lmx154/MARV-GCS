@@ -778,16 +778,19 @@ fn apply_preset(board: &Board, sensor: &presets::Sensor, id: i32) {
             value,
         });
     }
+    // Done when the table holds the preset's values, or a write ended refused or unanswered. A write the
+    // session has not registered yet has no status at all, so "nothing pending" alone is not an answer.
     board
         .wait(5.0, |s| {
-            names.iter().all(|n| {
-                !matches!(
-                    s.params.writes.get(n),
-                    Some(WriteStatus::Pending { .. } | WriteStatus::Unanswered { .. })
-                )
-            })
+            fields_differ(&s.params, sensor, id) == Some(false)
+                || names.iter().any(|n| {
+                    matches!(
+                        s.params.writes.get(n),
+                        Some(WriteStatus::Refused { .. } | WriteStatus::Unanswered { .. })
+                    )
+                })
         })
-        .unwrap_or_else(|| panic!("{}: writes not answered: {names:?}", chosen.name));
+        .unwrap_or_else(|| panic!("{}: no answer within 5 s: {names:?}", chosen.name));
     let state = board.state();
     for name in &names {
         assert!(
