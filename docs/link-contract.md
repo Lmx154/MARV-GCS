@@ -61,9 +61,9 @@ Parameters
   arrives, also one that came before its request.
 - The RC block (amendment 2026-11-16): 44 parameters of device `MARV_DEVICE_RC` (7), appended after all others,
   so no existing parameter changes its index. All INT32, all applied live (no reboot, no save: the value is in
-  effect at once and goes to flash only on command 245 with param1 = 1). `RCn_MIN`, `RCn_TRIM` and `RCn_MAX`
-  are calibration parameters: command 245 with param1 = 3 resets them to their defaults. n is 1 to 8. Their
-  meaning is section 12.
+  effect at once and goes to flash only on command 245 with param1 = 1). Command 245 with param1 = 3 (MAVLink's
+  `PARAM_RESET_SENSOR_DEFAULT`, sensor calibrations only) does NOT reset them; param1 = 2 (all parameters) does
+  (amendment 2026-11-17, owner's decision). n is 1 to 8. Their meaning is section 12.
 
   | Name | Unit | Default | Range |
   |---|---|---|---|
@@ -430,7 +430,7 @@ The commands of the first build (`COMMAND_LONG`, `confirmation` as below, parame
 | Command | Parameters |
 |---|---|
 | 241 `MAV_CMD_PREFLIGHT_CALIBRATION` | param1 = 1: gyro; param5 = 4: accelerometer, one position, level; param2 = 1 and all others 0: compass (the user rotates the vehicle through all orientations for 30 s; progress about twice a second; FAILED when an axis saw too little movement); all seven 0: cancel the running calibration |
-| 245 `MAV_CMD_PREFLIGHT_STORAGE` | param1: 0 reload from flash, 1 save, 2 all parameters to defaults, 3 calibration parameters to defaults |
+| 245 `MAV_CMD_PREFLIGHT_STORAGE` | param1: 0 reload from flash, 1 save, 2 all parameters to defaults, 3 sensor calibration parameters to defaults (not the RC end points) |
 | 246 `MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN` | param1 = 1: reboot |
 | 42430 `MAV_CMD_MARV_DEVICE` | param1 = device id (`MARV_DEVICE`), param2 = 1 restart, 2 self-test; restart for IMU1, IMU2, BARO, MAG, GNSS, BATT, self-test for IMU1, IMU2, MAG |
 
