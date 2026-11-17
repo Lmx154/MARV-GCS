@@ -458,6 +458,70 @@ fn reboot_without_yes_sends_nothing_and_does_not_even_connect() {
 }
 
 #[test]
+fn a_governed_sensor_write_without_debug_sends_nothing_and_does_not_even_connect() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let addr = listener.local_addr().expect("address");
+    for words in [
+        "param set BARO_ODR_HZ 25",
+        "param set IMU1_GYR_FS 250",
+        "param set MAG_AVG 4",
+        "param set BARO_PRESET 0",
+        "param set IMU2_PRESET 0",
+    ] {
+        let r = run(&format!("--connect tcp:{addr} {words}"));
+        assert_eq!(r.code, 2, "{words}: {r:?}");
+        assert!(
+            r.err.contains("--debug") && r.err.contains("refused") && r.out.is_empty(),
+            "{words}: {r:?}"
+        );
+        assert_eq!(r.err.lines().filter(|l| l.contains("--debug")).count(), 1);
+    }
+    assert!(listener.accept().is_err(), "a connection was made");
+}
+
+#[test]
+fn a_preset_selector_other_than_0_needs_no_debug() {
+    let rig = Rig::start();
+    let r = rig.cli("param set BARO_PRESET 3");
+    assert_eq!(
+        (r.code, r.out.as_str()),
+        (0, "BARO_PRESET\t3\ti32\n"),
+        "{r:?}"
+    );
+    let r = rig.cli("param get BARO_ODR_HZ");
+    assert_eq!(r.out, "BARO_ODR_HZ\t25\ti32\n", "{r:?}");
+}
+
+#[test]
+fn with_debug_the_vehicles_lock_still_applies_and_custom_unlocks() {
+    let rig = Rig::start();
+    let r = rig.cli("param set BARO_ODR_HZ 25 --debug");
+    assert_eq!(r.code, 1, "{r:?}");
+    assert_eq!(r.out, "BARO_ODR_HZ\t50\ti32\n", "{r:?}");
+    assert!(
+        r.err
+            .lines()
+            .any(|l| l == "text\tWARNING\tBARO_ODR_HZ: locked by BARO_PRESET (0 = custom)"),
+        "{r:?}"
+    );
+    let r = rig.cli("param set BARO_PRESET 0 --debug");
+    assert_eq!(
+        (r.code, r.out.as_str()),
+        (0, "BARO_PRESET\t0\ti32\n"),
+        "{r:?}"
+    );
+    let r = rig.cli("--debug param set BARO_ODR_HZ 25");
+    assert_eq!(
+        (r.code, r.out.as_str()),
+        (0, "BARO_ODR_HZ\t25\ti32\n"),
+        "{r:?}"
+    );
+    let r = rig.cli("param get BARO_ODR_HZ");
+    assert_eq!(r.out, "BARO_ODR_HZ\t25\ti32\n", "{r:?}");
+}
+
+#[test]
 fn reboot_and_the_resets_with_yes_follow_to_the_result() {
     let rig = Rig::start();
     let r = rig.cli("reboot --yes");

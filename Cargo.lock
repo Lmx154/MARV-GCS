@@ -1996,6 +1996,7 @@ dependencies = [
  "gcs-mavlink",
  "gcs-sim",
  "gcs-transport",
+ "marv-presets",
 ]
 
 [[package]]

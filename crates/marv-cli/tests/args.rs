@@ -173,6 +173,46 @@ fn the_yes_guard() {
 }
 
 #[test]
+fn the_debug_guard() {
+    let base = "--connect tcp:127.0.0.1:5760";
+    for words in [
+        "param set BARO_ODR_HZ 25",
+        "param set BARO_OSR_P 8",
+        "param set MAG_ODR_HZ 50",
+        "param set IMU1_ACC_FS 4",
+        "param set IMU2_ODR_HZ 400",
+        "param set baro_iir_t 3",
+        "param set BARO_PRESET 0",
+        "param set MAG_PRESET 0.0",
+        "param set IMU1_PRESET 0",
+    ] {
+        let message = error(&format!("{base} {words}"));
+        assert!(
+            message.contains("refused") && message.contains("--debug") && !message.contains('\n'),
+            "{words}: {message}"
+        );
+        assert!(matches!(
+            command(&format!("{words} --debug")),
+            Command::ParamSet(..)
+        ));
+    }
+    for words in [
+        "param set BARO_PRESET 3",
+        "param set IMU1_PRESET 4",
+        "param set MAG_OFFX 1",
+        "param set LOG_RATE_HZ 200",
+        "param set BARO_RATE_HZ 20",
+    ] {
+        assert!(
+            matches!(command(words), Command::ParamSet(..)),
+            "{words} needs no --debug"
+        );
+    }
+    assert!(error(&format!("{base} param save --debug")).contains("--debug only applies"));
+    assert!(error(&format!("{base} status --debug")).contains("--debug only applies"));
+}
+
+#[test]
 fn for_applies_only_to_collecting_commands() {
     for words in [
         "param list",

@@ -20,6 +20,7 @@ Commands:
   texts [--for <s>]                STATUSTEXTs as they arrive (default 10 s)
   watch [--for <s>]                device changes and texts (default 30 s)
   param list | get <NAME> | set <NAME> <VALUE>
+                                   a *_PRESET selector to 0 and a sensor field a preset governs need --debug
   param save | reload              store the parameters / read them back from flash
   param reset-all --yes            all parameters to their defaults
   param reset-calibration --yes    the calibration parameters to their defaults
@@ -36,6 +37,7 @@ Options:
   --timeout <s>          wait this long for the vehicle's heartbeat (default 5)
   --for <s>              how long a collecting command runs
   --yes                  confirm reset-all, reset-calibration and reboot
+  --debug                allow param set of a *_PRESET selector to 0 or of a field a preset governs
   -o, --output <file>    where logs get writes the log
   --force                let logs get overwrite an existing file
   --help                 this text
@@ -147,6 +149,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
     let mut timeout = DEFAULT_TIMEOUT;
     let mut duration = None;
     let mut yes = false;
+    let mut debug = false;
     let mut output = None;
     let mut force = false;
     let mut words: Vec<&str> = Vec::new();
@@ -166,6 +169,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             "--timeout" => timeout = seconds("--timeout", value("--timeout")?)?,
             "--for" => duration = Some(seconds("--for", value("--for")?)?),
             "--yes" => yes = true,
+            "--debug" => debug = true,
             "-o" | "--output" => output = Some(PathBuf::from(value(arg)?)),
             "--force" => force = true,
             option if option.starts_with("--") => return Err(format!("unknown option {option}")),
@@ -189,6 +193,17 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         _ if force => return Err("--force only applies to logs get".to_string()),
         _ => {}
     }
+    match &command {
+        Command::ParamSet(name, number) => {
+            if !debug && let Some(why) = needs_debug(name, *number) {
+                return Err(format!(
+                    "param set {name} refused: {why}; it needs --debug (the station's gate for raw sensor settings)"
+                ));
+            }
+        }
+        _ if debug => return Err("--debug only applies to param set".to_string()),
+        _ => {}
+    }
     if yes
         && !matches!(
             &command,
@@ -208,6 +223,20 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         duration,
         command,
     }))
+}
+
+/// Why a write of `number` to the parameter `name` is a raw sensor setting, if it is: the selector of
+/// a sensor preset set to 0 (Custom), or a field a preset governs (the table is the crate's).
+fn needs_debug(name: &str, number: f64) -> Option<&'static str> {
+    marv_presets::SENSORS.iter().find_map(|sensor| {
+        if sensor.selector.eq_ignore_ascii_case(name) && number == 0.0 {
+            Some("Custom (0) leaves the sensor's preset")
+        } else if sensor.fields.iter().any(|f| f.eq_ignore_ascii_case(name)) {
+            Some("a field governed by a sensor preset")
+        } else {
+            None
+        }
+    })
 }
 
 /// The command and whether it takes `--for`.
