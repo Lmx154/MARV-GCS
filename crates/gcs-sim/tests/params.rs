@@ -136,8 +136,8 @@ fn read_value(d: &PARAM_VALUE_DATA, encoding: ParamEncoding) -> ParamValue {
     }
 }
 
-/// The parameters of a default configuration: the 13 of the first block, the 44 of the RC block and the 17 of the sensor preset block.
-const DEFAULT_PARAMS: usize = 13 + 44 + 17;
+/// The parameters of a default configuration: the 13 of the first block, the 44 of the RC block and the 13 of the sensor block.
+const DEFAULT_PARAMS: usize = 13 + 44 + 13;
 
 fn vehicle_with(encoding: ParamEncoding) -> SimVehicle {
     SimVehicle::new(SimConfig {

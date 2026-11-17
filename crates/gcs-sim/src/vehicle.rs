@@ -636,11 +636,8 @@ impl SimVehicle {
                     match presets::judge(&self.config.params, index, new) {
                         Verdict::Plain => changes.push((index, new)),
                         Verdict::Refuse(text) => refusal = Some(text),
-                        Verdict::Accept {
-                            changes: all,
-                            notice: text,
-                        } => {
-                            changes = all;
+                        Verdict::Accept { notice: text } => {
+                            changes.push((index, new));
                             notice = text;
                         }
                     }
