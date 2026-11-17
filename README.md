@@ -300,7 +300,7 @@ do better than the station (a spreadsheet, a plotting script).
 ## Tests
 
 ```
-cargo test --workspace          # 778 tests (10 more are ignored: they need a board or a recording, or only time a pass), about 60 s; needs /usr/bin/socat for the serial tests
+cargo test --workspace          # 779 tests (10 more are ignored: they need a board or a recording, or only time a pass), about 60 s; needs /usr/bin/socat for the serial tests
 cargo clippy --workspace --all-targets -- -D warnings
 tools/board_check.sh <dir>      # with the board on its debug probe and its USB port cabled: about 3 minutes
 ```
