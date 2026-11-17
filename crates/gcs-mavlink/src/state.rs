@@ -160,6 +160,11 @@ pub struct VehicleId {
 pub enum Command {
     /// Fetch the whole parameter list again.
     RefreshParams,
+    /// Read one parameter by name (PARAM_REQUEST_READ, index -1); the reply updates the table like any
+    /// PARAM_VALUE. Asked 3 times, 500 ms apart; a name the vehicle does not know gets no reply.
+    ReadParam {
+        name: String,
+    },
     /// Write one parameter. The outcome shows in `params.writes`.
     SetParam {
         name: String,
@@ -198,6 +203,7 @@ impl Command {
     pub fn access(&self) -> Access {
         match self {
             Command::RefreshParams => Access::Operate,
+            Command::ReadParam { .. } => Access::Operate,
             Command::SetParam { .. } => Access::Configure,
             Command::StartLog { .. } => Access::Operate,
             Command::StopLog => Access::Operate,
@@ -214,6 +220,7 @@ impl Command {
     pub fn name(&self) -> &'static str {
         match self {
             Command::RefreshParams => "RefreshParams",
+            Command::ReadParam { .. } => "ReadParam",
             Command::SetParam { .. } => "SetParam",
             Command::StartLog { .. } => "StartLog",
             Command::StopLog => "StopLog",
