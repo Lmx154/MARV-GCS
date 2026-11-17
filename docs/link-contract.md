@@ -60,6 +60,10 @@ Parameters
   STATUSTEXT with the reason, "NAME: reason" (WARNING in the simulator), right after the PARAM_VALUE. An accepted
   write sends none. A text belongs to the session, not to the command: the command line prints every text that
   arrives, also one that came before its request.
+- Naming (amendment 2026-11-17): a parameter's name begins with its group (the device or function) followed
+  by `_`; a name without `_` is in the group "(other)". The station shows its Parameters tab as a tree: the
+  groups `RC<n>` (n digits) and `RCMAP` under "RC controller", `ESC`, `MOT` and `DSHOT` under "ESC", all others
+  under "Flight controller"; nothing but the group prefix decides, the link carries no other metadata.
 - The RC block (amendment 2026-11-16): 44 parameters of device `MARV_DEVICE_RC` (7), appended after all others,
   so no existing parameter changes its index. All INT32, all applied live (no reboot, no save: the value is in
   effect at once and goes to flash only on command 245 with param1 = 1). Command 245 with param1 = 3 (MAVLink's

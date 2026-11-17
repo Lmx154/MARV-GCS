@@ -64,6 +64,16 @@ fn harness(table: ParamTable, now: Option<Duration>) -> (Harness<'static>, Comma
     harness_access(table, now, Access::Configure)
 }
 
+/// Open the groups of `complete_table` that are shown (they start closed).
+fn open_groups(harness: &mut Harness<'static>) {
+    for title in ["AAA (3)", "BBB (2)", "(other) (1)"] {
+        if let Some(header) = harness.query_by_label(title) {
+            header.click();
+            harness.run();
+        }
+    }
+}
+
 fn harness_access(
     table: ParamTable,
     now: Option<Duration>,
@@ -92,6 +102,7 @@ fn harness_access(
             view.ui(ui, &mut cx);
         });
     harness.run();
+    open_groups(&mut harness);
     (harness, commands)
 }
 
@@ -139,7 +150,7 @@ fn draws_every_fetch_status_and_no_session() {
 }
 
 #[test]
-fn names_are_visible_and_search_and_group_filter_them() {
+fn names_are_visible_and_search_filters_them() {
     let (mut h, _) = connected(complete_table());
     for name in [
         "AAA_ONE",
@@ -162,24 +173,128 @@ fn names_are_visible_and_search_and_group_filter_them() {
     assert!(h.query_by_label("LONER").is_none());
 }
 
-#[test]
-fn choosing_a_group_hides_the_others() {
-    let (mut h, _) = connected(complete_table());
-    h.get_by_label("Group").click();
-    h.run();
-    h.get_by_label("BBB").click();
-    h.run();
-    h.get_by_label("BBB_ONE");
-    h.get_by_label("BBB_TWO");
-    assert!(h.query_by_label("AAA_ONE").is_none());
-    assert!(h.query_by_label("LONER").is_none());
+/// Names of three scopes: two groups of the flight controller (with `LOG_BACKEND_TYPE` and one name
+/// without an underscore), the RC controller with `RC10` after `RC2`, and nothing for the ESC.
+fn scoped_table() -> ParamTable {
+    let mut table = ParamTable {
+        fetch: FetchStatus::Complete,
+        encoding_known: true,
+        ..ParamTable::default()
+    };
+    for (i, name) in [
+        "BARO_MIN",
+        "BARO_OFFSET",
+        "LOG_BACKEND_TYPE",
+        "LONER",
+        "RC10_MIN",
+        "RC1_MAX",
+        "RC1_MIN",
+        "RC2_MIN",
+        "RCMAP_ROLL",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let p = param(name, i as u16, ParamType::U8, [5, 0, 0, 0]);
+        table.params.insert(p.name.clone(), p);
+    }
+    table
+}
 
-    h.get_by_label("Group").click();
+#[test]
+fn the_three_scopes_are_shown_with_their_counts_and_the_empty_one_says_so() {
+    let (h, _) = connected(scoped_table());
+    h.get_by_label("Flight controller (4)");
+    h.get_by_label("RC controller (5)");
+    h.get_by_label("ESC (0)");
+    h.get_by_label("no parameters from the vehicle yet");
+    for group in [
+        "BARO (2)",
+        "LOG (1)",
+        "(other) (1)",
+        "RC1 (2)",
+        "RC2 (1)",
+        "RC10 (1)",
+        "RCMAP (1)",
+    ] {
+        h.get_by_label(group);
+    }
+    let top = |label: &str| h.get_by_label(label).rect().min.y;
+    assert!(top("Flight controller (4)") < top("RC controller (5)"));
+    assert!(top("RC controller (5)") < top("ESC (0)"));
+    assert!(top("RC2 (1)") < top("RC10 (1)"), "natural order");
+}
+
+#[test]
+fn a_group_shows_its_rows_only_while_it_is_open() {
+    let (mut h, _) = connected(scoped_table());
+    assert!(h.query_by_label("BARO_MIN").is_none());
+    assert!(h.query_by_label("RC1_MIN").is_none());
+
+    h.get_by_label("BARO (2)").click();
     h.run();
-    h.get_by_label("(other)").click();
+    h.get_by_label("BARO_MIN");
+    h.get_by_label("BARO_OFFSET");
+    assert!(h.query_by_label("RC1_MIN").is_none());
+
+    h.get_by_label("BARO (2)").click();
     h.run();
-    h.get_by_label("LONER");
-    assert!(h.query_by_label("BBB_ONE").is_none());
+    assert!(h.query_by_label("BARO_MIN").is_none());
+}
+
+#[test]
+fn searching_opens_what_matches_hides_the_rest_and_clearing_brings_back_the_closed_tree() {
+    let (mut h, _) = connected(scoped_table());
+    h.get_by_label("Search").focus();
+    h.run();
+    h.get_by_label("Search").type_text("MIN");
+    h.run();
+    for name in ["BARO_MIN", "RC1_MIN", "RC2_MIN", "RC10_MIN"] {
+        h.get_by_label(name);
+    }
+    for name in [
+        "BARO_OFFSET",
+        "RC1_MAX",
+        "RCMAP_ROLL",
+        "LOG_BACKEND_TYPE",
+        "LONER",
+    ] {
+        assert!(h.query_by_label(name).is_none(), "{name}");
+    }
+    h.get_by_label("Flight controller (1 of 4)");
+    h.get_by_label("RC controller (3 of 5)");
+    h.get_by_label("ESC (0 of 0)");
+    h.get_by_label("BARO (1 of 2)");
+    h.get_by_label("RC1 (1 of 2)");
+    assert!(h.query_by_label("LOG (0 of 1)").is_none());
+    assert!(h.query_by_label("RCMAP (0 of 1)").is_none());
+
+    h.get_by_label("Search").focus();
+    h.run();
+    h.key_down_modifiers(Modifiers::COMMAND, Key::A);
+    h.run();
+    h.get_by_label("Search").type_text("");
+    h.key_press(Key::Backspace);
+    h.run();
+    h.get_by_label("Flight controller (4)");
+    assert!(h.query_by_label("BARO_MIN").is_none());
+    assert!(h.query_by_label("RC1_MIN").is_none());
+}
+
+#[test]
+fn a_value_edited_inside_a_group_is_written_as_before() {
+    let (mut h, commands) = connected(scoped_table());
+    h.get_by_label("RC1 (2)").click();
+    h.run();
+    type_into(&mut h, "value of RC1_MIN", "7");
+    h.get_by_label("Write changes (1)").click();
+    h.run();
+    let sent = commands.borrow();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(matches!(
+        &sent[0],
+        Command::SetParam { name, value: ParamValue::U8(7) } if name == "RC1_MIN"
+    ));
 }
 
 #[test]
@@ -295,6 +410,7 @@ fn a_sent_edit_clears_when_the_table_shows_the_value_and_stays_when_refused() {
             view.ui(ui, &mut cx);
         });
     h.run();
+    open_groups(&mut h);
     type_into(&mut h, "value of AAA_ONE", "7");
     type_into(&mut h, "value of BBB_TWO", "8");
     h.get_by_label("Write changes (2)").click();
@@ -346,6 +462,7 @@ fn shared_harness(table: ParamTable) -> (Harness<'static>, Commands, SharedView)
             shared.borrow_mut().ui(ui, &mut cx);
         });
     h.run();
+    open_groups(&mut h);
     (h, commands, view)
 }
 

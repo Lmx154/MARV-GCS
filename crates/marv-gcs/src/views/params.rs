@@ -1,10 +1,12 @@
-//! Parameters view: every parameter the vehicle reports, searched, grouped and edited, with the
+//! Parameters view: every parameter the vehicle reports, searched, shown in a tree by scope and group
+//! and edited, with the
 //! edits written in one go and the table saved to / loaded from a parameter file.
 //!
 //! The view owns its [`State`], plain data handled by the functions of that type; a new session
 //! drops it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
@@ -67,8 +69,6 @@ struct State {
     /// table has no write entry for the name, the same value is not sent again.
     sent: BTreeMap<String, ParamValue>,
     search: String,
-    /// `None` is `All`.
-    group: Option<String>,
     path: String,
     /// What the last save or load did, as one line.
     outcome: String,
@@ -84,7 +84,6 @@ impl Default for State {
             edits: BTreeMap::new(),
             sent: BTreeMap::new(),
             search: String::new(),
-            group: None,
             path: DEFAULT_PATH.to_string(),
             outcome: String::new(),
             problems: Vec::new(),
@@ -100,18 +99,114 @@ fn group_of(name: &str) -> &str {
     }
 }
 
-fn groups(table: &ParamTable) -> BTreeSet<String> {
-    table
-        .params
-        .keys()
-        .map(|n| group_of(n).to_string())
-        .collect()
+/// The top level of the tree. The vehicle sends no such thing: the scope follows from the group, the
+/// prefix of the names (`docs/link-contract.md` section 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    FlightController,
+    RcController,
+    Esc,
 }
 
-fn matches(name: &str, search: &str, group: Option<&str>) -> bool {
+/// The scopes in the order they are shown.
+const SCOPES: [Scope; 3] = [Scope::FlightController, Scope::RcController, Scope::Esc];
+
+impl Scope {
+    fn title(self) -> &'static str {
+        match self {
+            Self::FlightController => "Flight controller",
+            Self::RcController => "RC controller",
+            Self::Esc => "ESC",
+        }
+    }
+}
+
+/// The only place that knows a group name: `RC` and digits, and `RCMAP`, are the RC controller;
+/// `ESC`, `MOT` and `DSHOT` the ESC; every other group the flight controller.
+fn scope_of(group: &str) -> Scope {
+    let rc_channel = group
+        .strip_prefix("RC")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    match group {
+        "RCMAP" => Scope::RcController,
+        _ if rc_channel => Scope::RcController,
+        "ESC" | "MOT" | "DSHOT" => Scope::Esc,
+        _ => Scope::FlightController,
+    }
+}
+
+/// The text up to the first change between digits and other characters, and the rest.
+fn chunk(s: &str) -> (&str, &str) {
+    let digit = s.as_bytes().first().is_some_and(u8::is_ascii_digit);
+    let end = s
+        .find(|c: char| c.is_ascii_digit() != digit)
+        .unwrap_or(s.len());
+    s.split_at(end)
+}
+
+/// Order with numbers by value: `RC2` before `RC10`. Equal values written differently (`RC01`,
+/// `RC1`) fall back to the plain order.
+fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let (mut x, mut y) = (a, b);
+    while !x.is_empty() && !y.is_empty() {
+        let ((cx, rx), (cy, ry)) = (chunk(x), chunk(y));
+        let order = if cx.starts_with(|c: char| c.is_ascii_digit())
+            && cy.starts_with(|c: char| c.is_ascii_digit())
+        {
+            let (nx, ny) = (cx.trim_start_matches('0'), cy.trim_start_matches('0'));
+            nx.len().cmp(&ny.len()).then_with(|| nx.cmp(ny))
+        } else {
+            cx.cmp(cy)
+        };
+        if order != Ordering::Equal {
+            return order;
+        }
+        (x, y) = (rx, ry);
+    }
+    x.len().cmp(&y.len()).then_with(|| a.cmp(b))
+}
+
+/// One group of the tree: its name, all its parameters and those that match the search.
+struct Group<'a> {
+    name: String,
+    total: usize,
+    shown: Vec<&'a String>,
+}
+
+/// The tree for the table and the search, one entry per scope in [`SCOPES`] order, the groups of a
+/// scope in natural order. A group with no parameter that matches is left out while searching.
+fn tree<'a>(table: &'a ParamTable, search: &str) -> Vec<(Scope, Vec<Group<'a>>)> {
     let needle = search.trim().to_lowercase();
-    (needle.is_empty() || name.to_lowercase().contains(&needle))
-        && group.is_none_or(|g| group_of(name) == g)
+    let mut by_group: BTreeMap<&str, Group<'a>> = BTreeMap::new();
+    for name in table.params.keys() {
+        let group = group_of(name);
+        let entry = by_group.entry(group).or_insert_with(|| Group {
+            name: group.to_string(),
+            total: 0,
+            shown: Vec::new(),
+        });
+        entry.total += 1;
+        if needle.is_empty() || name.to_lowercase().contains(&needle) {
+            entry.shown.push(name);
+        }
+    }
+    let mut groups: Vec<Group<'a>> = by_group.into_values().collect();
+    groups.sort_by(|a, b| natural_cmp(&a.name, &b.name));
+    SCOPES
+        .into_iter()
+        .map(|scope| {
+            let mine = groups
+                .iter()
+                .filter(|g| scope_of(&g.name) == scope)
+                .map(|g| Group {
+                    name: g.name.clone(),
+                    total: g.total,
+                    shown: g.shown.clone(),
+                })
+                .collect();
+            (scope, mine)
+        })
+        .collect()
 }
 
 fn meaning(table: &ParamTable, name: &str, text: &str) -> Option<Meaning> {
@@ -351,27 +446,12 @@ fn draw(ui: &mut egui::Ui, cx: &mut ViewCtx, st: &mut State) {
     storage_buttons(ui, cx, &mut st.confirm);
 
     ui.add_enabled_ui(connected, |ui| {
-        let all_groups = groups(table);
-        if st.group.as_ref().is_some_and(|g| !all_groups.contains(g)) {
-            st.group = None;
-        }
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut st.search)
-                    .hint_text("Search")
-                    .desired_width(200.0),
-            )
-            .accessible_name("Search");
-            let selected = st.group.clone().unwrap_or_else(|| "All".to_string());
-            egui::ComboBox::from_label("Group")
-                .selected_text(selected)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut st.group, None, "All");
-                    for g in &all_groups {
-                        ui.selectable_value(&mut st.group, Some(g.clone()), g);
-                    }
-                });
-        });
+        ui.add(
+            egui::TextEdit::singleline(&mut st.search)
+                .hint_text("Search")
+                .desired_width(200.0),
+        )
+        .accessible_name("Search");
 
         ui.horizontal(|ui| {
             ui.label("File");
@@ -400,16 +480,89 @@ fn draw(ui: &mut egui::Ui, cx: &mut ViewCtx, st: &mut State) {
     }
     ui.separator();
 
-    let names: Vec<&String> = table
-        .params
-        .keys()
-        .filter(|n| matches(n, &st.search, st.group.as_deref()))
-        .collect();
+    let searching = !st.search.trim().is_empty();
+    let tree = tree(table, &st.search);
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for (scope, groups) in &tree {
+                scope_section(ui, table, st, blocked, connected, searching, *scope, groups);
+            }
+        });
+}
+
+fn counts(shown: usize, total: usize, searching: bool) -> String {
+    if searching {
+        format!("{shown} of {total}")
+    } else {
+        total.to_string()
+    }
+}
+
+/// One top-level section. While searching, the ids differ from the ones of the user's own state, and
+/// a section or group with a match is held open, so that clearing the search brings back the user's.
+#[allow(clippy::too_many_arguments)]
+fn scope_section(
+    ui: &mut egui::Ui,
+    table: &ParamTable,
+    st: &mut State,
+    blocked: Option<&'static str>,
+    connected: bool,
+    searching: bool,
+    scope: Scope,
+    groups: &[Group<'_>],
+) {
+    let total: usize = groups.iter().map(|g| g.total).sum();
+    let shown: usize = groups.iter().map(|g| g.shown.len()).sum();
+    let title = format!("{} ({})", scope.title(), counts(shown, total, searching));
+    let mut header = egui::CollapsingHeader::new(title)
+        .id_salt(("scope", scope.title(), searching))
+        .default_open(true);
+    if searching {
+        header = header.open(Some(shown > 0 || total == 0));
+    }
+    header.show(ui, |ui| {
+        if total == 0 {
+            ui.label("no parameters from the vehicle yet");
+        }
+        for group in groups.iter().filter(|g| !searching || !g.shown.is_empty()) {
+            let title = format!(
+                "{} ({})",
+                group.name,
+                counts(group.shown.len(), group.total, searching)
+            );
+            let mut header = egui::CollapsingHeader::new(title).id_salt((
+                "group",
+                scope.title(),
+                &group.name,
+                searching,
+            ));
+            if searching {
+                header = header.open(Some(true));
+            }
+            header.show(ui, |ui| {
+                ui.add_enabled_ui(connected, |ui| {
+                    rows(ui, table, st, blocked, &group.name, &group.shown);
+                });
+            });
+        }
+    });
+}
+
+fn rows(
+    ui: &mut egui::Ui,
+    table: &ParamTable,
+    st: &mut State,
+    blocked: Option<&'static str>,
+    id: &str,
+    names: &[&String],
+) {
     let row_height = ui.spacing().interact_size.y;
-    ui.add_enabled_ui(connected, |ui| {
+    ui.push_id(id, |ui| {
         TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
+            .vscroll(false)
             .column(Column::initial(220.0).at_least(60.0).clip(true))
             .column(Column::initial(160.0).at_least(60.0).clip(true))
             .column(Column::exact(50.0))
@@ -500,5 +653,54 @@ fn fetch_status(ui: &mut egui::Ui, table: &ParamTable, operate_only: bool) {
                 format!("{reason} ({} parameters arrived)", table.params.len()),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scopes_follow_the_group() {
+        for (group, scope) in [
+            ("RC1", Scope::RcController),
+            ("RC8", Scope::RcController),
+            ("RC12", Scope::RcController),
+            ("RCMAP", Scope::RcController),
+            ("RCX", Scope::FlightController),
+            ("RC", Scope::FlightController),
+            ("RC1X", Scope::FlightController),
+            ("ESC", Scope::Esc),
+            ("MOT", Scope::Esc),
+            ("DSHOT", Scope::Esc),
+            ("BARO", Scope::FlightController),
+            ("IMU1", Scope::FlightController),
+            ("LOG", Scope::FlightController),
+            ("(other)", Scope::FlightController),
+        ] {
+            assert_eq!(scope_of(group), scope, "{group}");
+        }
+    }
+
+    #[test]
+    fn groups_come_from_the_prefix() {
+        assert_eq!(group_of("RC1_MIN"), "RC1");
+        assert_eq!(group_of("LOG_BACKEND_TYPE"), "LOG");
+        assert_eq!(group_of("LONER"), OTHER_GROUP);
+        assert_eq!(group_of("_X"), OTHER_GROUP);
+    }
+
+    #[test]
+    fn numbers_in_group_names_order_by_value() {
+        let mut names = [
+            "RC10", "RC2", "RCMAP", "RC1", "IMU2", "IMU1", "RC01", "BARO",
+        ];
+        names.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(
+            names,
+            [
+                "BARO", "IMU1", "IMU2", "RC01", "RC1", "RC2", "RC10", "RCMAP"
+            ]
+        );
     }
 }
