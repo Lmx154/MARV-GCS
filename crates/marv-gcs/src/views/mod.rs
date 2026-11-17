@@ -7,6 +7,7 @@ use gcs_mavlink::{Access, Command, VehicleState};
 
 mod actions;
 mod devices;
+pub mod hud;
 mod link;
 mod log;
 mod log_review;

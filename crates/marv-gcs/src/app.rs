@@ -37,6 +37,11 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, cli: Cli, outcome: Outcome) -> Self {
+        Self::with_context(&cc.egui_ctx, cli, outcome)
+    }
+
+    /// As [`App::new`], from the egui context alone (the tests have no window).
+    pub fn with_context(ctx: &egui::Context, cli: Cli, outcome: Outcome) -> Self {
         let mut app = App {
             bar: Bar::default(),
             views: views::all(),
@@ -52,16 +57,16 @@ impl App {
             auto_log: !cli.no_log,
             replaying: false,
         };
-        logfile::set_log_dir(&cc.egui_ctx, &app.log_dir);
+        logfile::set_log_dir(ctx, &app.log_dir);
         if let Some(path) = &cli.review {
-            logfile::set_review(&cc.egui_ctx, path);
+            logfile::set_review(ctx, path);
         }
         if let Some(endpoint) = cli.connect {
             app.bar.set_endpoint(&endpoint);
-            app.connect(&endpoint, &cc.egui_ctx);
+            app.connect(&endpoint, ctx);
         } else if let Some((path, speed)) = cli.replay {
             app.bar.set_replay(&path, speed);
-            app.replay(&path, speed, &cc.egui_ctx);
+            app.replay(&path, speed, ctx);
         }
         app
     }
@@ -168,6 +173,10 @@ impl App {
                     }
                 });
             });
+            egui::Panel::left("hud")
+                .exact_size(views::hud::PANEL_WIDTH)
+                .resizable(false)
+                .show(ui, |ui| views::hud::ui(ui, state, now));
             egui::CentralPanel::default().show(ui, |ui| {
                 if let Some(view) = self.views.get_mut(self.selected) {
                     let mut cx = ViewCtx {
