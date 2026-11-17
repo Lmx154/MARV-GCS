@@ -23,7 +23,8 @@ does not build or shows up in `cargo tree`.
 3. **The join is small and has no GUI.** Only `gcs-link` and the applications (`marv-gcs`, `marv-cli`) depend
    on both `gcs-transport` and `gcs-mavlink`. `gcs-link` holds exactly what every application needs to turn an
    endpoint into a running session: `access_of` (the role a link gives the station) and `start_session`. Only
-   `marv-gcs` depends on `eframe`; `gcs-link` and `marv-cli` never depend on a GUI crate.
+   `marv-gcs` depends on `eframe` and on `walkers` (the Map tab's tiles; it brings an HTTP client); `gcs-link`
+   and `marv-cli` never depend on a GUI crate or an HTTP client.
 4. **The simulator is independent.** `gcs-sim` never depends on `gcs-mavlink`; it is written from the
    MAVLink specification so the two check each other.
 5. **Protocol logic is sans-IO.** A service is a state machine: messages and the time go in, messages to
