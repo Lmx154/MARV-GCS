@@ -64,16 +64,19 @@ fn the_devices_view_shows_a_row_per_device_and_says_when_there_is_none() {
     for (key, entry) in [device(2, "IMU2", "DEGRADED"), device(1, "IMU1", "OK")] {
         state.messages.entries.insert(key, entry);
     }
-    let mut harness = Harness::new_ui(|ui| {
-        let mut commands = Vec::new();
-        let mut cx = ViewCtx {
-            state: &state,
-            commands: &mut commands,
-            now: Some(Duration::from_secs(30)),
-            access: gcs_mavlink::Access::Configure,
-        };
-        view.ui(ui, &mut cx);
-    });
+    // Tall enough for the preset cards above the table: only the rows in view are drawn.
+    let mut harness = Harness::builder()
+        .with_size(eframe::egui::vec2(800.0, 1400.0))
+        .build_ui(|ui| {
+            let mut commands = Vec::new();
+            let mut cx = ViewCtx {
+                state: &state,
+                commands: &mut commands,
+                now: Some(Duration::from_secs(30)),
+                access: gcs_mavlink::Access::Configure,
+            };
+            view.ui(ui, &mut cx);
+        });
     harness.run();
     harness.get_by_label("IMU1");
     harness.get_by_label("IMU2");
