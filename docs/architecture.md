@@ -46,6 +46,7 @@ Check: `cargo tree -p gcs-transport | grep -c mavlink` is 0; `cargo tree -p gcs-
 | A custom message | The dialect: add it in `marv-dialect`, bump its rev here; the station reads it through one alias in `gcs-mavlink` (`dialect`, which is `marv_dialect::marv`), see `docs/extending.md`. |
 | A view (tab) | One file in `crates/marv-gcs/src/views/`, plus its `mod` line and its registry line in `views/mod.rs`. |
 | A transport (radio, ...) | One module in `gcs-transport` and one `Endpoint` variant. |
+| A sensor preset (a checked combination of existing parameters) | One entry in `gcs-mavlink/src/presets/tables.rs` (`gcs_mavlink::presets`, used by the Devices cards and marv-cli's `--debug` gate); the firmware needs nothing. |
 | A protocol service (missions, rate control; log download is the worked example, `services/logs.rs`) | One sans-IO module in `gcs-mavlink/src/services/`, plus its `mod` line and its registry line in `services/mod.rs`; a section in `VehicleState` and a `Command` variant if it shows or takes something. |
 
 ## Interfaces between the crates
