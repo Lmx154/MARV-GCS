@@ -114,6 +114,44 @@ fn attitude_values_are_shown_in_degrees() {
 }
 
 #[test]
+fn the_text_lines_start_below_the_drawing() {
+    let mut state = connected();
+    with_attitude(&mut state, 20.0, -10.0, 90.0, 9.0);
+    with_gps(&mut state, 1234.0, 488_000.0, 9.0);
+    draw(&state, secs(10), |h| {
+        let drawing = h.get_by_label(views::hud::DRAWING_NAME).rect();
+        assert!(drawing.height() >= 200.0, "{drawing:?}");
+        for text in [
+            "Roll 20.0°",
+            "Pitch -10.0°",
+            "Heading 90°",
+            "GPS: 3D FIX, 12 satellites",
+            "Link: connected",
+        ] {
+            let rect = h.get_by_label(text).rect();
+            assert!(
+                rect.top() >= drawing.bottom(),
+                "{text}: {rect:?} vs {drawing:?}"
+            );
+        }
+        for inside in ["12.3 m/s", "488.0 m"] {
+            let rect = h.get_by_label(inside).rect();
+            assert!(
+                drawing.contains_rect(rect),
+                "{inside}: {rect:?} vs {drawing:?}"
+            );
+        }
+    });
+    draw(&connected(), secs(10), |h| {
+        let drawing = h.get_by_label(views::hud::DRAWING_NAME).rect();
+        let rect = h.get_by_label("no attitude from the vehicle").rect();
+        assert!(drawing.contains_rect(rect), "{rect:?} vs {drawing:?}");
+        let roll = h.get_by_label("Roll --°").rect();
+        assert!(roll.top() >= drawing.bottom(), "{roll:?} vs {drawing:?}");
+    });
+}
+
+#[test]
 fn a_negative_yaw_is_a_heading_from_0_to_359() {
     let mut state = connected();
     with_attitude(&mut state, 0.0, 0.0, -90.0, 9.0);

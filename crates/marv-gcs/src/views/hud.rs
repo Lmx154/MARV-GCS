@@ -6,8 +6,8 @@
 use std::time::Duration;
 
 use eframe::egui::{
-    self, Align2, Color32, FontId, Label, Pos2, Rect, RichText, Sense, Shape, Stroke, Vec2, pos2,
-    vec2,
+    self, Align2, Color32, FontId, Label, Pos2, Rect, RichText, Role, Sense, Shape, Stroke, Vec2,
+    WidgetInfo, pos2, vec2,
 };
 use gcs_mavlink::services::messages::{MessageEntry, MessageStore};
 use gcs_mavlink::{LinkStatus, VehicleState};
@@ -170,6 +170,18 @@ impl Colours {
     }
 }
 
+/// The accessible name of the drawing.
+pub const DRAWING_NAME: &str = "HUD drawing";
+
+/// A label inside `area`, over the drawing. It does not move the layout's cursor (`Ui::put` would, and the
+/// lines under the drawing would start inside it).
+fn place(ui: &mut egui::Ui, area: Rect, label: Label) {
+    ui.new_child(egui::UiBuilder::new().max_rect(area).layout(
+        egui::Layout::centered_and_justified(egui::Direction::TopDown),
+    ))
+    .add(label);
+}
+
 /// The HUD: the drawing, then the numbers and text lines.
 pub fn ui(ui: &mut egui::Ui, state: &VehicleState, now: Option<Duration>) {
     let connected = now.is_some() && state.link.status == LinkStatus::Connected;
@@ -180,7 +192,8 @@ pub fn ui(ui: &mut egui::Ui, state: &VehicleState, now: Option<Duration>) {
         Colours::grey()
     };
     let side = ui.available_width().min(DRAWING);
-    let (rect, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(Role::Image, true, DRAWING_NAME));
     let painter = ui.painter_at(rect);
     draw_horizon(&painter, rect, &colours, data.attitude);
     draw_arc(&painter, rect, &colours, data.attitude);
@@ -194,7 +207,8 @@ pub fn ui(ui: &mut egui::Ui, state: &VehicleState, now: Option<Duration>) {
     draw_aircraft(&painter, rect, &colours);
     draw_boxes(ui, &painter, rect, &colours, &data);
     if data.attitude.is_none() {
-        ui.put(
+        place(
+            ui,
             Rect::from_center_size(
                 rect.center() + vec2(0.0, 0.2 * side),
                 vec2(side - 20.0, 20.0),
@@ -477,7 +491,7 @@ fn draw_boxes(
         ),
     ];
     for (area, caption, value) in boxes {
-        painter.rect_filled(area, 2.0, Color32::from_black_alpha(170));
+        painter.rect_filled(area, 2.0, Color32::from_rgb(20, 20, 20));
         painter.rect_stroke(
             area,
             2.0,
@@ -491,7 +505,8 @@ fn draw_boxes(
             FontId::proportional(9.0),
             colours.text,
         );
-        ui.put(
+        place(
+            ui,
             area,
             Label::new(RichText::new(value).color(colours.text))
                 .wrap_mode(egui::TextWrapMode::Extend),
