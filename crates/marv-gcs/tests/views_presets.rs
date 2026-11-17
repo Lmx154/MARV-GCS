@@ -948,10 +948,12 @@ fn a_loaded_file_cannot_write_a_governed_field_while_the_debug_switch_is_off() {
     let _ = std::fs::remove_file(path);
 }
 
+/// A label: the selector of its sensor, its text, its rect, the chart's rect, the radius.
+type Label = (&'static str, &'static str, egui::Rect, egui::Rect, f32);
+
 #[test]
 fn every_axis_label_of_every_chart_lies_inside_the_chart_area_and_the_radius_stays_about_70() {
-    let seen: Rc<RefCell<Vec<(&'static str, &'static str, egui::Rect, egui::Rect, f32)>>> =
-        Rc::default();
+    let seen: Shared<Vec<Label>> = Rc::default();
     let out = seen.clone();
     let mut harness = Harness::builder()
         .with_size(egui::vec2(600.0, 400.0))
