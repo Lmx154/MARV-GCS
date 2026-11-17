@@ -672,7 +672,7 @@ fn firmware_table_cross_check() {
 }
 
 /// Real log from the path in `MARV_BIN`; prints counts only (records, events per source, intervals of
-/// `BAT.Volt < 1`), never a field value or a text.
+/// `BAT.Volt < 1`, rows of an export of `IMU,BARO` at 5 Hz), never a field value or a text.
 /// `MARV_BIN=/path/file.BIN cargo test -p gcs-dflog --release -- --ignored --nocapture`
 #[test]
 #[ignore = "needs a real log: set MARV_BIN"]
@@ -712,6 +712,27 @@ fn real_log_counts() {
             );
         }
         Err(e) => println!("BAT.Volt < 1 does not bind: {e}"),
+    }
+    // counts only: IMU and BARO at 5 Hz into a folder that is deleted again
+    let folder = std::env::temp_dir().join(format!("gcs-dflog-real-export-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    let types = vec!["IMU".to_owned(), "BARO".to_owned()];
+    let request = crate::ExportRequest {
+        types: &types,
+        rate_hz: Some(5.0),
+        condition: None,
+        folder: &folder,
+        base: "real",
+    };
+    let mut reader = Reader::open(&path).unwrap();
+    let result = crate::export_with(&mut reader, &request, |_| Control::Continue);
+    let _ = std::fs::remove_dir_all(&folder);
+    let export = result.unwrap();
+    for t in &export.types {
+        println!(
+            "export {:<5} 5 Hz: written {}, skipped by rate {}",
+            t.type_name, t.written, t.skipped_by_rate
+        );
     }
 }
 

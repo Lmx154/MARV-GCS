@@ -720,20 +720,18 @@ impl Binder<'_> {
         }
         let instance = match r.instance {
             None => None,
-            Some((n, pos)) => {
-                match instance_column(format) {
-                    Some(c) => Some((c, f64::from(n))),
-                    None => {
-                        return error(
-                            pos,
-                            format!(
-                                "'{}' has no instance field (I, Inst, Instance or Id), so [n] cannot be used",
-                                r.type_name
-                            ),
-                        );
-                    }
+            Some((n, pos)) => match instance_column(format) {
+                Some(c) => Some((c, f64::from(n))),
+                None => {
+                    return error(
+                        pos,
+                        format!(
+                            "'{}' has no instance field (I, Inst, Instance or Id), so [n] cannot be used",
+                            r.type_name
+                        ),
+                    );
                 }
-            }
+            },
         };
         let source = match self
             .sources

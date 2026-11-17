@@ -11,7 +11,7 @@
 //! buffer and decodes a field only when asked, so a 100 MB log is never held decoded. [`scan`] runs a
 //! pass with progress and cancellation; [`summary`] is one such pass.
 //!
-//! On top of [`scan`] there are two more one-pass analyses, each with progress and cancellation:
+//! On top of [`scan`] there are three more one-pass operations, each with progress and cancellation:
 //!
 //! - [`events_with`] (and [`events`], [`events_of`]): the event timeline of a log of the MARV firmware (device
 //!   state changes, status texts, parameter changes, GPS fix changes, sticks present, dropped records); the rules
@@ -22,12 +22,16 @@
 //!   returns the intervals where it held, with the smallest and largest value of each field named. The syntax
 //!   and the semantics (pymavlink's: evaluated over the latest record of each named type) are in the
 //!   documentation of [`Condition`].
+//! - [`export_with`]: the records of chosen types written as CSV files, one per type, optionally at a limited
+//!   rate per type and instance and only where a condition holds; the file names and the format are in its
+//!   documentation.
 //!
 //! This crate has no GUI and no dependency; it is the station's own reader, not the firmware's `fw-core`
 //! (which only writes our fixed table).
 
 mod condition;
 mod events;
+mod export;
 mod format;
 mod reader;
 mod summary;
@@ -38,12 +42,15 @@ mod tests;
 mod tests_conditions;
 #[cfg(test)]
 mod tests_events;
+#[cfg(test)]
+mod tests_export;
 
 pub use condition::{
     BoundCondition, Condition, ConditionError, FieldRange, Found, Interval, MAX_INTERVALS,
     find_with,
 };
 pub use events::{Event, EventSource, events, events_of, events_with};
+pub use export::{Export, ExportError, ExportRequest, TypeExport, export_with};
 pub use format::{Format, Value};
 pub use reader::{Control, Progress, Reader, Record, scan};
 pub use summary::{Summary, TypeCount, summary, summary_of, summary_with};
