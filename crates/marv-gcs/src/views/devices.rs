@@ -40,16 +40,23 @@ const TITLES: [&str; 15] = [
 ];
 
 #[derive(Default)]
-pub struct Devices;
+pub struct Devices {
+    presets: super::presets::SensorPresets,
+}
 
 impl View for Devices {
     fn name(&self) -> &'static str {
         "Devices"
     }
 
+    fn session_changed(&mut self) {
+        self.presets.session_changed();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx) {
         let gate = status::command_gate(cx.access, cx.state, cx.now.is_some());
         calibration_buttons(ui, cx, gate);
+        self.presets.ui(ui, cx);
         let rows = rows(&cx.state.messages, cx.now);
         if rows.is_empty() {
             ui.label("No device status yet");

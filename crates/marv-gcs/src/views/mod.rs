@@ -15,6 +15,7 @@ mod map;
 mod messages;
 mod params;
 mod plot;
+pub mod presets;
 pub mod radio;
 pub mod sensors;
 

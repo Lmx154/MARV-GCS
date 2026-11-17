@@ -183,7 +183,7 @@ impl Applied {
 }
 
 /// Whether the vehicle's last command is an accepted "Save to flash" started at or after `at`.
-fn saved_since(state: &VehicleState, at: Duration) -> bool {
+pub(super) fn saved_since(state: &VehicleState, at: Duration) -> bool {
     state.command.as_ref().is_some_and(|r| {
         r.command == 245
             && r.params[0] == 1.0
