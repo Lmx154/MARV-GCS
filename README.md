@@ -222,7 +222,7 @@ Seven crates; the dependency graph enforces the layers (`docs/architecture.md`).
 | `gcs-mavlink` | MAVLink 2 on any reader and writer: framing, one small state machine per sub-protocol (heartbeat, messages, parameters, commands, text, recorder, logs), the vehicle state, the log reader and replay. No transport, no window. |
 | `gcs-sim` | The simulated vehicle (`marv-sim`). Written from the specification and never using `gcs-mavlink`, so the two check each other. |
 | `gcs-link` | The join, with no GUI: the role an endpoint gives the station (`access_of`, the one mapping) and the start of a session on it. Used by both applications. |
-| `gcs-dflog` | Reads ArduPilot DataFlash `.BIN` logs, generically, from the file's own FMT records (`A3 95 <type> <payload>`; every format character decoded and scaled as pymavlink does; resynchronisation over bad bytes and a truncated last record counted, not an error), one record at a time in constant memory, with progress and cancellation; and a one-pass summary (records per type, first and last `TimeUS`, bad and tail bytes, the FMT list, the wall-clock start from a `GPS` record with `GWk` > 0). The event timeline (device state changes, status texts, parameter changes, GPS fix changes, sticks present, dropped records) and the condition search (below), each one pass with progress and cancellation. No GUI, no dependency; the export and the window come later. |
+| `gcs-dflog` | Reads ArduPilot DataFlash `.BIN` logs, generically, from the file's own FMT records (`A3 95 <type> <payload>`; every format character decoded and scaled as pymavlink does; resynchronisation over bad bytes and a truncated last record counted, not an error), one record at a time in constant memory, with progress and cancellation; and a one-pass summary (records per type, first and last `TimeUS`, bad and tail bytes, the FMT list, the wall-clock start from a `GPS` record with `GWk` > 0). The event timeline (device state changes, status texts, parameter changes, GPS fix changes, sticks present, dropped records) and the condition search (below), each one pass with progress and cancellation. The CSV export (below), one pass with progress and cancellation. No GUI, no dependency; the window comes later. |
 | `marv-cli` | The command line (`marv-cli`), for a computer with no display: see below. |
 | `marv-gcs` | The window: the connection bar and one file per tab; also the link test tool `marv-link-test` (`src/link_test.rs`, `src/bin/marv_link_test.rs`), which builds `MARV_TEST` with `marv-dialect`. |
 
@@ -248,6 +248,34 @@ named type, and it is false until every named type has had a record. Examples: `
 receiver's error counter is high while the GPS has no 3D fix). A wrong name, a text field used as a number or
 `[n]` on a type without an instance field is reported with its position before the pass starts.
 
+### Exporting a log to CSV (`gcs-dflog`)
+
+`export_with` writes the chosen record types of a log as CSV files in one pass, with progress and cancellation,
+optionally at a limited rate and only where a condition holds. It is for the post-processing that other tools
+do better than the station (a spreadsheet, a plotting script).
+
+- **Files**: one per chosen type that has at least one row written, `<log name without extension>_<TYPE>.csv`
+  (`00000039_IMU.csv`) in the chosen folder, which is created if needed. A file is created new and never
+  overwritten: if any target file exists the export is refused before anything is written, naming the file (as
+  the log download does). A type that is not in the log, or whose rows were all left out, makes no file. Writes
+  are buffered. If the pass is cancelled, or fails, the files written so far are left as they are, each with
+  its header and the rows up to that point, and the result (or the error) lists them.
+- **Format**: the first line is the type's FMT column names; then one line per record, fields as decoded
+  (after scaling), separated by `,`, lines ended by `\n`. Numbers are the shortest text that reads back to the
+  same value (integers without a decimal point, never an exponent). Text is quoted with `"` when it holds a
+  comma, a quote or a line break, with quotes doubled (RFC 4180). An `a` array is one quoted field of its 32
+  values joined with `;`.
+- **Rate limit** (Hz): per type AND instance (the instance field as in the conditions; a type without one is a
+  single instance), a record is kept when none of its type and instance has been kept yet, or when its `TimeUS`
+  is at least `1e6 / rate` microseconds after the last kept one. A type without `TimeUS` is not limited.
+  (mavlogdump's `--reduce-rate` mixes the instances; this does not.)
+- **Condition**: only the records at which the condition holds are written, with the semantics of the search
+  above (latest value of each named type; a record that makes it true is written, a record that makes it false
+  is not; a record of another type is written while the condition holds). The condition is applied first, then
+  the rate limit.
+- **Result**: per type, the rows written and the records skipped by the rate limit and by the condition, and
+  the file; and whether the pass was cancelled.
+
 - `docs/link-contract.md`: what the flight controller and the ground station must do on the wire (the
   device diagnostics message and the Devices view are its section 8), and the design of the two crates on
   the flight-controller side.
@@ -257,7 +285,7 @@ receiver's error counter is high while the GPS has no 3D fix). A wrong name, a t
 ## Tests
 
 ```
-cargo test --workspace          # 726 tests (10 more are ignored: they need a board or a recording, or only time a pass), about 60 s; needs /usr/bin/socat for the serial tests
+cargo test --workspace          # 734 tests (10 more are ignored: they need a board or a recording, or only time a pass), about 60 s; needs /usr/bin/socat for the serial tests
 cargo clippy --workspace --all-targets -- -D warnings
 tools/board_check.sh <dir>      # with the board on its debug probe and its USB port cabled: about 3 minutes
 ```
