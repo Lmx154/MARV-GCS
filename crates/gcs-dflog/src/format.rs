@@ -36,8 +36,8 @@ enum Kind {
 impl Kind {
     fn from_char(c: u8) -> Option<Kind> {
         Some(match c {
-            b'b' => Kind::I8,
-            b'B' | b'M' => Kind::U8,
+            b'b' | b'M' => Kind::I8,
+            b'B' => Kind::U8,
             b'h' => Kind::I16,
             b'H' => Kind::U16,
             b'i' => Kind::I32,

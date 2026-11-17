@@ -14,6 +14,8 @@
 //! This crate has no GUI and no dependency; it is the station's own reader, not the firmware's `fw-core`
 //! (which only writes our fixed table).
 
+mod condition;
+mod events;
 mod format;
 mod reader;
 mod summary;
@@ -21,6 +23,11 @@ mod summary;
 #[cfg(test)]
 mod tests;
 
+pub use condition::{
+    BoundCondition, Condition, ConditionError, FieldRange, Found, Interval, MAX_INTERVALS,
+    find_with,
+};
+pub use events::{Event, EventSource, events, events_of, events_with};
 pub use format::{Format, Value};
 pub use reader::{Control, Progress, Reader, Record, scan};
 pub use summary::{Summary, TypeCount, summary, summary_of, summary_with};

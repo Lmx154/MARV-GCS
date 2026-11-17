@@ -116,7 +116,7 @@ fn every_format_character() {
         int(-351_234_567),
     ];
     let values2 = vec![
-        int(7),
+        int(-7),
         V::Text("AbCd"),
         V::Text("sixteen chars ok"),
         V::Text("a short text"),
@@ -159,7 +159,7 @@ fn every_format_character() {
     assert!(r.value(16).is_none());
     let r = reader.next_record().unwrap().unwrap();
     assert_eq!(r.type_name(), "TXT");
-    near(number(r.value(0)), 7.0);
+    near(number(r.value(0)), -7.0); // M is signed, as pymavlink decodes it
     assert_eq!(r.value(1), Some(Value::Text("AbCd".into())));
     assert_eq!(r.value(2), Some(Value::Text("sixteen chars ok".into())));
     assert_eq!(r.value(3), Some(Value::Text("a short text".into())));
