@@ -7,7 +7,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gcs_mavlink::{Deframer, Frame};
 use gcs_transport::Endpoint;
@@ -94,6 +94,18 @@ impl Peer {
     }
 }
 
+/// Sets the flag when dropped, so the peer loop also sees a tool thread that panicked.
+struct SetOnDrop(Arc<AtomicBool>);
+
+impl Drop for SetOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The longest the peer plays on: the tool normally ends after about 3 s.
+const PEER_DEADLINE: Duration = Duration::from_secs(30);
+
 fn free_port() -> SocketAddr {
     UdpSocket::bind("127.0.0.1:0")
         .unwrap()
@@ -116,9 +128,9 @@ fn run_against_peer(count: u32, rate_hz: f64, duration_s: f64) -> (Report, Strin
     let tool = thread::spawn({
         let done = Arc::clone(&done);
         move || {
+            let _done = SetOnDrop(done);
             let mut out = Vec::new();
             let report = link_test::run(&args, &mut out).expect("run");
-            done.store(true, Ordering::Relaxed);
             (report, String::from_utf8(out).unwrap())
         }
     });
@@ -160,13 +172,25 @@ fn run_against_peer(count: u32, rate_hz: f64, duration_s: f64) -> (Report, Strin
         }
         listen(&mut peer, &mut deframer, &mut collected, 10);
     }
+    let begun = Instant::now();
     while !done.load(Ordering::Relaxed) {
+        assert!(
+            begun.elapsed() < PEER_DEADLINE,
+            "the tool did not finish within {PEER_DEADLINE:?} of the peer's script"
+        );
         peer.heartbeat();
         listen(&mut peer, &mut deframer, &mut collected, 50);
     }
     // Whatever is still in flight.
     listen(&mut peer, &mut deframer, &mut collected, 50);
-    let (report, output) = tool.join().unwrap();
+    let (report, output) = tool.join().unwrap_or_else(|payload| {
+        let why = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("not a string");
+        panic!("the tool thread panicked: {why}")
+    });
     (report, output, collected)
 }
 
