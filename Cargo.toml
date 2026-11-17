@@ -5,6 +5,7 @@ members = [
     "crates/gcs-mavlink",
     "crates/gcs-link",
     "crates/gcs-sim",
+    "crates/gcs-dflog",
     "crates/marv-gcs",
     "crates/marv-cli",
 ]
@@ -22,6 +23,7 @@ gcs-transport = { path = "crates/gcs-transport" }
 gcs-mavlink = { path = "crates/gcs-mavlink" }
 gcs-link = { path = "crates/gcs-link" }
 gcs-sim = { path = "crates/gcs-sim" }
+gcs-dflog = { path = "crates/gcs-dflog" }
 
 mavlink = { version = "=0.21.0", default-features = false, features = ["std", "serde", "dialect-common", "mav2-message-extensions"] }
 marv-dialect = { git = "https://github.com/Lmx154/marv-dialect.git", rev = "af6baa107046219dee49cd88c81f9809c134e761", features = ["std", "serde"] }

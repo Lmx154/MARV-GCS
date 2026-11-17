@@ -1,0 +1,9 @@
+[package]
+name = "gcs-dflog"
+description = "Generic reader of ArduPilot DataFlash .BIN logs, driven by the file's own FMT records, and a one-pass summary. No GUI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
