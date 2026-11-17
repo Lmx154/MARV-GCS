@@ -148,15 +148,30 @@ impl Rig {
 
     /// Waits for `fetch == Complete`; panics with the state it found otherwise.
     fn wait_complete(&self, seconds: f64) -> Duration {
-        self.wait(seconds, |s| s.params.fetch == FetchStatus::Complete)
-            .unwrap_or_else(|| {
-                let s = self.state();
-                panic!(
-                    "no Complete within {seconds} s: fetch={:?}, {} params in the table",
-                    s.params.fetch,
-                    s.params.params.len()
-                )
-            })
+        self.wait(seconds, |s| {
+            matches!(
+                s.params.fetch,
+                FetchStatus::Complete | FetchStatus::Failed(_)
+            )
+        })
+        .map(|took| {
+            let s = self.state();
+            assert!(
+                s.params.fetch == FetchStatus::Complete,
+                "the fetch failed after {took:?}: fetch={:?}, {} params in the table",
+                s.params.fetch,
+                s.params.params.len()
+            );
+            took
+        })
+        .unwrap_or_else(|| {
+            let s = self.state();
+            panic!(
+                "no Complete within {seconds} s: fetch={:?}, {} params in the table",
+                s.params.fetch,
+                s.params.params.len()
+            )
+        })
     }
 }
 

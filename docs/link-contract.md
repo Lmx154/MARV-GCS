@@ -45,8 +45,9 @@ Parameters
   names are at most 16 characters of [A-Z0-9_], unique, stable across versions. No PARAM_ERROR (marked
   work in progress in `MX/common.xml`).
 - Ground-station timing (the specification gives none): list: no PARAM_VALUE within 1 s, resend the
-  request, up to 3 times; 1 s of silence with entries missing, request each missing index (500 ms, 3
-  tries), then report it missing. Read: 500 ms x 3. Set: a PARAM_VALUE for the written name that arrives
+  request, up to 3 times; 1 s of silence with entries missing, re-request the missing indices in rounds of 500 ms;
+  the download is reported failed, with the number missing, after 8 consecutive rounds in which no missing index arrived
+  (amendment 2026-11-17: was 3; at 20 % loss each way 3 rounds left about 1 download in 20 failed). Read: 500 ms x 3. Set: a PARAM_VALUE for the written name that arrives
   after the PARAM_SET went out ends the write at once: equal in raw bytes it confirms, any other value is the
   vehicle's refusal (the value in effect is shown, nothing is sent again); caveat: a stale PARAM_VALUE of the old value
   that was already in flight and arrives after the send is read as a refusal too, the accepting echo that follows clears
