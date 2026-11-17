@@ -129,9 +129,9 @@ reads fields through), so it knows `MARV_TEST`: it checks its checksum and shows
 Log download (LOG_REQUEST_LIST, LOG_ENTRY, LOG_REQUEST_DATA, LOG_DATA, LOG_REQUEST_END) is on the vehicle's USB
 link only; the contract for it is section 11.
 
-Not now, each with its trigger: SYS_STATUS and battery (battery data exists); ATTITUDE (an estimator);
+Not now, each with its trigger: ATTITUDE (an estimator);
 TIMESYNC (timestamps must line up with the computer); parameter metadata (descriptions or ranges wanted);
-parameter persistence (the first parameter that must survive a reboot; firmware scope); signing (a radio
+signing (a radio
 link); more parameter types (a value that fits neither INT32 nor REAL32); per-instance rates; RC channels 9 to 16 calibration (trigger: a use for them).
 
 ## 3. The USB crate (`usb-cdc`, own repo: https://github.com/Lmx154/usb-cdc)
