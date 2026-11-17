@@ -933,24 +933,17 @@ fn a_value_arriving_late_restarts_the_silence_clock() {
 }
 
 #[test]
-fn three_failed_rounds_in_a_row_fail_the_fetch_and_keep_what_arrived() {
+fn eight_failed_rounds_in_a_row_fail_the_fetch_and_keep_what_arrived() {
     let mut rig = Rig::new();
     rig.connect(0);
     for i in [0u16, 1, 2, 4, 5, 6, 8, 9] {
         rig.deliver(i32_pv(&format!("P{i}"), i, 10, 7), 100);
     }
-    rig.tick_range(150, 2550);
-    assert_eq!(
-        rig.reads(),
-        vec![
-            (1100, 3),
-            (1100, 7),
-            (1600, 3),
-            (1600, 7),
-            (2100, 3),
-            (2100, 7)
-        ]
-    );
+    rig.tick_range(150, 5050);
+    let expected_reads: Vec<(u64, i16)> = (0..8)
+        .flat_map(|round| [(1100 + 500 * round, 3), (1100 + 500 * round, 7)])
+        .collect();
+    assert_eq!(rig.reads(), expected_reads);
     assert_eq!(
         rig.table().fetch,
         FetchStatus::Fetching {
@@ -958,15 +951,15 @@ fn three_failed_rounds_in_a_row_fail_the_fetch_and_keep_what_arrived() {
             expected: 10
         }
     );
-    rig.tick(2600);
+    rig.tick(5100);
     assert!(rig.changed);
     assert_eq!(
         rig.table().fetch,
         FetchStatus::Failed("2 of 10 parameters missing".into())
     );
     assert_eq!(rig.table().params.len(), 8);
-    rig.tick_range(2650, 9000);
-    assert_eq!(rig.reads().len(), 6);
+    rig.tick_range(5150, 9000);
+    assert_eq!(rig.reads().len(), 16);
 }
 
 #[test]
@@ -984,9 +977,10 @@ fn a_new_parameter_resets_the_failed_tries() {
     assert_eq!(rig.read_times().len(), 6);
     rig.tick(2600);
     assert_eq!(rig.reads()[6..].to_vec(), vec![(2600, 7)]);
-    // Failures after the reset: 3100, 3600; the third at 4100 fails the fetch.
-    rig.tick_range(2650, 4050);
-    assert_eq!(rig.reads()[7..].to_vec(), vec![(3100, 7), (3600, 7)],);
+    // Failures after the reset: one per round from 3100 on; the eighth at 6600 fails the fetch.
+    rig.tick_range(2650, 6550);
+    let later: Vec<(u64, i16)> = (1..8).map(|round| (2600 + 500 * round, 7)).collect();
+    assert_eq!(rig.reads()[7..].to_vec(), later);
     assert_eq!(
         rig.table().fetch,
         FetchStatus::Fetching {
@@ -994,7 +988,7 @@ fn a_new_parameter_resets_the_failed_tries() {
             expected: 10
         }
     );
-    rig.tick(4100);
+    rig.tick(6600);
     assert_eq!(
         rig.table().fetch,
         FetchStatus::Failed("1 of 10 parameters missing".into())
@@ -1147,10 +1141,10 @@ fn a_failed_fetch_ignores_a_count_change_but_still_updates_entries() {
     let mut rig = Rig::new();
     rig.connect(0);
     rig.deliver(i32_pv("A", 0, 2, 1), 10);
-    rig.tick_range(50, 2600);
+    rig.tick_range(50, 5100);
     assert!(matches!(rig.table().fetch, FetchStatus::Failed(_)));
     let lists = rig.list_times().len();
-    rig.deliver(i32_pv("A", 0, 9, 5), 2700);
+    rig.deliver(i32_pv("A", 0, 9, 5), 5200);
     assert_eq!(rig.list_times().len(), lists);
     assert_eq!(rig.table().value("A"), Some(ParamValue::I32(5)));
     assert!(matches!(rig.table().fetch, FetchStatus::Failed(_)));
@@ -1894,11 +1888,11 @@ fn fake_indices_that_never_come_fail_with_the_count_and_keep_what_arrived() {
     assert_eq!(rig.table().params.len(), 38);
     assert!(!rig.table().params.contains_key("F_5"));
     let reads = rig.reads();
-    assert_eq!(reads.len(), 6);
+    assert_eq!(reads.len(), 16);
     let indices: Vec<i16> = reads.iter().map(|(_, i)| *i).collect();
-    assert_eq!(indices, vec![5, 17, 5, 17, 5, 17]);
+    assert_eq!(indices, [5, 17].repeat(8));
     // The list ends with the value at index 39, 2 ms after the request is answered; one second of
-    // silence follows, then three rounds 500 ms apart.
+    // silence follows, then eight rounds 500 ms apart.
     let first = reads[0].0;
     assert!((1000..=1100).contains(&first), "first round at {first}");
     assert_eq!(reads[2].0, first + 500);
