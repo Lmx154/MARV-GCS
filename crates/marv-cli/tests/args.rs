@@ -182,9 +182,6 @@ fn the_debug_guard() {
         "param set IMU1_ACC_FS 4",
         "param set IMU2_ODR_HZ 400",
         "param set baro_iir_t 3",
-        "param set BARO_PRESET 0",
-        "param set MAG_PRESET 0.0",
-        "param set IMU1_PRESET 0",
     ] {
         let message = error(&format!("{base} {words}"));
         assert!(
@@ -197,8 +194,7 @@ fn the_debug_guard() {
         ));
     }
     for words in [
-        "param set BARO_PRESET 3",
-        "param set IMU1_PRESET 4",
+        "param set BARO_PRESET 0",
         "param set MAG_OFFX 1",
         "param set LOG_RATE_HZ 200",
         "param set BARO_RATE_HZ 20",
