@@ -691,7 +691,7 @@ fn events_part(ui: &mut egui::Ui, o: &Opened, view: &mut EventsView) {
                 .column(Column::remainder().at_least(200.0))
                 .header(ROW_HEIGHT, |mut header| {
                     let titles = if wall {
-                        vec!["Time (s)", "Wall clock", "Source", "", "Event"]
+                        vec!["Time (s)", "Wall clock (UTC)", "Source", "", "Event"]
                     } else {
                         vec!["Time (s)", "Source", "", "Event"]
                     };
@@ -709,11 +709,16 @@ fn events_part(ui: &mut egui::Ui, o: &Opened, view: &mut EventsView) {
                         });
                         if wall {
                             row.col(|ui| {
+                                // "UTC" is in the column title, so a cell fits on one line.
                                 let text = o
                                     .summary
                                     .unix_ms_at(event.time_us)
                                     .map_or_else(String::new, wall_clock);
-                                ui.label(egui::RichText::new(text).monospace());
+                                let text = text.trim_end_matches(" UTC");
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(text).monospace())
+                                        .extend(),
+                                );
                             });
                         }
                         row.col(|ui| {
