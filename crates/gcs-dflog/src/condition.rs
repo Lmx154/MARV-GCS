@@ -559,7 +559,8 @@ impl Parser {
     }
 }
 
-/// returns the intervals where the condition held. The semantics are pymavlink's `recv_match(condition=...)`
+/// A condition on the fields of a log's records, such as `BAT.Volt < 14.8`; [`find_with`] returns the
+/// intervals where it held. The semantics are pymavlink's `recv_match(condition=...)`
 /// (`DFReader.py`, `mavutil.evaluate_condition`): after each record of a type the condition names, it is
 /// evaluated over the LATEST record of each named type, and it is false until every named type has appeared.
 ///
@@ -661,6 +662,14 @@ fn is_number_char(format: &Format, index: usize) -> bool {
     )
 }
 
+/// The instance field of a type: the first numeric column after `TimeUS` named `I`, `Inst`, `Instance` or `Id`.
+pub(crate) fn instance_column(format: &Format) -> Option<usize> {
+    let time = format.time_index()?;
+    (time + 1..format.field_count()).find(|&i| {
+        INSTANCE_COLUMNS.contains(&format.columns[i].as_str()) && is_number_char(format, i)
+    })
+}
+
 struct SourceSpec {
     type_id: u8,
     type_name: String,
@@ -712,12 +721,7 @@ impl Binder<'_> {
         let instance = match r.instance {
             None => None,
             Some((n, pos)) => {
-                let time = format.time_index().unwrap_or(0);
-                let col = (time + 1..format.field_count()).find(|&i| {
-                    INSTANCE_COLUMNS.contains(&format.columns[i].as_str())
-                        && is_number_char(format, i)
-                });
-                match col {
+                match instance_column(format) {
                     Some(c) => Some((c, f64::from(n))),
                     None => {
                         return error(
@@ -824,11 +828,52 @@ struct Open {
     max: Vec<f64>,
 }
 
-struct Search<'a> {
-    c: &'a BoundCondition,
+/// The latest value of every field a condition names, and whether every type it names has appeared.
+pub(crate) struct Latest {
     values: Vec<f64>,
     seen: Vec<bool>,
     unseen: usize,
+}
+
+impl Latest {
+    pub(crate) fn new(c: &BoundCondition) -> Latest {
+        Latest {
+            values: vec![f64::NAN; c.slots.len()],
+            seen: vec![false; c.sources.len()],
+            unseen: c.sources.len(),
+        }
+    }
+
+    /// Takes `r` in as the latest record of what the condition names it matches. `None` if it matches
+    /// nothing (the condition's state is unchanged); otherwise whether the condition holds now.
+    pub(crate) fn update(&mut self, c: &BoundCondition, r: &Record<'_>) -> Option<bool> {
+        let mut touched = false;
+        for &s in &c.by_type[usize::from(r.type_id())] {
+            let spec = &c.sources[s];
+            if spec.type_name != r.type_name() {
+                continue;
+            }
+            if let Some((column, n)) = spec.instance
+                && r.number(column) != Some(n)
+            {
+                continue;
+            }
+            for &slot in &spec.slots {
+                self.values[slot] = r.number(c.slots[slot].column).unwrap_or(f64::NAN);
+            }
+            if !self.seen[s] {
+                self.seen[s] = true;
+                self.unseen -= 1;
+            }
+            touched = true;
+        }
+        touched.then(|| self.unseen == 0 && c.cond.eval(&self.values))
+    }
+}
+
+struct Search<'a> {
+    c: &'a BoundCondition,
+    latest: Latest,
     open: Option<Open>,
     found: Found,
     last_time: Option<u64>,
@@ -837,7 +882,7 @@ struct Search<'a> {
 impl Search<'_> {
     fn fold(&mut self) {
         if let Some(open) = &mut self.open {
-            for (i, &v) in self.values.iter().enumerate() {
+            for (i, &v) in self.latest.values.iter().enumerate() {
                 if v.is_nan() {
                     continue;
                 }
@@ -880,33 +925,12 @@ impl Search<'_> {
     fn feed(&mut self, r: &Record<'_>) {
         let Some(t) = r.time_us() else { return };
         self.last_time = Some(t);
-        let mut touched = false;
-        for &s in &self.c.by_type[usize::from(r.type_id())] {
-            let spec = &self.c.sources[s];
-            if spec.type_name != r.type_name() {
-                continue;
-            }
-            if let Some((column, n)) = spec.instance
-                && r.number(column) != Some(n)
-            {
-                continue;
-            }
-            for &slot in &spec.slots {
-                self.values[slot] = r.number(self.c.slots[slot].column).unwrap_or(f64::NAN);
-            }
-            if !self.seen[s] {
-                self.seen[s] = true;
-                self.unseen -= 1;
-            }
-            touched = true;
-        }
-        if !touched {
+        let Some(holds) = self.latest.update(self.c, r) else {
             return;
-        }
-        let holds = self.unseen == 0 && self.c.cond.eval(&self.values);
+        };
+        let n = self.c.slots.len();
         match (holds, self.open.is_some()) {
             (true, false) => {
-                let n = self.values.len();
                 self.open = Some(Open {
                     start: t,
                     min: vec![f64::NAN; n],
@@ -930,9 +954,7 @@ pub fn find_with<R: Read>(
 ) -> io::Result<Option<Found>> {
     let mut search = Search {
         c: cond,
-        values: vec![f64::NAN; cond.slots.len()],
-        seen: vec![false; cond.sources.len()],
-        unseen: cond.sources.len(),
+        latest: Latest::new(cond),
         open: None,
         found: Found {
             intervals: Vec::new(),

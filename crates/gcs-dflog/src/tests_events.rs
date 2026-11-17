@@ -137,7 +137,7 @@ fn dev_changes_per_row_and_counter_growth_is_not_an_event() {
         dev(5000, 1, 3, 1, 90), // counters only
         dev(6000, 1, 2, 0, 90), // back to OK, error cleared
         dev(7000, 9, 2, 5, 0),  // SD, first row carries an error
-        dev(8000, 12, 1, 0, 0), // an id the table does not name
+        dev(8000, 13, 1, 0, 0), // an id the table does not name
     ]);
     assert_eq!(
         of(&e, EventSource::Dev),
@@ -147,7 +147,7 @@ fn dev_changes_per_row_and_counter_growth_is_not_an_event() {
             (4000, "IMU1: DEGRADED (error TIMEOUT -> BUS)"),
             (6000, "IMU1: DEGRADED -> OK (NONE)"),
             (7000, "SD OK (POR)"),
-            (8000, "device 12 STARTING"),
+            (8000, "device 13 STARTING"),
         ]
     );
     assert_eq!(
@@ -188,8 +188,11 @@ fn dev_names_of_devices_states_and_errors() {
         (6, "BATT"),
         (7, "RC"),
         (9, "SD"),
+        (10, "PSRAM"),
+        (11, "LED"),
+        (12, "ESC"),
         (8, "device 8"),
-        (10, "device 10"),
+        (13, "device 13"),
     ];
     let records: Vec<_> = ids.iter().map(|&(id, _)| dev(1000, id, 2, 0, 0)).collect();
     let e = run(&records);

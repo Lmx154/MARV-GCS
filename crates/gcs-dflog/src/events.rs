@@ -69,6 +69,9 @@ fn device_name(id: u32) -> String {
         6 => "BATT".to_owned(),
         7 => "RC".to_owned(),
         9 => "SD".to_owned(),
+        10 => "PSRAM".to_owned(),
+        11 => "LED".to_owned(),
+        12 => "ESC".to_owned(),
         n => format!("device {n}"),
     }
 }
@@ -285,7 +288,8 @@ impl Tracker {
     }
 }
 
-/// firmware's table (`fw-core/src/dflog.rs`; the meanings of the numbers are in `marv.xml`).
+/// The event timeline of a log of the MARV firmware: what changed in the records of its fixed table
+/// (`fw-core/src/dflog.rs`; the meanings of the numbers are in `marv.xml`).
 ///
 /// The rules, each on the record type of that name (a log without the type, or of another firmware whose
 /// type of that name lacks the columns, simply gives no events of that source):
