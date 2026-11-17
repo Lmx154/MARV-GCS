@@ -61,6 +61,15 @@ of the window after `--after` seconds and exits; it is how the pictures in a rep
 Building needs Rust 1.99 or newer (the `rust-version` of `marv-dialect`). On Linux the serial-port crate needs the libudev development package
 (`libudev-dev` on Ubuntu).
 
+AppImage: `tools/appimage.sh` builds `target/appimage/MARV-GCS-x86_64.AppImage`, the window as one file (about 5 MB)
+that starts with a double click or by its name, no flags. It is the AppImage project's type-2 runtime (release
+20251108, checked by SHA-256) followed by a squashfs of `usr/bin/marv-gcs`, `packaging/marv-gcs.desktop`, the icon
+`packaging/marv-gcs.svg` and an `AppRun` that starts the window in `~/Documents/MARV-GCS`, so recordings and downloads
+go to `~/Documents/MARV-GCS/logs` from wherever it is started. Nothing else is bundled: libc, libudev, libcap and the
+display libraries come from the host. It runs on x86_64 Linux with glibc 2.39 or newer (built on Ubuntu 24.04) and
+needs FUSE (`fuse3`); not for the Pi (ARM). Checked on 2026-11-17: started from another folder, the window opened,
+listed the board's port and connected over USB (all device rows live).
+
 ## What it does
 
 | Tab | What it shows |

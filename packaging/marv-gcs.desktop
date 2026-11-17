@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=MARV GCS
+Comment=Ground station for the MARV V2 flight controller
+Exec=marv-gcs
+Icon=marv-gcs
+Categories=Utility;
+Terminal=false
