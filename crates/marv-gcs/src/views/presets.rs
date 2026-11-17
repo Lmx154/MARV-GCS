@@ -221,7 +221,7 @@ impl SensorPreset {
         let chosen_preset = chosen.and_then(|id| preset(sensor, id));
 
         ui.set_width(CARD_WIDTH);
-        let named = ui.strong(title);
+        let named = ui.strong(format!("{title} preset"));
         let shown = match current {
             Current::NotLoaded => "—".to_string(),
             Current::Custom => CUSTOM_TEXT.to_string(),
@@ -275,13 +275,11 @@ impl SensorPreset {
         if matches!(flow, Some(Flow::Writing | Flow::Reading)) {
             ui.ctx().request_repaint_after(Duration::from_millis(250));
         }
-        if matches!(flow, Some(Flow::Matches)) {
-            if actions::button(ui, "Save to flash", gate) {
-                cx.commands.push(Command::SendCommand {
-                    command: MavCmd::MAV_CMD_PREFLIGHT_STORAGE,
-                    params: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                });
-            }
+        if matches!(flow, Some(Flow::Matches)) && actions::button(ui, "Save to flash", gate) {
+            cx.commands.push(Command::SendCommand {
+                command: MavCmd::MAV_CMD_PREFLIGHT_STORAGE,
+                params: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            });
         }
         if enabled {
             let reason = if imu { Some(IMU_TEXT) } else { gate };

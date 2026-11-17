@@ -183,7 +183,7 @@ fn four_cards_show_the_crates_names_summaries_and_physical_values() {
         assert_eq!(rig.shown(i), name_of(sensor, 1), "card {i}");
         assert!(rig.has(preset(sensor, 1).unwrap().summary), "card {i}");
     }
-    for title in ["IMU1", "IMU2", "BARO", "MAG"] {
+    for title in ["IMU1 preset", "IMU2 preset", "BARO preset", "MAG preset"] {
         assert!(rig.has(title), "{title}");
     }
     assert_eq!(rig.harness.get_all_by_role(Role::ComboBox).count(), 4);
@@ -249,7 +249,7 @@ fn baro_apply_sends_one_set_and_five_reads_and_applied_waits_for_the_read_back()
     assert!(!rig.has(NOT_SAVED));
     rig.update(|s| set_sensor(&mut s.params, &BARO, 3));
     assert!(rig.has(NOT_SAVED));
-    assert!(rig.nth("Save to flash", 0).accesskit_node().is_disabled() == false);
+    assert!(rig.enabled_nth("Save to flash", 0));
     assert_eq!(rig.sent().len(), 6, "nothing else was sent");
 }
 
