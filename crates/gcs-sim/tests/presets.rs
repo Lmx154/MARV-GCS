@@ -9,6 +9,9 @@ use mavlink::dialects::common::{
 use mavlink::types::CharArray;
 use mavlink::{MAVLinkV2MessageRaw, MavHeader, MavlinkReader};
 
+type Echoes = Vec<(String, i32)>;
+type Texts = Vec<(MavSeverity, String)>;
+
 fn decode(bytes: &[u8]) -> Vec<MavMessage> {
     let mut reader = MavlinkReader::new(bytes);
     let mut out = Vec::new();
@@ -82,11 +85,7 @@ impl Rig {
     }
 
     /// One PARAM_SET: the echoes and the texts the vehicle sent for it.
-    fn write(
-        &mut self,
-        name: &str,
-        value: i32,
-    ) -> (Vec<(String, i32)>, Vec<(MavSeverity, String)>) {
+    fn write(&mut self, name: &str, value: i32) -> (Echoes, Texts) {
         self.t += 1;
         let bytes = self.vehicle.step(self.t, &set(name, value));
         (echoes(&bytes), texts(&bytes))

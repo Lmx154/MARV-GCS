@@ -96,6 +96,8 @@ younger than 1 s (the sticks as the vehicle maps them; the simulator always send
 parameters; as decided in the link contract, not yet seen from the real board), STATUSTEXT. (An older demonstration program
 sent four HIGHRES_IMU instances at 50 Hz; the window no longer looks for them.) The simulator's default streams are these plus ATTITUDE at 10 Hz, which the real firmware does not send yet (a test double for the HUD).
 
+The simulator's parameters (`gcs-sim`, a test double of the vehicle): 13 of its own, the 44 RC parameters, then the 17 of the sensor preset block of `docs/link-contract.md` section 2: the ten parameters `IMU1_PRESET`, `IMU1_ACC_FS`, `IMU1_GYR_FS`, `IMU1_ODR_HZ`, `IMU2_PRESET`, `IMU2_ACC_FS`, `IMU2_GYR_FS`, `IMU2_ODR_HZ`, `BARO_PRESET` and `MAG_PRESET` (INT32, preset 1 everywhere by default; the IMU ones are Reboot-class) and the seven BARO and MAG fields they govern (`BARO_ODR_HZ`, `BARO_OSR_P`, `BARO_OSR_T`, `BARO_IIR_P`, `BARO_IIR_T`, `MAG_ODR_HZ` as a REAL32, `MAG_AVG`). Its rules come from the shared table `marv-presets` and are the firmware's (the station has none): a selector write sets the selector and every field of that preset at once and answers with the selector's PARAM_VALUE only; a write to a field while its selector is not 0 is refused unless the value is the stored one (the old value is echoed and one STATUSTEXT says `<FIELD>: locked by <SELECTOR> (0 = custom)`); selector 0 (Custom) leaves the fields and lets them be written, checked against their ranges; an IMU selector or field that changes is answered with an INFO text `<NAME>: applies after reboot` (the simulator does not reboot, and shapes none of its sensors from these values). `gcs_sim::presets::reset_all` and `enforce_presets` are the reset and the boot rule on a list of parameters; no simulator command calls them yet.
+
 The status at the top right says `Connecting`, `Connected` (with the vehicle's ids), `Lost` (no heartbeat
 for 5 s) or `Closed` (with the reason), then the role of the session.
 
@@ -111,6 +113,8 @@ Calibrate compass, and the Log tab Restart SD; while the compass calibration wai
 orientations" next to the status line. The last command, in words ("Gyro calibration: 40 %", "Compass
 calibration: accepted", "Reboot: no answer after 3 sends"), is shown under the buttons of the Parameters, Devices and Link tabs and is
 `VehicleState.command`. The simulator answers them as the vehicle will, and the firmware answers them too.
+
+`Command::ReadParam { name }` (Operate-class, so every session may send it) reads one parameter by name: one PARAM_REQUEST_READ with index -1, sent again 500 ms later and once more, then dropped when no PARAM_VALUE for that name came; the reply updates the parameter table like any PARAM_VALUE. A vehicle answers a write of a sensor preset selector with the selector only, so the station reads the governed fields back with it.
 
 ## The command line (`marv-cli`)
 
@@ -148,6 +152,7 @@ stderr (a command whose own stdout shows texts does not echo them). A text belon
 | `param list` | `NAME<TAB>VALUE<TAB>TYPE`, one per parameter, by name; waits for the whole list (on a `udp:` link it asks for it: a read) |
 | `param get NAME` | the same line for one parameter; exit 1 for an unknown name |
 | `param set NAME VALUE` | waits for the vehicle's echo and prints the same line with the value now in effect; if the echo differs from what was asked (the vehicle refused, which ends the write at once, with one `PARAM_SET` on the link) the line is printed, the message and the vehicle's own `text` line go to stderr and the exit status is 1; a value that does not fit the parameter's type is not sent |
+| `param set NAME VALUE --debug` | the gate for raw sensor settings, which is the station's own (the firmware knows nothing of it and enforces only its lock): without `--debug`, `param set` of a `*_PRESET` selector to 0 (Custom) or of a field a preset governs (the lists of the `marv-presets` table: `IMUn_ACC_FS`, `IMUn_GYR_FS`, `IMUn_ODR_HZ`, `BARO_ODR_HZ`, `BARO_OSR_P`, `BARO_OSR_T`, `BARO_IIR_P`, `BARO_IIR_T`, `MAG_ODR_HZ`, `MAG_AVG`) refuses with one line naming `--debug` (exit 2) before connecting, so nothing is sent; with `--debug` it is sent, and the vehicle's own lock still applies (a field is refused while its selector is not 0). `--debug` applies to `param set` only |
 | `param save` / `param reload` | `MAV_CMD_PREFLIGHT_STORAGE` with param1 = 1 / 0 |
 | `param reset-all --yes` / `param reset-calibration --yes` | param1 = 2 / 3; without `--yes` they refuse (exit 2) before connecting |
 | `calibrate gyro` / `accel` / `compass` / `cancel` | `MAV_CMD_PREFLIGHT_CALIBRATION` (gyro param1 = 1; accelerometer param5 = 4, one position, level; compass param2 = 1, 30 s of rotating the vehicle through all orientations, the CLI prints that as its first line; cancel all zeros) |
@@ -170,7 +175,7 @@ connect after the first has let go).
 |---|---|
 | 0 | success (a command: the vehicle's result is accepted) |
 | 1 | the command failed: not accepted (denied, failed, cancelled, no answer, ...), a parameter echo that differs, an unknown parameter, a recording that cannot start; for `logs`: the list did not arrive, the log is not listed, the file exists or cannot be written, the download is incomplete |
-| 2 | usage error (unknown command, a missing argument, a bad number, `--yes` missing); nothing is opened |
+| 2 | usage error (unknown command, a missing argument, a bad number, `--yes` or `--debug` missing); nothing is opened |
 | 3 | no link, no heartbeat within `--timeout`, or the link went down |
 | 4 | refused: the link is operate-only and the command writes (`marv-cli: refused: this link is operate-only (SetParam)`) |
 
@@ -301,7 +306,7 @@ do better than the station (a spreadsheet, a plotting script).
 ## Tests
 
 ```
-cargo test --workspace          # 779 tests (10 more are ignored: they need a board or a recording, or only time a pass), about 60 s; needs /usr/bin/socat for the serial tests
+cargo test --workspace          # 816 tests (10 more are ignored: they need a board or a recording, or only time a pass), about 60 s; needs /usr/bin/socat for the serial tests
 cargo clippy --workspace --all-targets -- -D warnings
 tools/board_check.sh <dir>      # with the board on its debug probe and its USB port cabled: about 3 minutes
 ```
@@ -320,7 +325,7 @@ What the tests stand on:
   simulated vehicle over TCP and over a pseudo serial port (and, with a hand-played vehicle, over UDP): connect, loss of the vehicle and recovery,
   message rates and values, the full parameter list with 20 % of frames dropped in each direction, writes
   confirmed, refused and unanswered, both parameter encodings, recording and replay.
-- The command line (`crates/marv-cli/tests`, 46 tests): every command and option and every error of the arguments; every command against the simulator over TCP, the log download included (byte for byte, with lost frames, a stalled vehicle, an existing file); no vehicle (nothing listening, a silent peer); the negative control, where a counting writer on an Operate session sees no `PARAM_SET`, no log message and no `COMMAND_LONG` but the capability request while `devices`, `status` and `param list` work; and the dependency rule (no GUI crate in `cargo tree -p marv-cli`).
+- The command line (`crates/marv-cli/tests`, 50 tests): every command and option and every error of the arguments; every command against the simulator over TCP, the log download included (byte for byte, with lost frames, a stalled vehicle, an existing file); no vehicle (nothing listening, a silent peer); the negative control, where a counting writer on an Operate session sees no `PARAM_SET`, no log message and no `COMMAND_LONG` but the capability request while `devices`, `status` and `param list` work; and the dependency rule (no GUI crate in `cargo tree -p marv-cli`).
 - The views are drawn and clicked without a window (`egui_kittest`). The HUD was looked at on 2026-11-17 in `--screenshot` pictures against the simulator (moving attitude) and the real board (no attitude: grey horizon and the text); one fault found and fixed (the text lines were drawn over the drawing). The Log, Sensors, Radio and Devices tabs were looked at on 2026-11-16 in pictures taken with `--screenshot` against the real board (one fault found and fixed: the Radio bars of channels 10 to 16 were shifted); the Radio tab's function bars, `MIN`/`TRIM`/`MAX` marks and the mapping section at rest were looked at the same way against the simulator and against the board running the firmware's `wip-rcmap` build (one fault found and fixed: the mapping rows did not line up). Besides that they are checked by tests of the views' logic and by one ignored test that replays a recording of the real vehicle (`MARV_TLOG=file.tlog cargo test -p marv-gcs --test real_recording -- --ignored --nocapture`; 2026-11-16: every Sensors preset, RC_CHANNELS, and the SD and RC rows found their data in a 20 s recording; RADIO_STATUS is not sent on USB). Not yet seen on a screen: the Map tab (the tiles, the marker and arrow, the track line, the buttons; it is checked headless only, with no tiles, and no test touches the network), the table of on-board logs, the download's progress bar, in the Log tab's "Review a log file" section the progress bars, the scrolling of the whole tab and the results of Find and Export (the section opened on a real 43 s log with `--review` was looked at on 2026-11-17 in a `--screenshot`: summary, events, the Find and Export controls; one fault fixed: wall-clock cells wrapped), the two battery plots (below the first six on the Sensors tab), and the Radio tab's calibration screens (capture, centre, review, the "not saved" line) and the mapping editor in use (an open drop-down, staged edits, the warning). A calibration and a mapping change have been made only against the simulator, not yet with a real transmitter.
 - Checked with independent implementations: framing against the `mavlink` crate's own reader and writer
   for all 234 message types; the simulator's output with a hand-written decoder; a recorded log read with
