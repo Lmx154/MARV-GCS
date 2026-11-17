@@ -44,7 +44,7 @@ impl App {
     pub fn with_context(ctx: &egui::Context, cli: Cli, outcome: Outcome) -> Self {
         let mut app = App {
             bar: Bar::default(),
-            views: views::all(),
+            views: views::all_with_tiles(),
             selected: cli.view.unwrap_or(0),
             session: None,
             access: Access::Operate,
@@ -153,6 +153,9 @@ impl App {
                 .session
                 .as_ref()
                 .map(|_| self.session_started.elapsed());
+            for view in &mut self.views {
+                view.update(state, now);
+            }
             let status = match now {
                 Some(now) => {
                     let (text, colour) = status::describe_session(&state.link, now, self.replaying);

@@ -11,6 +11,7 @@ pub mod hud;
 mod link;
 mod log;
 mod log_review;
+mod map;
 mod messages;
 mod params;
 mod plot;
@@ -34,10 +35,23 @@ pub trait View {
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx);
     /// A session started or ended: drop whatever belongs to the previous vehicle.
     fn session_changed(&mut self) {}
+    /// Called every frame for every view, selected or not, with the state of the frame: a view that
+    /// keeps a history of its own (the Map's track) takes in what arrived while it was hidden.
+    fn update(&mut self, _state: &VehicleState, _now: Option<Duration>) {}
 }
 
-/// The registry, in tab order: the one line to touch when a view is added.
+/// The registry for the window: the Map fetches its tiles from OpenStreetMap.
+pub fn all_with_tiles() -> Vec<Box<dyn View>> {
+    registry(true)
+}
+
+/// The registry without any network access (the Map has no tiles): for the tests.
 pub fn all() -> Vec<Box<dyn View>> {
+    registry(false)
+}
+
+/// In tab order: the one line to touch when a view is added.
+fn registry(tiles: bool) -> Vec<Box<dyn View>> {
     vec![
         Box::new(sensors::Sensors),
         Box::<radio::Radio>::default(),
@@ -46,6 +60,7 @@ pub fn all() -> Vec<Box<dyn View>> {
         Box::<params::Params>::default(),
         Box::<log::Log>::default(),
         Box::<link::Link>::default(),
+        Box::new(map::MapView::new(tiles)),
         // Box::new(<module>::<View>),
     ]
 }
