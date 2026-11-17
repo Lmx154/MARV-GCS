@@ -7,9 +7,9 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -385,7 +385,7 @@ impl Review {
             }
         });
         ui.horizontal(|ui| {
-            ui.label("or choose one");
+            let label = ui.label("or choose one");
             egui::ComboBox::from_id_salt("review_files")
                 .selected_text(format!(".BIN files in {dir}, newest first"))
                 .show_ui(ui, |ui| {
@@ -405,7 +405,9 @@ impl Review {
                             to_open = Some(file.clone());
                         }
                     }
-                });
+                })
+                .response
+                .labelled_by(label.id);
         });
         if let Some(path) = to_open {
             self.open(ctx, path);
@@ -950,10 +952,7 @@ mod tests {
     fn a_unix_time_in_words() {
         assert_eq!(wall_clock(0), "1970-01-01 00:00:00.000 UTC");
         // 2024-02-29 12:34:56.789 UTC
-        assert_eq!(
-            wall_clock(1_709_210_096_789),
-            "2024-02-29 12:34:56.789 UTC"
-        );
+        assert_eq!(wall_clock(1_709_210_096_789), "2024-02-29 12:34:56.789 UTC");
     }
 
     #[test]
