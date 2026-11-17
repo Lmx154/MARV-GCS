@@ -1368,66 +1368,6 @@ fn a_name_not_in_the_table_or_a_value_of_another_type_sends_nothing_and_changes_
     assert!(rig.set_times().is_empty());
 }
 
-fn read(name: &str) -> Command {
-    Command::ReadParam { name: name.into() }
-}
-
-fn read_requests(messages: &[Message]) -> Vec<&PARAM_REQUEST_READ_DATA> {
-    messages
-        .iter()
-        .filter_map(|m| match m {
-            Message::PARAM_REQUEST_READ(r) => Some(r),
-            _ => None,
-        })
-        .collect()
-}
-
-#[test]
-fn a_read_sends_one_request_by_name_and_the_reply_lands_in_the_table() {
-    let mut rig = complete_rig(2);
-    let out = rig.command(&read("P1"), 200);
-    let sent = read_requests(&out);
-    assert_eq!(out.len(), 1);
-    assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].param_index, -1);
-    assert_eq!(sent[0].param_id, id16("P1").into());
-    assert_eq!((sent[0].target_system, sent[0].target_component), (1, 1));
-    assert_eq!(rig.table().value("P1"), Some(ParamValue::I32(-3)));
-    rig.deliver(i32_pv("P1", 1, 2, 41), 220);
-    assert!(rig.changed);
-    assert_eq!(rig.table().value("P1"), Some(ParamValue::I32(41)));
-    assert_eq!(rig.table().value("P0"), Some(ParamValue::I32(-3)));
-    rig.tick_range(250, 3000);
-    assert_eq!(rig.read_times(), vec![200]);
-    assert!(rig.table().writes.is_empty());
-}
-
-#[test]
-fn a_read_nobody_answers_is_sent_three_times_500_ms_apart_then_dropped() {
-    let mut rig = complete_rig(2);
-    rig.command(&read("NO_SUCH_PARAM"), 1000);
-    rig.tick_range(1050, 1499);
-    assert_eq!(rig.read_times(), vec![1000]);
-    rig.tick(1500);
-    assert_eq!(rig.read_times(), vec![1000, 1500]);
-    rig.tick_range(1550, 1999);
-    rig.tick(2000);
-    assert_eq!(rig.read_times(), vec![1000, 1500, 2000]);
-    rig.tick_range(2050, 8000);
-    assert_eq!(rig.read_times().len(), 3);
-    assert_eq!(rig.table().params.len(), 2);
-}
-
-#[test]
-fn an_answered_read_is_not_sent_again() {
-    let mut rig = complete_rig(2);
-    rig.command(&read("P0"), 1000);
-    rig.tick(1200);
-    rig.deliver(i32_pv("P0", 0, 2, 7), 1300);
-    rig.tick_range(1350, 4000);
-    assert_eq!(rig.read_times(), vec![1000]);
-}
-
 #[test]
 fn unrelated_commands_are_ignored() {
     let mut rig = complete_rig(1);

@@ -245,8 +245,6 @@ const ENCODING_RESEND: Duration = Duration::from_millis(500);
 const ENCODING_SENDS: u8 = 3;
 const LIST_SILENCE: Duration = Duration::from_secs(1);
 const LIST_SENDS: u8 = 3;
-const READ_RESEND: Duration = Duration::from_millis(500);
-const READ_SENDS: u8 = 3;
 const READ_ROUND: Duration = Duration::from_millis(500);
 const READ_ROUND_SIZE: usize = 50;
 const READ_FAILED_TRIES: u8 = 8;
@@ -346,13 +344,6 @@ struct WriteTrack {
     ended: bool,
 }
 
-/// A single read by name that has not been answered yet.
-#[derive(Debug)]
-struct ReadTrack {
-    sends: u8,
-    last_send: Duration,
-}
-
 /// The service that runs the parameter protocol.
 #[derive(Debug)]
 pub struct Params {
@@ -362,7 +353,6 @@ pub struct Params {
     fetch: Fetch,
     restarts: u8,
     writes: BTreeMap<String, WriteTrack>,
-    reads: BTreeMap<String, ReadTrack>,
 }
 
 impl Params {
@@ -374,7 +364,6 @@ impl Params {
             fetch: Fetch::Idle,
             restarts: 0,
             writes: BTreeMap::new(),
-            reads: BTreeMap::new(),
         }
     }
 
@@ -594,32 +583,6 @@ impl Params {
         }
     }
 
-    fn tick_reads(&mut self, target: (u8, u8), cx: &mut Ctx) {
-        self.reads.retain(|name, track| {
-            if cx.now.saturating_sub(track.last_send) < READ_RESEND {
-                return true;
-            }
-            if track.sends >= READ_SENDS {
-                return false;
-            }
-            track.sends += 1;
-            track.last_send = cx.now;
-            cx.out.push(read_by_name(target, name));
-            true
-        });
-    }
-
-    fn read_param(&mut self, target: (u8, u8), name: &str, cx: &mut Ctx) {
-        cx.out.push(read_by_name(target, name));
-        self.reads.insert(
-            name.to_owned(),
-            ReadTrack {
-                sends: 1,
-                last_send: cx.now,
-            },
-        );
-    }
-
     fn set_param(&mut self, target: (u8, u8), name: &str, value: ParamValue, cx: &mut Ctx) {
         let table = &cx.state.params;
         let Some(param) = table.params.get(name) else {
@@ -652,7 +615,6 @@ impl Params {
 
     fn on_param_value(&mut self, target: (u8, u8), v: &PARAM_VALUE_DATA, cx: &mut Ctx) {
         let name = name_from_wire(&v.param_id);
-        self.reads.remove(&name);
         let raw = v.param_value.to_le_bytes();
         let kind = kind_from_wire(v.param_type);
         let (index, count) = (v.param_index, v.param_count);
@@ -898,15 +860,6 @@ fn request_autopilot_version(target: (u8, u8)) -> Message {
     })
 }
 
-fn read_by_name(target: (u8, u8), name: &str) -> Message {
-    Message::PARAM_REQUEST_READ(PARAM_REQUEST_READ_DATA {
-        param_index: -1,
-        target_system: target.0,
-        target_component: target.1,
-        param_id: name_to_wire(name).into(),
-    })
-}
-
 fn param_set(target: (u8, u8), name: &str, raw: [u8; 4], kind: ParamType) -> Message {
     Message::PARAM_SET(PARAM_SET_DATA {
         param_value: f32::from_le_bytes(raw),
@@ -942,7 +895,6 @@ impl Service for Params {
         self.tick_encoding(target, cx);
         self.tick_fetch(target, cx);
         self.tick_writes(target, cx);
-        self.tick_reads(target, cx);
     }
 
     fn on_command(&mut self, command: &Command, cx: &mut Ctx) {
@@ -954,7 +906,6 @@ impl Service for Params {
                 self.restarts = 0;
                 self.begin_fetch(target, cx);
             }
-            Command::ReadParam { name } => self.read_param(target, name, cx),
             Command::SetParam { name, value } => self.set_param(target, name, *value, cx),
             _ => {}
         }

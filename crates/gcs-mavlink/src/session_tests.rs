@@ -791,19 +791,6 @@ mod access {
         }
     }
 
-    fn read_one() -> Command {
-        Command::ReadParam {
-            name: "AAA_ONE".into(),
-        }
-    }
-
-    fn param_reads(rig: &Rig) -> usize {
-        count(
-            rig,
-            |m| matches!(m, Message::PARAM_REQUEST_READ(r) if r.param_index == -1),
-        )
-    }
-
     fn save_to_flash() -> Command {
         Command::SendCommand {
             command: crate::dialect::MavCmd::MAV_CMD_PREFLIGHT_STORAGE,
@@ -969,24 +956,6 @@ mod access {
     }
 
     #[test]
-    fn an_operate_session_may_read_one_parameter_by_name_unlike_a_write() {
-        let mut rig = rig_access(Access::Operate);
-        put_param(&rig);
-        rig.session.send(set_one());
-        rig.session.send(read_one());
-        assert!(wait_until(LIMIT, || param_reads(&rig) >= 1));
-        assert_eq!(param_sets(&rig), 0);
-        assert_eq!(
-            rig.session.state().link.refused,
-            Some(Refused {
-                command: "SetParam",
-                count: 1
-            })
-        );
-        rig.vehicle.stop();
-    }
-
-    #[test]
     fn a_configure_session_sends_the_command() {
         let mut rig = rig_access(Access::Configure);
         rig.session.send(save_to_flash());
@@ -1039,16 +1008,14 @@ mod access {
             Command::ListLogs => 5,
             Command::DownloadLog { .. } => 6,
             Command::CancelLogDownload => 7,
-            Command::ReadParam { .. } => 8,
         }
     }
-    const COUNT: usize = 9;
+    const COUNT: usize = 8;
 
     #[test]
     fn every_command_has_its_class_in_the_table() {
         let rows: Vec<(Command, Access, &str)> = vec![
             (Command::RefreshParams, Access::Operate, "RefreshParams"),
-            (read_one(), Access::Operate, "ReadParam"),
             (set_one(), Access::Configure, "SetParam"),
             (
                 Command::StartLog {
