@@ -129,7 +129,10 @@ reads fields through), so it knows `MARV_TEST`: it checks its checksum and shows
 Log download (LOG_REQUEST_LIST, LOG_ENTRY, LOG_REQUEST_DATA, LOG_DATA, LOG_REQUEST_END) is on the vehicle's USB
 link only; the contract for it is section 11.
 
-Not now, each with its trigger: ATTITUDE (an estimator);
+The station shows ATTITUDE in its HUD when the vehicle sends it; the real firmware does not send it yet (an
+estimator is being designed), and the simulator sends it at 10 Hz as a test double.
+
+Not now, each with its trigger:
 TIMESYNC (timestamps must line up with the computer); parameter metadata (descriptions or ranges wanted);
 signing (a radio
 link); more parameter types (a value that fits neither INT32 nor REAL32); per-instance rates; RC channels 9 to 16 calibration (trigger: a use for them).
