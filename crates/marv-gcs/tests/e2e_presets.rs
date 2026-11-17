@@ -1,7 +1,7 @@
 //! End to end: the Devices tab's BARO and IMU preset cards against the simulated vehicle over a real
-//! TCP socket, in real time (docs/link-contract.md section 13). The simulator keeps the rules of the
-//! firmware (R-SEL: a selector write sets all its fields; the echo carries the selector only); the
-//! card reads the fields back by name and compares them with the table of `marv-presets`.
+//! TCP socket, in real time (docs/link-contract.md section 13). A preset is the station writing the
+//! fields one by one; the card judges the echoes against the table (`gcs_mavlink::presets`), and this
+//! file compares what the simulator holds with the same table.
 
 use std::cell::RefCell;
 use std::net::TcpListener;
@@ -15,13 +15,13 @@ use eframe::egui;
 use eframe::egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use gcs_mavlink::presets::{BARO, IMU1, SENSORS, Value, preset};
 use gcs_mavlink::services::params::FetchStatus;
 use gcs_mavlink::{Access, Command, LinkStatus, Session, SessionConfig, VehicleState};
 use gcs_sim::{ParamValue, SimConfig, SimVehicle};
 use gcs_transport::Endpoint;
 use marv_gcs::views::presets::{PENDING_TEXT, SAVE_AND_REBOOT};
 use marv_gcs::views::{self, ViewCtx};
-use marv_presets::{BARO, IMU1, Value, preset};
 
 const POLL: Duration = Duration::from_millis(20);
 const NOT_SAVED: &str = "Applied in RAM; not saved to flash";
@@ -147,6 +147,20 @@ impl Window {
     }
 }
 
+#[test]
+fn the_simulators_defaults_are_the_default_preset_of_every_sensor() {
+    let rig = Rig::start();
+    for sensor in SENSORS {
+        let default = preset(sensor, sensor.default_id).expect("the default preset");
+        for (field, want) in sensor.fields.iter().zip(default.values) {
+            assert_eq!(stored(&rig, field), *want, "{field}");
+        }
+    }
+    for selector in ["IMU1_PRESET", "IMU2_PRESET", "BARO_PRESET", "MAG_PRESET"] {
+        assert_eq!(rig.param(selector), None, "{selector}");
+    }
+}
+
 fn stored(rig: &Rig, field: &str) -> Value {
     match rig.param(field).unwrap_or_else(|| panic!("{field}")) {
         ParamValue::Int32(v) => Value::I32(v),
@@ -156,10 +170,10 @@ fn stored(rig: &Rig, field: &str) -> Value {
 }
 
 #[test]
-fn baro_smooth_is_applied_read_back_and_saved_only_when_asked() {
+fn baro_smooth_is_applied_by_three_writes_and_saved_only_when_asked() {
     let rig = Rig::start();
     let mut window = Window::open(rig.session.clone());
-    assert_eq!(rig.param("BARO_PRESET"), Some(ParamValue::Int32(1)));
+    assert_eq!(rig.param("BARO_OSR_P"), Some(ParamValue::Int32(16)));
 
     window
         .harness
@@ -179,14 +193,18 @@ fn baro_smooth_is_applied_read_back_and_saved_only_when_asked() {
         window.forwarded.borrow().is_empty(),
         "choosing sends nothing"
     );
-    assert_eq!(rig.param("BARO_PRESET"), Some(ParamValue::Int32(1)));
+    assert_eq!(rig.param("BARO_OSR_P"), Some(ParamValue::Int32(16)));
 
     window.click_nth("Apply", 2);
-    // One write and five reads left the window.
+    // The three changed fields left the window, the one that goes down first.
     let forwarded = window.forwarded.borrow().clone();
-    assert_eq!(forwarded.len(), 6, "{forwarded:?}");
-    assert!(forwarded[0].starts_with("SetParam") && forwarded[0].contains("BARO_PRESET"));
-    assert!(forwarded[1..].iter().all(|c| c.starts_with("ReadParam")));
+    assert_eq!(forwarded.len(), 3, "{forwarded:?}");
+    for (sent, field) in forwarded
+        .iter()
+        .zip(["BARO_ODR_HZ", "BARO_OSR_P", "BARO_IIR_P"])
+    {
+        assert!(sent.starts_with("SetParam") && sent.contains(field), "{sent}");
+    }
 
     let deadline = Instant::now() + Duration::from_secs(8);
     while !window.shows(NOT_SAVED) {
@@ -197,7 +215,6 @@ fn baro_smooth_is_applied_read_back_and_saved_only_when_asked() {
         std::thread::sleep(POLL);
         window.harness.run();
     }
-    assert_eq!(rig.param("BARO_PRESET"), Some(ParamValue::Int32(3)));
     let chosen = preset(&BARO, 3).expect("preset 3");
     for (field, want) in BARO.fields.iter().zip(chosen.values) {
         assert_eq!(stored(&rig, field), *want, "{field}");
@@ -234,7 +251,7 @@ fn baro_smooth_is_applied_read_back_and_saved_only_when_asked() {
 fn imu1_smooth_is_pending_until_save_and_reboot_which_sends_245_then_246() {
     let rig = Rig::start();
     let mut window = Window::open(rig.session.clone());
-    assert_eq!(rig.param("IMU1_PRESET"), Some(ParamValue::Int32(1)));
+    assert_eq!(rig.param("IMU1_ODR_HZ"), Some(ParamValue::Int32(800)));
 
     window
         .harness
@@ -252,12 +269,13 @@ fn imu1_smooth_is_pending_until_save_and_reboot_which_sends_245_then_246() {
     window.harness.run();
     window.click_nth("Apply", 0);
     let forwarded = window.forwarded.borrow().clone();
-    assert_eq!(
-        forwarded.len(),
-        4,
-        "one write and three reads: {forwarded:?}"
-    );
-    assert!(forwarded[0].starts_with("SetParam") && forwarded[0].contains("IMU1_PRESET"));
+    assert_eq!(forwarded.len(), 3, "the three fields: {forwarded:?}");
+    for (sent, field) in forwarded
+        .iter()
+        .zip(["IMU1_ACC_FS", "IMU1_GYR_FS", "IMU1_ODR_HZ"])
+    {
+        assert!(sent.starts_with("SetParam") && sent.contains(field), "{sent}");
+    }
 
     let deadline = Instant::now() + Duration::from_secs(8);
     while !window.shows(PENDING_TEXT) {
@@ -268,7 +286,6 @@ fn imu1_smooth_is_pending_until_save_and_reboot_which_sends_245_then_246() {
         std::thread::sleep(POLL);
         window.harness.run();
     }
-    assert_eq!(rig.param("IMU1_PRESET"), Some(ParamValue::Int32(4)));
     let chosen = preset(&IMU1, 4).expect("preset 4");
     for (field, want) in IMU1.fields.iter().zip(chosen.values) {
         assert_eq!(stored(&rig, field), *want, "{field}");
@@ -278,7 +295,7 @@ fn imu1_smooth_is_pending_until_save_and_reboot_which_sends_245_then_246() {
             .texts
             .entries
             .iter()
-            .any(|t| t.text == "IMU1_PRESET: applies after reboot"))
+            .any(|t| t.text == "IMU1_ODR_HZ: applies after reboot"))
             .is_some(),
         "the vehicle's notice"
     );
@@ -335,6 +352,6 @@ fn imu1_smooth_is_pending_until_save_and_reboot_which_sends_245_then_246() {
     assert!(commands[0].contains("MAV_CMD_PREFLIGHT_STORAGE"));
     assert!(commands[1].contains("MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN"));
     assert!(commands[1].contains("[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]"));
-    // The simulator does not reboot: the stored preset is as it was.
-    assert_eq!(rig.param("IMU1_PRESET"), Some(ParamValue::Int32(4)));
+    // The simulator does not reboot: the stored values are as they were.
+    assert_eq!(rig.param("IMU1_ODR_HZ"), Some(ParamValue::Int32(400)));
 }

@@ -1,12 +1,14 @@
 //! The "Sensor presets" section of the Devices tab (`docs/link-contract.md` section 13): one card per
 //! sensor (IMU1, IMU2, BARO, MAG) with a preset picker, a radar chart, the summary, the physical
-//! values and one status line. The station renders the table of `marv-presets` and computes no preset
-//! logic and no score. BARO and MAG: Apply sends one `PARAM_SET` of the selector and one read by
-//! name of every governed field; only when the vehicle's table then equals the crate's values is the
-//! preset "Applied in RAM; not saved" (Save to flash is command 245, as on the Radio tab). The IMUs
-//! apply after a reboot: the same Apply and read-back, then "Pending" and one "Save and reboot"
-//! (245, and only when it is ACCEPTED, 246). The debug switch of the section header offers "Custom
-//! (debug)" and, while a selector is 0, edits the governed fields; it is a gate of this window only.
+//! values and one status line. A preset is a station feature: the table is `gcs_mavlink::presets` and
+//! the vehicle knows no preset. The active preset is the one whose field values all equal the vehicle's,
+//! else "Custom". Apply writes the preset's fields as ordinary `PARAM_SET` writes, every field whose
+//! value goes down first, then every field whose value goes up (see [`write_plan`]); only when every
+//! write's echo has come back and the vehicle's values equal the table is the preset "Applied in RAM;
+//! not saved" (Save to flash is command 245, as on the Radio tab). The IMUs apply after a reboot: the
+//! same writes, then "Pending" and one "Save and reboot" (245, and only when it is ACCEPTED, 246). The
+//! debug switch of the section header offers "Custom (debug)" in the picker, which shows the fields as
+//! values to type; it is a gate of this window only.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -20,7 +22,7 @@ use gcs_mavlink::Command;
 use gcs_mavlink::dialect::MavCmd;
 use gcs_mavlink::services::params::{ParamTable, ParamValue, WriteStatus};
 use gcs_mavlink::{CommandStatus, VehicleState};
-use marv_presets::{
+use gcs_mavlink::presets::{
     Axis, Kind, MARV_DEVICE_IMU1, MARV_DEVICE_IMU2, Preset, SENSORS, Sensor, Value, preset,
 };
 
@@ -29,21 +31,19 @@ use super::actions::{self, Confirm};
 use super::radio::{NOT_SAVED_TEXT, saved_since};
 use crate::status::{self, GREY, RED, YELLOW};
 
-/// Shown for a selector the list does not hold yet.
+/// Shown for a sensor whose fields the list does not hold yet.
 pub const NOT_LOADED_TEXT: &str = "parameters not loaded";
-/// Shown after an Apply whose read-back differs from the table.
+/// Shown after an Apply whose writes all had their time and the vehicle's values still differ from the table.
 pub const MISMATCH_TEXT: &str = "the vehicle's values differ from the preset table";
-/// Shown (and the picker disabled) when a known preset's fields differ from the crate's.
-pub const SKEW_TEXT: &str = "station preset table does not match the firmware";
 /// An IMU preset that is written and read back and takes effect after the next boot.
 pub const PENDING_TEXT: &str = "Pending: takes effect after Save and reboot";
 /// The label of the one button of a pending IMU card.
 pub const SAVE_AND_REBOOT: &str = "Save and reboot";
 /// The label of the debug switch in the section header.
 pub const DEBUG_TEXT: &str = "Debug: raw sensor settings";
-/// On the Parameters tab, beside a selector or governed field while the debug switch is off.
+/// On the Parameters tab, beside a field a preset sets while the debug switch is off.
 pub const SET_IN_DEVICES_TEXT: &str = "set in Devices > Sensor presets";
-/// Beside an IMU selector or field that is editable: the chip is configured once, at boot.
+/// Beside an IMU field that is editable: the chip is configured once, at boot.
 pub const AFTER_REBOOT_TEXT: &str = "applies after reboot";
 /// The save of "Save and reboot" is waited for this long to appear as the vehicle's last command.
 const SAVE_WAIT: Duration = Duration::from_secs(15);
@@ -52,24 +52,39 @@ const SAVE_WAIT: Duration = Duration::from_secs(15);
 /// Parameters tab reads it. It is a gate of this window only; the vehicle knows nothing of it.
 pub type DebugFlag = Rc<Cell<bool>>;
 
-/// Whether `name` is the selector of a sensor or one of the fields a preset sets.
+/// Whether `name` is one of the fields a preset sets.
 pub fn is_governed(name: &str) -> bool {
-    SENSORS
-        .iter()
-        .any(|s| s.selector == name || s.fields.contains(&name))
+    SENSORS.iter().any(|s| s.fields.contains(&name))
 }
 
 /// Whether a write of the governed parameter `name` takes effect only after a reboot (the IMUs).
 pub fn applies_after_reboot(name: &str) -> bool {
-    SENSORS.iter().any(|s| {
-        matches!(s.device, MARV_DEVICE_IMU1 | MARV_DEVICE_IMU2)
-            && (s.selector == name || s.fields.contains(&name))
-    })
+    SENSORS
+        .iter()
+        .any(|s| is_imu(s) && s.fields.contains(&name))
 }
-/// The name a selector of 0 is shown as.
+
+fn is_imu(sensor: &Sensor) -> bool {
+    matches!(sensor.device, MARV_DEVICE_IMU1 | MARV_DEVICE_IMU2)
+}
+
+/// The sensor's name on its card.
+pub fn sensor_name(sensor: &Sensor) -> &'static str {
+    match sensor.device {
+        MARV_DEVICE_IMU1 => "IMU1",
+        MARV_DEVICE_IMU2 => "IMU2",
+        3 => "BARO",
+        _ => "MAG",
+    }
+}
+
+/// The entry of the picker that shows the fields as values to type (debug switch on).
 pub const CUSTOM_TEXT: &str = "Custom (debug)";
-/// The read-back is judged when it has had this long to arrive (a read is asked 3 times, 500 ms apart).
-pub const READ_BACK_WAIT: Duration = Duration::from_secs(3);
+/// What a card shows when the vehicle's values equal no preset.
+pub const CUSTOM_ACTIVE_TEXT: &str = "Custom";
+/// An Apply is judged when its writes have had this long to be answered (a write is sent 3 times,
+/// 500 ms apart).
+pub const WRITE_WAIT: Duration = Duration::from_secs(3);
 
 const CARD_WIDTH: f32 = 260.0;
 pub const CHART_SIZE: Vec2 = vec2(CARD_WIDTH, 180.0);
@@ -106,6 +121,8 @@ struct Applied {
     at: Duration,
     /// The preset that was written.
     id: i32,
+    /// The fields that were written, in the order they were sent.
+    written: Vec<String>,
     /// An IMU preset: how its save and reboot stands.
     reboot: Reboot,
 }
@@ -123,32 +140,27 @@ pub enum Reboot {
     Failed(String),
 }
 
-/// What the vehicle's selector says.
+/// Which preset the vehicle's values are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Current {
+    /// The list does not hold every field yet.
     NotLoaded,
-    /// A value the crate does not know.
-    Unknown(i64),
-    /// 0.
+    /// The values equal no preset.
     Custom,
     Preset(i32),
 }
 
 impl Current {
+    /// The preset of `sensor` whose field values all equal the table's, else `Custom`.
     pub fn of(table: &ParamTable, sensor: &Sensor) -> Current {
-        let Some(value) = table.value(sensor.selector).map(ParamValue::as_f64) else {
+        if sensor.fields.iter().any(|f| table.value(f).is_none()) {
             return Current::NotLoaded;
-        };
-        let id = value.round() as i64;
-        if value.fract() != 0.0 {
-            Current::Unknown(id)
-        } else if id == 0 {
-            Current::Custom
-        } else if i32::try_from(id).is_ok_and(|id| preset(sensor, id).is_some()) {
-            Current::Preset(id as i32)
-        } else {
-            Current::Unknown(id)
         }
+        sensor
+            .presets
+            .iter()
+            .find(|p| fields_differ(table, sensor, p.id) == Some(false))
+            .map_or(Current::Custom, |p| Current::Preset(p.id))
     }
 }
 
@@ -202,48 +214,62 @@ impl SensorPresets {
 /// How an Apply stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Flow {
-    /// The selector write is not answered yet.
+    /// Writes are not answered yet.
     Writing,
-    /// The vehicle refused the selector write; the value it uses.
-    Refused(String),
-    NoAnswer,
-    /// The reads are out and the table does not equal the preset yet.
-    Reading,
-    /// The table equals the preset.
+    /// The vehicle refused a write: the field and the value it uses.
+    Refused { field: String, in_effect: String },
+    /// A write got no answer: the field.
+    NoAnswer(String),
+    /// Every write was answered and the vehicle's values equal the preset.
     Matches,
-    /// The reads had their time and the table still differs.
+    /// The writes had their time and the values still differ.
     Differs,
 }
 
-/// Where an Apply that was sent at `at` stands at `now`: the selector's write, then the table against
-/// the crate's preset.
+/// Where an Apply of preset `id` that wrote the fields `written` at `at` stands at `now`, from the
+/// echo of each write and the table.
 pub fn apply_flow(
     table: &ParamTable,
     sensor: &Sensor,
     id: i32,
+    written: &[String],
     at: Duration,
     now: Duration,
 ) -> Flow {
-    match table.writes.get(sensor.selector) {
-        Some(WriteStatus::Pending { .. }) => return Flow::Writing,
-        Some(WriteStatus::Refused { in_effect, .. }) => {
-            return Flow::Refused(in_effect.to_string());
+    let mut writing = false;
+    let mut refused = None;
+    let mut unanswered = None;
+    for name in written {
+        match table.writes.get(name) {
+            Some(WriteStatus::Pending { .. }) => writing = true,
+            Some(WriteStatus::Refused { in_effect, .. }) => {
+                refused.get_or_insert((name, in_effect));
+            }
+            Some(WriteStatus::Unanswered { .. }) => {
+                unanswered.get_or_insert(name);
+            }
+            None => {}
         }
-        Some(WriteStatus::Unanswered { .. }) => return Flow::NoAnswer,
-        None => {}
     }
-    let selected = table.value(sensor.selector).map(ParamValue::as_f64) == Some(f64::from(id));
-    // Custom leaves the fields as they are: only the selector is compared.
-    if selected && (id == 0 || fields_differ(table, sensor, id) == Some(false)) {
+    if writing {
+        Flow::Writing
+    } else if let Some((field, in_effect)) = refused {
+        Flow::Refused {
+            field: field.clone(),
+            in_effect: in_effect.to_string(),
+        }
+    } else if let Some(field) = unanswered {
+        Flow::NoAnswer(field.clone())
+    } else if fields_differ(table, sensor, id) == Some(false) {
         Flow::Matches
-    } else if now.saturating_sub(at) < READ_BACK_WAIT {
-        Flow::Reading
+    } else if now.saturating_sub(at) < WRITE_WAIT {
+        Flow::Writing
     } else {
         Flow::Differs
     }
 }
 
-/// Whether a value of the table is the crate's value (a REAL32 numerically, within its precision).
+/// Whether a value of the table is the preset's value (a REAL32 numerically, within its precision).
 pub fn same(got: ParamValue, want: Value) -> bool {
     let got = got.as_f64();
     match want {
@@ -252,8 +278,8 @@ pub fn same(got: ParamValue, want: Value) -> bool {
     }
 }
 
-/// Whether the table's fields differ from the crate's values of preset `id`: `None` when the preset
-/// is unknown or a field is not in the table (not loaded).
+/// Whether the table's fields differ from the values of preset `id`: `None` when the preset is
+/// unknown or a field is not in the table (not loaded).
 pub fn fields_differ(table: &ParamTable, sensor: &Sensor, id: i32) -> Option<bool> {
     let preset = preset(sensor, id)?;
     let mut differ = false;
@@ -261,6 +287,40 @@ pub fn fields_differ(table: &ParamTable, sensor: &Sensor, id: i32) -> Option<boo
         differ |= !same(table.value(field)?, *want);
     }
     Some(differ)
+}
+
+/// The writes of an Apply of `chosen`, in the order they are sent: first every field whose value goes
+/// down, then every field whose value goes up, each group in the table's field order; a field that
+/// does not change is not written. Every intermediate combination stays valid because the limits are
+/// downward closed (BMP581: the highest ODR falls as OSR rises; BMM350: the highest averaging falls
+/// as ODR rises; IIR and the IMU fields are unconstrained), so lowering an ODR, an OSR or an
+/// averaging never makes a valid combination invalid. `None` when a field is not in the table.
+pub fn write_plan(
+    table: &ParamTable,
+    sensor: &Sensor,
+    chosen: &Preset,
+) -> Option<Vec<(&'static str, ParamValue)>> {
+    let mut down = Vec::new();
+    let mut up = Vec::new();
+    for (field, want) in sensor.fields.iter().zip(chosen.values) {
+        let param = table.params.get(*field)?;
+        let have = param.value(table.encoding);
+        if same(have, *want) {
+            continue;
+        }
+        let want = match want {
+            Value::I32(v) => f64::from(*v),
+            Value::F32(v) => f64::from(*v),
+        };
+        let value = param.kind.value_from(want)?;
+        if want < have.as_f64() {
+            down.push((*field, value));
+        } else {
+            up.push((*field, value));
+        }
+    }
+    down.extend(up);
+    Some(down)
 }
 
 impl SensorPreset {
@@ -274,11 +334,8 @@ impl SensorPreset {
     ) {
         let table = &cx.state.params;
         let now = cx.now.unwrap_or_default();
-        let title = sensor
-            .selector
-            .strip_suffix("_PRESET")
-            .unwrap_or(sensor.selector);
-        let imu = applies_after_reboot(sensor.selector);
+        let title = sensor_name(sensor);
+        let imu = is_imu(sensor);
         if !imu
             && let Some(applied) = &self.applied
             && saved_since(cx.state, applied.at)
@@ -292,26 +349,25 @@ impl SensorPreset {
         if match current {
             Current::Preset(id) => self.staged == Some(id),
             Current::Custom => self.staged == Some(0),
-            _ => false,
+            Current::NotLoaded => false,
         } {
             self.staged = None;
         }
-        let flow = self
-            .applied
-            .as_ref()
-            .map(|a| apply_flow(table, sensor, a.id, a.at, now));
-        let skew = flow.is_none()
-            && matches!(current, Current::Preset(id) if fields_differ(table, sensor, id) == Some(true));
-        let enabled = !skew
-            && match current {
-                Current::Preset(_) => true,
-                Current::Custom => debug,
-                _ => false,
-            };
+        let flow = self.applied.as_ref().map(|a| {
+            apply_flow(table, sensor, a.id, &a.written, a.at, now)
+        });
+        if matches!(
+            flow,
+            Some(Flow::Refused { .. } | Flow::NoAnswer(_) | Flow::Differs)
+        ) {
+            // The card shows what the values now match.
+            self.staged = None;
+        }
+        let enabled = current != Current::NotLoaded;
         let chosen = match current {
             Current::Preset(id) => Some(self.staged.unwrap_or(id)),
             Current::Custom => Some(self.staged.unwrap_or(0)),
-            _ => None,
+            Current::NotLoaded => None,
         };
         let chosen_preset = chosen.and_then(|id| preset(sensor, id));
 
@@ -319,14 +375,14 @@ impl SensorPreset {
         let named = ui.strong(format!("{title} preset"));
         let shown = match (current, chosen) {
             (Current::NotLoaded, _) => "—".to_string(),
-            (Current::Unknown(n), _) => format!("unknown ({n})"),
-            (_, Some(0)) => CUSTOM_TEXT.to_string(),
+            (_, Some(0)) if debug => CUSTOM_TEXT.to_string(),
+            (_, Some(0)) => CUSTOM_ACTIVE_TEXT.to_string(),
             _ => chosen_preset.map_or_else(String::new, |p| p.name.to_string()),
         };
         let mut hovered = None;
         let mut pick = None;
         let combo = ui.add_enabled_ui(enabled, |ui| {
-            egui::ComboBox::from_id_salt(sensor.selector)
+            egui::ComboBox::from_id_salt(sensor.fields[0])
                 .selected_text(shown)
                 .width(CARD_WIDTH - 24.0)
                 .show_ui(ui, |ui| {
@@ -351,10 +407,7 @@ impl SensorPreset {
         combo.inner.response.labelled_by(named.id);
         if let Some(id) = pick {
             self.staged = Some(id);
-            if matches!(
-                flow,
-                Some(Flow::Refused(_) | Flow::NoAnswer | Flow::Differs)
-            ) {
+            if matches!(flow, Some(Flow::Differs)) {
                 self.applied = None;
             }
         }
@@ -372,7 +425,7 @@ impl SensorPreset {
         }
 
         let flow = self.applied.as_ref().and(flow);
-        let (mut text, mut colour) = status_line(current, skew, flow.as_ref(), self.staged, sensor);
+        let (mut text, mut colour) = status_line(current, flow.as_ref(), self.staged, sensor);
         if matches!(flow, Some(Flow::Matches)) && imu {
             self.advance_reboot(cx.state, now, cx.commands);
             (text, colour) = match self.applied.as_ref().map(|a| &a.reboot) {
@@ -386,7 +439,7 @@ impl SensorPreset {
             };
         }
         ui.add(egui::Label::new(egui::RichText::new(text).color(colour)).wrap());
-        if matches!(flow, Some(Flow::Writing | Flow::Reading))
+        if matches!(flow, Some(Flow::Writing))
             || matches!(
                 self.applied.as_ref().map(|a| &a.reboot),
                 Some(Reboot::Saving(_) | Reboot::Rebooting(_))
@@ -408,27 +461,25 @@ impl SensorPreset {
             }
         }
         if enabled
+            && let Some(id) = chosen.filter(|id| *id != 0)
             && actions::button(ui, "Apply", gate)
-            && let Some(id) = chosen
+            && let Some(plan) = preset(sensor, id).and_then(|p| write_plan(table, sensor, p))
         {
-            cx.commands.push(Command::SetParam {
-                name: sensor.selector.to_owned(),
-                value: ParamValue::I32(id),
-            });
-            if id != 0 {
-                for field in sensor.fields {
-                    cx.commands.push(Command::ReadParam {
-                        name: (*field).to_owned(),
-                    });
-                }
+            let written = plan.iter().map(|(name, _)| (*name).to_owned()).collect();
+            for (name, value) in plan {
+                cx.commands.push(Command::SetParam {
+                    name: name.to_owned(),
+                    value,
+                });
             }
             self.applied = Some(Applied {
                 at: now,
                 id,
+                written,
                 reboot: Reboot::Idle,
             });
         }
-        if debug && current == Current::Custom {
+        if debug && chosen == Some(0) {
             self.custom_fields(ui, cx, sensor, gate);
         }
     }
@@ -605,44 +656,42 @@ fn command_since(
 /// The one status line of a card and its colour.
 pub fn status_line(
     current: Current,
-    skew: bool,
     flow: Option<&Flow>,
     staged: Option<i32>,
     sensor: &Sensor,
 ) -> (String, Color32) {
+    let now_matches = || match current {
+        Current::Preset(id) => preset(sensor, id).map_or("", |p| p.name),
+        _ => CUSTOM_ACTIVE_TEXT,
+    };
     if let Some(flow) = flow {
         return match flow {
             Flow::Writing => ("applying…".to_string(), GREY),
-            Flow::Refused(in_effect) => (format!("refused: vehicle uses {in_effect}"), RED),
-            Flow::NoAnswer => ("no answer".to_string(), RED),
-            Flow::Reading => ("reading back…".to_string(), GREY),
-            Flow::Matches if applies_after_reboot(sensor.selector) => {
-                (PENDING_TEXT.to_string(), YELLOW)
-            }
+            Flow::Refused { field, in_effect } => (
+                format!(
+                    "refused: {field} (vehicle uses {in_effect}); the values now match: {}",
+                    now_matches()
+                ),
+                RED,
+            ),
+            Flow::NoAnswer(field) => (
+                format!(
+                    "no answer: {field}; the values now match: {}",
+                    now_matches()
+                ),
+                RED,
+            ),
+            Flow::Matches if is_imu(sensor) => (PENDING_TEXT.to_string(), YELLOW),
             Flow::Matches => (NOT_SAVED_TEXT.to_string(), YELLOW),
             Flow::Differs => (MISMATCH_TEXT.to_string(), RED),
         };
     }
     match current {
         Current::NotLoaded => (NOT_LOADED_TEXT.to_string(), GREY),
-        Current::Unknown(n) => (
-            format!("unknown preset {n} (station older than firmware)"),
-            RED,
-        ),
-        _ if skew => (SKEW_TEXT.to_string(), RED),
-        Current::Custom => (
-            "Custom (debug): the fields are set one by one".to_string(),
-            YELLOW,
-        ),
-        Current::Preset(id) => match staged.and_then(|s| preset(sensor, s)) {
+        Current::Custom => ("Custom: the values match no preset".to_string(), YELLOW),
+        Current::Preset(_) => match staged.and_then(|s| preset(sensor, s)) {
             Some(p) => (format!("{}: not applied", p.name), GREY),
-            None => (
-                format!(
-                    "on the vehicle: {}",
-                    preset(sensor, id).map_or("", |p| p.name)
-                ),
-                GREY,
-            ),
+            None => (format!("on the vehicle: {}", now_matches()), GREY),
         },
     }
 }

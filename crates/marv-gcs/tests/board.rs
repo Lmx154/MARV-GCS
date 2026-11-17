@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use gcs_mavlink::presets;
 use gcs_mavlink::dialect::{HEARTBEAT_DATA, MavAutopilot, MavModeFlag, MavState, MavType};
 use gcs_mavlink::services::params::{FetchStatus, ParamEncoding, ParamValue, WriteStatus};
 use gcs_mavlink::tlog::{LogSink, TlogReader};
@@ -761,4 +762,76 @@ fn no_dtr() {
     assert_consecutive(&frames);
     assert_eq!(stats.crc_errors, 0, "{stats:?}");
     assert_eq!(stats.discarded_bytes, 0, "{stats:?}");
+}
+
+/// The card's apply logic against the board running the firmware: `write_plan` of the preset, one
+/// `SetParam` each in that order, then every echo (the write leaves `params.writes` and the table holds
+/// the value) compared with the table. RAM only: no command 245 is ever sent.
+fn apply_preset(board: &Board, sensor: &presets::Sensor, id: i32) {
+    use marv_gcs::views::presets::{fields_differ, write_plan};
+    let chosen = presets::preset(sensor, id).expect("preset");
+    let plan = write_plan(&board.state().params, sensor, chosen).expect("fields in the list");
+    let names: Vec<String> = plan.iter().map(|(n, _)| (*n).to_owned()).collect();
+    for (name, value) in plan {
+        board.session().send(Command::SetParam {
+            name: name.to_owned(),
+            value,
+        });
+    }
+    board
+        .wait(5.0, |s| {
+            names.iter().all(|n| {
+                !matches!(
+                    s.params.writes.get(n),
+                    Some(WriteStatus::Pending { .. } | WriteStatus::Unanswered { .. })
+                )
+            })
+        })
+        .unwrap_or_else(|| panic!("{}: writes not answered: {names:?}", chosen.name));
+    let state = board.state();
+    for name in &names {
+        assert!(
+            !state.params.writes.contains_key(name),
+            "{} -> {}: {name} was refused or unanswered: {:?}",
+            sensor.fields[0],
+            chosen.name,
+            state.params.writes.get(name)
+        );
+    }
+    assert_eq!(
+        fields_differ(&state.params, sensor, id),
+        Some(false),
+        "{}: the echoes differ from the table",
+        chosen.name
+    );
+}
+
+#[test]
+#[ignore = "needs the board running the firmware (tools/run.sh)"]
+fn presets_every_baro_and_mag_transition_is_accepted_in_ram_and_ends_on_balanced() {
+    let board = Board::open("/dev/ttyACM1");
+    board.connected();
+    board.complete(10.0);
+    for sensor in [&presets::BARO, &presets::MAG] {
+        for from in sensor.presets {
+            for to in sensor.presets.iter().filter(|p| p.id != from.id) {
+                apply_preset(&board, sensor, from.id);
+                apply_preset(&board, sensor, to.id);
+                println!("BOARD preset {} -> {} ok", from.name, to.name);
+            }
+        }
+        apply_preset(&board, sensor, sensor.default_id);
+        assert_eq!(
+            presets::preset(sensor, sensor.default_id).map(|p| p.name),
+            Some("Balanced")
+        );
+    }
+    assert!(
+        board
+            .state()
+            .command
+            .as_ref()
+            .is_none_or(|c| c.command != 245),
+        "nothing was saved"
+    );
 }

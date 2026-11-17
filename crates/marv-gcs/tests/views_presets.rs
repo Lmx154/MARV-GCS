@@ -11,15 +11,15 @@ use eframe::egui::{Key, Modifiers};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use gcs_mavlink::dialect::MavCmd;
+use gcs_mavlink::presets::{BARO, IMU1, MAG, SENSORS, Sensor, Value, preset};
 use gcs_mavlink::services::params::WriteStatus;
 use gcs_mavlink::services::params::{FetchStatus, Param, ParamTable, ParamType, ParamValue};
 use gcs_mavlink::{Access, Command, CommandRecord, CommandStatus, VehicleState};
 use marv_gcs::views::presets::{
-    self, AFTER_REBOOT_TEXT, CUSTOM_TEXT, DEBUG_TEXT, MISMATCH_TEXT, NOT_LOADED_TEXT, PENDING_TEXT,
-    SAVE_AND_REBOOT, SET_IN_DEVICES_TEXT, SKEW_TEXT,
+    self, AFTER_REBOOT_TEXT, CUSTOM_ACTIVE_TEXT, CUSTOM_TEXT, DEBUG_TEXT, MISMATCH_TEXT,
+    NOT_LOADED_TEXT, PENDING_TEXT, SAVE_AND_REBOOT, SET_IN_DEVICES_TEXT, WRITE_WAIT,
 };
 use marv_gcs::views::{self, ViewCtx};
-use marv_presets::{BARO, IMU1, MAG, SENSORS, Sensor, Value, preset};
 
 const NOT_SAVED: &str = "Applied in RAM; not saved to flash";
 
@@ -40,9 +40,8 @@ fn put(table: &mut ParamTable, name: &str, value: Value) {
     );
 }
 
-/// The selector of `sensor` at `id` and its fields at the values of preset `id`.
+/// The fields of `sensor` at the values of preset `id`.
 fn set_sensor(table: &mut ParamTable, sensor: &Sensor, id: i32) {
-    put(table, sensor.selector, Value::I32(id));
     if let Some(p) = preset(sensor, id) {
         for (field, value) in sensor.fields.iter().zip(p.values) {
             put(table, field, *value);
@@ -50,7 +49,7 @@ fn set_sensor(table: &mut ParamTable, sensor: &Sensor, id: i32) {
     }
 }
 
-/// A complete list with every sensor at preset 1.
+/// A complete list with every sensor at preset 1 (the firmware defaults).
 fn loaded() -> ParamTable {
     let mut table = ParamTable {
         fetch: FetchStatus::Complete,
@@ -229,44 +228,72 @@ fn the_open_picker_offers_the_crates_presets_and_never_custom() {
     assert!(rig.harness.query_by_label(CUSTOM_TEXT).is_none());
 }
 
+/// The `SetParam` commands sent so far, as (name, number).
+fn writes_of(rig: &Rig) -> Vec<(String, f64)> {
+    rig.commands
+        .borrow()
+        .iter()
+        .filter_map(|c| match c {
+            Command::SetParam { name, value } => Some((name.clone(), value.as_f64())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The vehicle answers a write: the echo confirms it (the value is in the table, the write is gone).
+fn echo(rig: &mut Rig, name: &str, value: Value) {
+    rig.update(|s| {
+        put(&mut s.params, name, value);
+        s.params.writes.remove(name);
+    });
+}
+
+/// The session has taken a write up: it is pending.
+fn pending(rig: &mut Rig, name: &str, value: Value) {
+    let sent = match value {
+        Value::I32(v) => ParamValue::I32(v),
+        Value::F32(v) => ParamValue::F32(v),
+    };
+    rig.update(|s| {
+        s.params
+            .writes
+            .insert(name.to_string(), WriteStatus::Pending { value: sent });
+    });
+}
+
 #[test]
-fn baro_apply_sends_one_set_and_five_reads_and_applied_waits_for_the_read_back() {
+fn baro_smooth_from_balanced_sends_exactly_the_changed_fields_down_first_and_applied_waits_for_the_echoes()
+ {
     let mut rig = Rig::new(Access::Configure, loaded());
     rig.pick(BARO_CARD, "Smooth");
     assert!(rig.commands.borrow().is_empty(), "choosing sends nothing");
     assert!(rig.has("Smooth: not applied"));
     rig.click_nth("Apply", BARO_CARD);
-    let sent = rig.sent();
-    assert_eq!(sent.len(), 6, "{sent:?}");
-    assert!(matches!(
-        &rig.commands.borrow()[0],
-        Command::SetParam { name, value: ParamValue::I32(3) } if name == "BARO_PRESET"
-    ));
-    let reads: Vec<String> = rig.commands.borrow()[1..]
-        .iter()
-        .map(|c| match c {
-            Command::ReadParam { name } => name.clone(),
-            other => panic!("{other:?}"),
-        })
-        .collect();
-    assert_eq!(reads, BARO.fields);
-    assert_eq!(reads.len(), 5);
-    // The echo carries only the selector: the fields are still the old preset's.
-    rig.update(|s| put(&mut s.params, "BARO_PRESET", Value::I32(3)));
-    assert!(!rig.has(NOT_SAVED), "applied only after the read-back");
-    assert!(rig.has("reading back"));
-    // Three of the five reads arrived.
-    rig.update(|s| {
-        let p = preset(&BARO, 3).unwrap();
-        for (f, v) in BARO.fields.iter().zip(p.values).take(3) {
-            put(&mut s.params, f, *v);
-        }
-    });
-    assert!(!rig.has(NOT_SAVED));
-    rig.update(|s| set_sensor(&mut s.params, &BARO, 3));
+    // Balanced 50 Hz x16/x2 IIR 0/0 to Smooth 25 Hz x32/x2 IIR 3/0: the ODR goes down, the OSR_P and
+    // the IIR_P go up, OSR_T and IIR_T stay.
+    assert_eq!(
+        writes_of(&rig),
+        [
+            ("BARO_ODR_HZ".to_string(), 25.0),
+            ("BARO_OSR_P".to_string(), 32.0),
+            ("BARO_IIR_P".to_string(), 3.0)
+        ]
+    );
+    assert_eq!(rig.sent().len(), 3, "nothing but those writes");
+    assert!(rig.has("applying"));
+    for (name, value) in [("BARO_ODR_HZ", 25), ("BARO_OSR_P", 32), ("BARO_IIR_P", 3)] {
+        pending(&mut rig, name, Value::I32(value));
+    }
+    assert!(!rig.has(NOT_SAVED), "nothing is answered yet");
+    echo(&mut rig, "BARO_ODR_HZ", Value::I32(25));
+    echo(&mut rig, "BARO_OSR_P", Value::I32(32));
+    assert!(!rig.has(NOT_SAVED), "one write is still not answered");
+    assert!(rig.has("applying"));
+    echo(&mut rig, "BARO_IIR_P", Value::I32(3));
     assert!(rig.has(NOT_SAVED));
+    assert_eq!(rig.shown(BARO_CARD), "Smooth");
     assert!(rig.enabled_nth("Save to flash", 0));
-    assert_eq!(rig.sent().len(), 6, "nothing else was sent");
+    assert_eq!(rig.sent().len(), 3, "nothing else was sent");
 }
 
 fn storage_record(started: Duration, status: CommandStatus) -> CommandRecord {
@@ -338,33 +365,93 @@ fn save_sends_one_command_245_and_the_line_clears_only_on_an_accepted_save_after
 }
 
 #[test]
-fn a_read_back_that_differs_says_so_and_offers_no_save() {
+fn a_refused_write_names_the_field_and_the_card_shows_what_the_values_now_match() {
     let mut rig = Rig::new(Access::Configure, loaded());
     rig.pick(BARO_CARD, "Smooth");
     rig.click_nth("Apply", BARO_CARD);
-    // The selector was accepted, one field never took the preset's value.
+    for (name, value) in [("BARO_ODR_HZ", 25), ("BARO_OSR_P", 32), ("BARO_IIR_P", 3)] {
+        pending(&mut rig, name, Value::I32(value));
+    }
+    echo(&mut rig, "BARO_ODR_HZ", Value::I32(25));
+    // The vehicle keeps OSR_P 16 and takes the IIR.
     rig.update(|s| {
-        set_sensor(&mut s.params, &BARO, 3);
-        put(&mut s.params, "BARO_OSR_P", Value::I32(1));
+        s.params.writes.insert(
+            "BARO_OSR_P".to_string(),
+            WriteStatus::Refused {
+                value: ParamValue::I32(32),
+                in_effect: ParamValue::I32(16),
+            },
+        );
     });
-    assert!(rig.has("reading back"));
-    rig.now.set(rig.now.get() + Duration::from_secs(4));
+    assert!(rig.has("applying"), "one write is still not answered");
+    echo(&mut rig, "BARO_IIR_P", Value::I32(3));
+    assert!(rig.has("refused: BARO_OSR_P (vehicle uses 16)"));
+    assert!(rig.has("the values now match: Custom"));
+    assert!(!rig.has(NOT_SAVED));
+    assert!(rig.harness.query_by_label("Save to flash").is_none());
+    assert_eq!(rig.shown(BARO_CARD), CUSTOM_ACTIVE_TEXT);
+    assert_eq!(rig.sent().len(), 3);
+}
+
+#[test]
+fn writes_whose_values_never_arrive_end_as_a_mismatch_and_offer_no_save() {
+    let mut rig = Rig::new(Access::Configure, loaded());
+    rig.pick(BARO_CARD, "Smooth");
+    rig.click_nth("Apply", BARO_CARD);
+    echo(&mut rig, "BARO_ODR_HZ", Value::I32(25));
+    assert!(rig.has("applying"));
+    rig.now.set(rig.now.get() + WRITE_WAIT + Duration::from_secs(1));
     rig.update(|_| {});
     assert!(rig.has(MISMATCH_TEXT));
     assert!(!rig.has(NOT_SAVED));
     assert!(rig.harness.query_by_label("Save to flash").is_none());
-    assert_eq!(rig.sent().len(), 6);
 }
 
 #[test]
-fn mag_apply_reads_its_two_fields_and_compares_the_real_value_numerically() {
+fn a_write_without_an_answer_names_the_field() {
+    let mut rig = Rig::new(Access::Configure, loaded());
+    rig.pick(BARO_CARD, "Smooth");
+    rig.click_nth("Apply", BARO_CARD);
+    echo(&mut rig, "BARO_ODR_HZ", Value::I32(25));
+    echo(&mut rig, "BARO_IIR_P", Value::I32(3));
+    rig.update(|s| {
+        s.params.writes.insert(
+            "BARO_OSR_P".to_string(),
+            WriteStatus::Unanswered {
+                value: ParamValue::I32(32),
+            },
+        );
+    });
+    assert!(rig.has("no answer: BARO_OSR_P"));
+    assert!(!rig.has(NOT_SAVED));
+}
+
+#[test]
+fn mag_ultra_low_noise_from_balanced_writes_the_odr_down_then_the_averaging_up() {
     let mut rig = Rig::new(Access::Configure, loaded());
     rig.pick(3, name_of(&MAG, 4));
     rig.click_nth("Apply", 3);
-    assert_eq!(rig.sent().len(), 3, "{:?}", rig.sent());
-    rig.update(|s| set_sensor(&mut s.params, &MAG, 4));
+    assert_eq!(
+        writes_of(&rig),
+        [("MAG_ODR_HZ".to_string(), 50.0), ("MAG_AVG".to_string(), 8.0)]
+    );
+    assert!(matches!(
+        &rig.commands.borrow()[0],
+        Command::SetParam { value: ParamValue::F32(v), .. } if *v == 50.0
+    ));
+    echo(&mut rig, "MAG_ODR_HZ", Value::F32(50.0));
+    assert!(!rig.has(NOT_SAVED));
+    echo(&mut rig, "MAG_AVG", Value::I32(8));
     assert!(rig.has(NOT_SAVED));
     assert!(matches!(preset(&MAG, 4).unwrap().values[0], Value::F32(_)));
+}
+
+#[test]
+fn applying_the_active_preset_writes_nothing_and_offers_the_save() {
+    let mut rig = Rig::new(Access::Configure, loaded());
+    rig.click_nth("Apply", BARO_CARD);
+    assert!(rig.commands.borrow().is_empty());
+    assert!(rig.has(NOT_SAVED));
 }
 
 #[test]
@@ -421,41 +508,36 @@ fn commands_of(rig: &Rig) -> Vec<(u32, f32)> {
         .collect()
 }
 
-/// IMU1 "Max range" applied and read back: the card shows Pending.
+/// IMU1 "Smooth" applied and echoed: the card shows Pending.
 fn pending_imu1(rig: &mut Rig) {
-    rig.pick(IMU1_CARD, "Max range");
+    rig.pick(IMU1_CARD, "Smooth");
     rig.click_nth("Apply", IMU1_CARD);
-    rig.update(|s| set_sensor(&mut s.params, &IMU1, 3));
+    rig.update(|s| set_sensor(&mut s.params, &IMU1, 4));
 }
 
 #[test]
-fn imu_apply_sends_one_set_and_three_reads_then_pending_and_no_command_until_save_and_reboot() {
+fn imu_smooth_sends_the_three_fields_then_pending_and_no_command_until_save_and_reboot() {
     let mut rig = Rig::new(Access::Configure, loaded());
-    rig.pick(IMU1_CARD, "Max range");
+    rig.pick(IMU1_CARD, "Smooth");
     rig.click_nth("Apply", IMU1_CARD);
-    let sent = rig.sent();
-    assert_eq!(sent.len(), 4, "{sent:?}");
-    assert!(matches!(
-        &rig.commands.borrow()[0],
-        Command::SetParam { name, value: ParamValue::I32(3) } if name == "IMU1_PRESET"
-    ));
-    let reads: Vec<String> = rig.commands.borrow()[1..]
-        .iter()
-        .map(|c| match c {
-            Command::ReadParam { name } => name.clone(),
-            other => panic!("{other:?}"),
-        })
-        .collect();
-    assert_eq!(reads, IMU1.fields);
-    assert_eq!(reads.len(), 3);
-    // The echo carries the selector only: not yet pending.
-    rig.update(|s| put(&mut s.params, "IMU1_PRESET", Value::I32(3)));
-    assert!(!rig.has(PENDING_TEXT));
-    rig.update(|s| set_sensor(&mut s.params, &IMU1, 3));
+    // Flight +-16 g, 2000 dps, 800 Hz to Smooth +-8 g, 1000 dps, 400 Hz: all three go down.
+    assert_eq!(
+        writes_of(&rig),
+        [
+            ("IMU1_ACC_FS".to_string(), 8.0),
+            ("IMU1_GYR_FS".to_string(), 1000.0),
+            ("IMU1_ODR_HZ".to_string(), 400.0)
+        ]
+    );
+    assert_eq!(rig.sent().len(), 3);
+    echo(&mut rig, "IMU1_ACC_FS", Value::I32(8));
+    echo(&mut rig, "IMU1_GYR_FS", Value::I32(1000));
+    assert!(!rig.has(PENDING_TEXT), "one write is not answered");
+    echo(&mut rig, "IMU1_ODR_HZ", Value::I32(400));
     assert!(rig.has(PENDING_TEXT));
     assert!(!rig.has(NOT_SAVED), "an IMU preset is not 'applied in RAM'");
     assert!(rig.harness.query_by_label("Save to flash").is_none());
-    assert_eq!(rig.sent().len(), 4, "nothing is sent by showing it");
+    assert_eq!(rig.sent().len(), 3, "nothing is sent by showing it");
     assert!(commands_of(&rig).is_empty(), "0 COMMAND_LONG so far");
     // One click arms, the second sends 245 only.
     rig.click_nth(SAVE_AND_REBOOT, 0);
@@ -534,7 +616,7 @@ fn a_new_session_forgets_the_pending_preset() {
     assert!(!rig.has(PENDING_TEXT));
     assert_eq!(
         rig.shown(IMU1_CARD),
-        name_of(&IMU1, 3),
+        name_of(&IMU1, 4),
         "the vehicle's value"
     );
 }
@@ -607,27 +689,24 @@ fn custom_is_offered_only_while_the_debug_switch_is_on_and_the_switch_starts_off
 }
 
 #[test]
-fn choosing_custom_and_apply_writes_selector_zero_only_and_the_vehicle_then_shows_editable_fields()
-{
+fn choosing_custom_debug_shows_the_field_editors_and_sends_nothing() {
     let mut rig = Rig::new(Access::Configure, loaded());
     debug_on(&mut rig);
+    assert!(rig.harness.query_by_label("value of BARO_ODR_HZ").is_none());
     rig.pick(BARO_CARD, CUSTOM_TEXT);
     assert_eq!(rig.shown(BARO_CARD), CUSTOM_TEXT);
     assert!(rig.commands.borrow().is_empty());
-    rig.click_nth("Apply", BARO_CARD);
-    let sent = rig.sent();
-    assert_eq!(sent.len(), 1, "{sent:?}");
-    assert!(matches!(
-        &rig.commands.borrow()[0],
-        Command::SetParam { name, value: ParamValue::I32(0) } if name == "BARO_PRESET"
-    ));
-    assert!(rig.harness.query_by_label("value of BARO_ODR_HZ").is_none());
-    rig.update(|s| put(&mut s.params, "BARO_PRESET", Value::I32(0)));
-    assert!(rig.has(NOT_SAVED));
+    assert_eq!(
+        rig.harness.get_all_by_label("Apply").count(),
+        3,
+        "the other three cards have their Apply; the card of Custom has none"
+    );
     for field in BARO.fields {
         assert!(rig.has(&format!("value of {field}")), "{field}");
     }
-    assert!(!rig.has("value of MAG_AVG"));
+    assert!(!rig.has("value of MAG_AVG"), "only the chosen card");
+    assert_eq!(rig.count("Apply fields"), 1);
+    assert!(rig.commands.borrow().is_empty());
 }
 
 fn type_into(rig: &mut Rig, name: &str, text: &str) {
@@ -642,23 +721,24 @@ fn type_into(rig: &mut Rig, name: &str, text: &str) {
 #[test]
 fn custom_fields_are_edited_one_set_per_changed_field_marked_for_the_imu_and_refusals_are_shown() {
     let mut params = loaded();
-    put(&mut params, "IMU1_PRESET", Value::I32(0));
+    put(&mut params, "IMU1_ODR_HZ", Value::I32(700));
     let mut rig = Rig::new(Access::Configure, params);
-    assert_eq!(rig.shown(IMU1_CARD), CUSTOM_TEXT);
+    assert_eq!(rig.shown(IMU1_CARD), CUSTOM_ACTIVE_TEXT);
     assert!(
         rig.harness.query_by_label("value of IMU1_ACC_FS").is_none(),
         "the switch is off: read only"
     );
     debug_on(&mut rig);
     assert!(!rig.combo(IMU1_CARD).accesskit_node().is_disabled());
+    assert_eq!(rig.shown(IMU1_CARD), CUSTOM_TEXT);
     assert_eq!(rig.count(AFTER_REBOOT_TEXT), 3, "every IMU field is marked");
     assert!(!rig.enabled_nth("Apply fields", 0), "nothing edited");
     type_into(&mut rig, "value of IMU1_ACC_FS", "8");
     type_into(&mut rig, "value of IMU1_GYR_FS", "1000");
-    type_into(&mut rig, "value of IMU1_ODR_HZ", "800");
+    type_into(&mut rig, "value of IMU1_ODR_HZ", "700");
     rig.click_nth("Apply fields", 0);
     let sent = rig.sent();
-    assert_eq!(sent.len(), 2, "800 is the value it has: {sent:?}");
+    assert_eq!(sent.len(), 2, "700 is the value it has: {sent:?}");
     assert!(matches!(
         &rig.commands.borrow()[0],
         Command::SetParam { name, value: ParamValue::I32(8) } if name == "IMU1_ACC_FS"
@@ -725,33 +805,45 @@ fn pair(table: ParamTable) -> Pair {
 }
 
 #[test]
-fn an_unknown_selector_value_is_named_and_the_picker_is_off() {
-    let mut params = loaded();
-    put(&mut params, "BARO_PRESET", Value::I32(9));
-    let rig = Rig::new(Access::Configure, params);
-    assert!(rig.has("unknown preset 9 (station older than firmware)"));
-    assert!(rig.combo(BARO_CARD).accesskit_node().is_disabled());
-    assert!(!rig.combo(0).accesskit_node().is_disabled());
+fn the_active_preset_is_the_one_whose_values_all_equal_the_vehicles_else_custom() {
+    for sensor in SENSORS {
+        let card = SENSORS.iter().position(|s| s.device == sensor.device).unwrap();
+        for p in sensor.presets {
+            let mut params = loaded();
+            set_sensor(&mut params, sensor, p.id);
+            let rig = Rig::new(Access::Configure, params);
+            assert_eq!(rig.shown(card), p.name, "{} {}", sensor.fields[0], p.name);
+            assert!(!rig.combo(card).accesskit_node().is_disabled());
+        }
+        // One field off its preset's value: no preset matches.
+        let mut params = loaded();
+        put(&mut params, sensor.fields[0], Value::I32(3));
+        let rig = Rig::new(Access::Configure, params);
+        assert_eq!(rig.shown(card), CUSTOM_ACTIVE_TEXT, "{}", sensor.fields[0]);
+        assert!(rig.has("the values match no preset"));
+    }
 }
 
 #[test]
-fn a_known_preset_with_other_field_values_is_a_table_mismatch_and_the_picker_is_off() {
+fn a_mag_odr_equal_numerically_counts_as_the_preset() {
     let mut params = loaded();
-    put(&mut params, "BARO_OSR_P", Value::I32(64));
+    put(&mut params, "MAG_ODR_HZ", Value::F32(100.000_001));
     let rig = Rig::new(Access::Configure, params);
-    assert!(rig.has(SKEW_TEXT));
-    assert_eq!(rig.count(SKEW_TEXT), 1);
-    assert!(rig.combo(BARO_CARD).accesskit_node().is_disabled());
-    assert!(!rig.combo(3).accesskit_node().is_disabled());
+    assert_eq!(rig.shown(3), "Balanced");
 }
 
 #[test]
-fn custom_is_shown_read_only_and_an_unloaded_list_says_so() {
+fn custom_is_shown_read_only_with_the_picker_usable_and_an_unloaded_list_says_so() {
     let mut params = loaded();
-    put(&mut params, "MAG_PRESET", Value::I32(0));
-    let rig = Rig::new(Access::Configure, params);
-    assert_eq!(rig.shown(3), CUSTOM_TEXT);
-    assert!(rig.combo(3).accesskit_node().is_disabled());
+    put(&mut params, "MAG_AVG", Value::I32(3));
+    let mut rig = Rig::new(Access::Configure, params);
+    assert_eq!(rig.shown(3), CUSTOM_ACTIVE_TEXT);
+    assert!(!rig.combo(3).accesskit_node().is_disabled(), "a preset can be chosen");
+    assert!(rig.harness.query_by_label("value of MAG_AVG").is_none());
+    assert!(rig.harness.query_by_label(CUSTOM_TEXT).is_none());
+    rig.pick(3, "Balanced");
+    rig.click_nth("Apply", 3);
+    assert_eq!(writes_of(&rig), [("MAG_AVG".to_string(), 2.0)]);
     drop(rig);
     let rig = Rig::new(Access::Configure, ParamTable::default());
     assert_eq!(rig.count(NOT_LOADED_TEXT), 4);
@@ -836,7 +928,7 @@ fn numbers_are_shown_with_a_few_digits_and_no_trailing_zeros() {
 #[test]
 fn the_parameters_tab_shows_governed_fields_read_only_with_a_note_until_the_debug_switch_is_on() {
     let mut pair = pair(loaded());
-    for title in ["BARO (6)", "IMU1 (4)", "IMU2 (4)", "MAG (3)"] {
+    for title in ["BARO (5)", "IMU1 (3)", "IMU2 (3)", "MAG (2)"] {
         if let Some(header) = pair.params.query_by_label(title) {
             header.click();
             pair.params.run();
@@ -849,7 +941,7 @@ fn the_parameters_tab_shows_governed_fields_read_only_with_a_note_until_the_debu
             .is_disabled()
     };
     for sensor in SENSORS {
-        for name in std::iter::once(&sensor.selector).chain(sensor.fields) {
+        for name in sensor.fields {
             assert!(
                 field(&pair, name),
                 "{name} is read only with the switch off"
@@ -860,14 +952,14 @@ fn the_parameters_tab_shows_governed_fields_read_only_with_a_note_until_the_debu
         pair.params
             .query_all_by_label_contains(SET_IN_DEVICES_TEXT)
             .count()
-            >= 17,
-        "the note beside each of the 4 selectors and 13 fields"
+            >= 13,
+        "the note beside each of the 13 fields"
     );
     pair.devices.get_by_label(DEBUG_TEXT).click();
     pair.devices.run();
     pair.params.run();
     for sensor in SENSORS {
-        for name in std::iter::once(&sensor.selector).chain(sensor.fields) {
+        for name in sensor.fields {
             assert!(!field(&pair, name), "{name} is editable with the switch on");
         }
     }
@@ -880,8 +972,8 @@ fn the_parameters_tab_shows_governed_fields_read_only_with_a_note_until_the_debu
         pair.params
             .query_all_by_label_contains(AFTER_REBOOT_TEXT)
             .count(),
-        8,
-        "the 4 IMU1 and 4 IMU2 rows are marked"
+        6,
+        "the 3 IMU1 and 3 IMU2 rows are marked"
     );
 }
 
@@ -948,7 +1040,7 @@ fn a_loaded_file_cannot_write_a_governed_field_while_the_debug_switch_is_off() {
     let _ = std::fs::remove_file(path);
 }
 
-/// A label: the selector of its sensor, its text, its rect, the chart's rect, the radius.
+/// A label: the name of its sensor, its text, its rect, the chart's rect, the radius.
 type Label = (&'static str, &'static str, egui::Rect, egui::Rect, f32);
 
 #[test]
@@ -965,7 +1057,7 @@ fn every_axis_label_of_every_chart_lies_inside_the_chart_area_and_the_radius_sta
                 let g = presets::chart_geometry(&painter, sensor, response.rect);
                 for (name, rect, _) in &g.labels {
                     out.borrow_mut()
-                        .push((sensor.selector, name, *rect, response.rect, g.radius));
+                        .push((presets::sensor_name(sensor), name, *rect, response.rect, g.radius));
                 }
             }
         });
