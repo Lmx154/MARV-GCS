@@ -84,6 +84,41 @@ Parameters
 
   Order: for n = 1 to 8 the five `RCn_*` as MIN, TRIM, MAX, REVERSED, DZ; then `RCMAP_ROLL`, `RCMAP_PITCH`,
   `RCMAP_THROTTLE`, `RCMAP_YAW`.
+- The sensor preset block (amendment 2026-11-17; the design is section 13): 10 parameters appended after RC, so the
+  first 70 indices do not change and the count goes from 70 to 80. All INT32. Class: Configure = applied at once
+  (the value is in effect, flash only on command 245 with param1 = 1); Reboot = the vehicle answers "applies after
+  reboot" and the value takes effect after save and reboot.
+
+  | Index | Name | Type, unit | Default | Range | Class | Device |
+  |---|---|---|---|---|---|---|
+  | 70 | `IMU1_PRESET` | I32 | 1 | 0..4 | Reboot | IMU1 |
+  | 71 | `IMU1_ACC_FS` | I32, g | 16 | 2..32 | Reboot | IMU1 |
+  | 72 | `IMU1_GYR_FS` | I32, dps | 2000 | 125..4000 | Reboot | IMU1 |
+  | 73 | `IMU1_ODR_HZ` | I32, Hz | 800 | 25..800 | Reboot | IMU1 |
+  | 74 | `IMU2_PRESET` | I32 | 1 | 0..4 | Reboot | IMU2 |
+  | 75 | `IMU2_ACC_FS` | I32, g | 16 | 2..16 | Reboot | IMU2 |
+  | 76 | `IMU2_GYR_FS` | I32, dps | 2000 | 250..4000 | Reboot | IMU2 |
+  | 77 | `IMU2_ODR_HZ` | I32, Hz | 800 | 25..800 | Reboot | IMU2 |
+  | 78 | `BARO_PRESET` | I32 | 1 | 0..4 | Configure | BARO |
+  | 79 | `MAG_PRESET` | I32 | 1 | 0..4 | Configure | MAG |
+
+  Selectors and the fields each governs: `IMU1_PRESET`: `IMU1_ACC_FS`, `IMU1_GYR_FS`, `IMU1_ODR_HZ`; `IMU2_PRESET`:
+  `IMU2_ACC_FS`, `IMU2_GYR_FS`, `IMU2_ODR_HZ`; `BARO_PRESET`: `BARO_ODR_HZ`, `BARO_OSR_P`, `BARO_OSR_T`,
+  `BARO_IIR_P`, `BARO_IIR_T`; `MAG_PRESET`: `MAG_ODR_HZ`, `MAG_AVG`. The calibration offsets are not governed. A
+  selector is 0 = Custom (debug) or 1 to 4 = a preset of section 13; 1 is the default, and every governed field's
+  default equals preset 1's value. The IMU selectors and fields are Reboot-class: the IMU is configured once, at boot,
+  from `IMUn_PRESET`, and stays so until the next reboot; rates stop at 800 Hz. A selector write changes RAM only;
+  the flash changes only on command 245 with param1 = 1.
+  - R-SEL: writing a selector (after the read-only, type and range checks): 0 stores 0 and leaves the fields; p > 0
+    stores the selector and every governed field of preset p at once, checked as one configuration (a combination
+    that is invalid only in an intermediate state is accepted). A refusal stores nothing and echoes the old value.
+  - R-LOCK: while a selector is not 0 a write to one of its fields is refused unless the value equals the stored one
+    (then it is accepted, a no-op). A refusal echoes the stored value and sends one STATUSTEXT "<FIELD>: locked by
+    <SEL> (0 = custom)". With the selector at 0 the fields are written as any parameter.
+  - Echo: a selector write's PARAM_VALUE carries the selector only, not the fields it changed (the vehicle sends
+    PARAM_VALUE only for the written name). The station reads the governed fields back by name.
+  - At boot a stored selector other than 0 replaces the stored values of its fields by the preset's, with one
+    WARNING per device that differed. A firmware without presets stored no selectors: they read 1.
 - Amendments by the lead after review (2026-11-12). (1) Withdrawn 2026-11-15: a different echo used to be
   retried (a stale copy of the old value in flight would read as a refusal); the vehicle answers every PARAM_SET
   with exactly one PARAM_VALUE, so a differing one after the send is the refusal. (2) A write waits
@@ -97,6 +132,9 @@ program of `mavlink-device`, kept for what still uses it.
 What the real firmware sends on its USB port (the simulator's default streams are the same; the window's Sensors and Radio tabs read them):
 - HIGHRES_IMU (105) `id` 0 only: IMU1, with the magnetometer in `xmag`/`ymag`/`zmag`, in gauss.
   SCALED_IMU2: IMU2, in mG and mrad/s. SCALED_PRESSURE. All three at 25 Hz.
+- Amendment 2026-11-17: SCALED_IMU2's gyro fields are int16 mrad/s and saturate at +-32.767 rad/s (about 1877 dps).
+  In IMU2's Flight and Max range presets (section 13) a faster rate shows as that limit. HIGHRES_IMU (floats) and the
+  log carry the full range.
 - SYS_STATUS and GPS_RAW_INT at 1 Hz. RC_CHANNELS at 5 Hz.
 - MANUAL_CONTROL (69) at 5 Hz (fastest 50 Hz), USB only, sent only while a CRSF stick report is younger than
   1 s. Its fields and scaling are in section 12.
@@ -140,7 +178,10 @@ estimator is being designed), and the simulator sends it at 10 Hz as a test doub
 Not now, each with its trigger:
 TIMESYNC (timestamps must line up with the computer); parameter metadata (descriptions or ranges wanted);
 signing (a radio
-link); more parameter types (a value that fits neither INT32 nor REAL32); per-instance rates; RC channels 9 to 16 calibration (trigger: a use for them).
+link); more parameter types (a value that fits neither INT32 nor REAL32); per-instance rates; RC channels 9 to 16 calibration (trigger: a use for them);
+chip filters in the sensor presets (trigger: the control loop's filter design); IMU rates above 800 Hz (trigger: FIFO
+reads); the vehicle sending PARAM_VALUE for values it changes itself, as ArduPilot does (trigger: more vehicle-side
+changes); the running IMU configuration on the link (trigger: a pending reboot must be visible to a second station).
 
 ## 3. The USB crate (`usb-cdc`, own repo: https://github.com/Lmx154/usb-cdc)
 
@@ -398,7 +439,7 @@ Classes.
   11), because the vehicle offers log download on its USB link only and the station must not ask for it on a
   radio or a network link, where the vehicle does not answer.
 - Operate-class: everything that only reads or only concerns the station: the heartbeat (a service, not a
-  command), a parameter list request (`Command::RefreshParams`), a single parameter read (reserved: no such `Command` exists yet), log recording
+  command), a parameter list request (`Command::RefreshParams`), a single parameter read (`Command::ReadParam`, by name; amendment 2026-11-17), log recording
   (`Command::StartLog`, `Command::StopLog`), link management (connect, disconnect, replay).
 
 Services that run by themselves are not commands and are not gated. They only read: the capability
@@ -413,6 +454,12 @@ is stored and the status follows the count, but no list is requested and no miss
 
 The Radio tab (section 12): Calibrate, Apply, the mapping edits and Save to flash are Configure controls. No rule
 changes: `Command::SetParam` and `Command::SendCommand` are already Configure-class (amendment 2026-11-16).
+
+The Sensor presets section of the Devices tab (section 13), amendment 2026-11-17: Apply, Save, Save and reboot and
+the Custom edits are Configure controls (`Command::SetParam`, `Command::SendCommand`), no rule changes; the read-back
+of the governed fields is `Command::ReadParam`, Operate-class. The debug switch ("Debug: raw sensor settings") is the
+station's own gate, in the owner's rule above: station-local, off at every start, and the firmware knows nothing of it
+(it enforces only R-LOCK).
 
 Views. Every configure control is SHOWN DISABLED, with the reason next to it or as hover text ("Configure
 needs a serial or TCP link; this link is operate-only"), never hidden. The Link view and the connection bar
@@ -721,3 +768,128 @@ Mapping (Configure sessions only; staged edits, then Apply, then Save to flash)
 The simulator (`gcs-sim`) has the 44 parameters with these defaults and ranges, and a MANUAL_CONTROL stream at
 5 Hz computed from its own RC_CHANNELS and parameters with the formulas above (a test double: it reproduces the
 worked-example tables).
+
+## 13. Sensor presets
+
+Decision of 2026-11-17 (the lead, from the architect's consult; the owner accepted it: default IMU preset Flight, +-16 g /
++-2000 dps / 800 Hz). It binds both ends. The owner's rules: "I want to keep logic in firmware."; "do not over
+engineer"; "settings should be saved when the user saves them via apply or save button."; the user does not type a
+manual rate "only if it's for debugging purposes". Parameters, R-SEL and R-LOCK: section 2, Parameters (the sensor
+preset block).
+
+One source. The crate `marv-presets` (`#![no_std]`, no dependencies, own repo `Lmx154/marv-presets`), at the `rev`
+pinned in the firmware's `fw-settings` and in this workspace's `Cargo.toml`, is the normative table: ids, names,
+summaries, field values, axes, physical values and scores. The tables below are its content at the first rev. The
+station computes no preset logic: it renders the crate's table and writes the selector. Ids 1 to 4 and their names
+never change meaning or number; a new preset is appended with the next id (and the selector's range grows).
+Nothing is added to the link: parameter metadata stays "Not now" (section 2).
+
+What a preset changes. IMU presets vary only the accelerometer range, the gyro range and the output data rate (both
+sensors of a chip at one rate); everything else is as before in every preset (internal clock, INT1 latched data-ready,
+single-sample reads, no FIFO, chip filters off). BARO presets: rate, pressure and temperature oversampling, pressure and
+temperature IIR. MAG presets: rate and averaging. None for GNSS and BATT.
+
+The chart (radar). Axes, more is better on every axis. IMU1 and IMU2 (pentagon): Accel range, Gyro range, Low noise,
+Bandwidth, Light load. BARO and MAG (diamond): Low noise, Fast response, Update rate, Light load.
+
+Score of an axis: `s = round_half_up(100 * clamp(ln(x / x0) / ln(x100 / x0), 0, 1))`, a log scale between two fixed
+ends x0 (score 0) and x100 (score 100), the same ends for both IMUs. IMU Low noise is the mean of two fractions:
+`s = round_half_up(100 * (fg + fa) / 2)`, fg and fa the clamped fractions of the gyro and accelerometer noise.
+
+| Sensor | Axis | Quantity x | x0 (0) | x100 (100) |
+|---|---|---|---|---|
+| IMU | Accel range | full scale, g | 2 | 32 |
+| IMU | Gyro range | full scale, dps | 125 | 4000 |
+| IMU | Low noise | gyro rms dps; accel rms mg | 1 dps; 10 mg | 0.01 dps; 0.1 mg |
+| IMU | Bandwidth | B = ODR / 2, Hz | 10 | 5000 |
+| IMU | Light load | SPI bytes per second | 200 000 | 200 |
+| BARO | Low noise | pressure rms, Pa | 1 | 0.01 |
+| BARO, MAG | Fast response | delay, ms | 1000 | 1 |
+| BARO, MAG | Update rate | ODR, Hz | 1 | 500 |
+| BARO, MAG | Light load | I2C bytes per second | 10 000 | 10 |
+| MAG | Low noise | x/y field rms, nT | 1000 | 10 |
+
+Physical values (from datasheet and driver numbers; MODEL and BOUND are shown as such on the label):
+- IMU Bandwidth: B = ODR / 2 (MODEL; the LSM6DSK320X datasheet's own convention, and the upper bound for the ICM-45686
+  with its UI filter bypassed).
+- IMU noise: `sigma = sqrt(ND^2 * B + LSB^2 / 12)`, gyro and accelerometer separately; ND the datasheet's noise density
+  (ICM gyro 0.0038 dps/rtHz, accel 70 / 80 / 110 ug/rtHz up to 8 g / 16 g / 32 g; LSM gyro 3.8 mdps/rtHz, accel
+  60 ug/rtHz), LSB the driver's scale (full scale / 32768 for the ICM; the sensitivity of the range for the LSM).
+- IMU Light load: ODR x bytes per sample: ICM 18, LSM 21.
+- BARO Low noise: `sigma_T9(OSR_P) / sqrt(2c + 1)`, sigma_T9 the datasheet's Table 9 value for the pressure
+  oversampling, c the pressure IIR coefficient. Altitude shown beside it: 0.083 m per Pa (display only).
+- BARO Fast response: `tconv_p(OSR_P) + tconv_t(OSR_T) + c / ODR`, the typical conversion times of the datasheet's
+  Table 4.
+- BARO Light load: ODR x 13 bytes.
+- MAG Low noise: `190 nT * sqrt(2 / N)` for x/y and `450 nT * sqrt(2 / N)` for z, N the averaging (MODEL).
+- MAG Fast response: delay at most N x 2.5 ms (BOUND).
+- MAG Light load: ODR x 23 bytes.
+- Not shown on purpose: supply current, chip filter delay, IMU latency.
+
+Scores 0 to 100; the physical value in brackets. Computed with an independent script from the formulas above; the
+crate's tests are the oracle.
+
+IMU1, ICM-45686 (low-noise mode, internal clock, UI LPF bypass, FIR off, INT1 latched, no FIFO).
+
+| Id | Name | ACC_FS | GYR_FS | ODR_HZ | Accel range | Gyro range | Low noise | Bandwidth | Light load |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | Flight (default) | 16 | 2000 | 800 | 75 | 80 | 48 (0.078 dps, 1.61 mg) | 59 (400 Hz) | 38 (14 400 B/s) |
+| 2 | Bench (today; clips in flight) | 4 | 250 | 800 | 25 | 20 | 49 (0.076 dps, 1.40 mg) | 59 (400 Hz) | 38 (14 400 B/s) |
+| 3 | Max range | 32 | 4000 | 800 | 100 | 100 | 43 (0.084 dps, 2.22 mg) | 59 (400 Hz) | 38 (14 400 B/s) |
+| 4 | Smooth | 8 | 1000 | 400 | 50 | 60 | 57 (0.054 dps, 0.99 mg) | 48 (200 Hz) | 48 (7 200 B/s) |
+
+IMU2, LSM6DSK320X (high-accuracy ODR set 800: code 960 = 800 Hz, 480 = 400 Hz; LPF1 and LPF2 off; high-g channel off;
+INT1 low-g data-ready latched; no FIFO).
+
+| Id | Name | ACC_FS | GYR_FS | ODR_HZ | Accel range | Gyro range | Low noise | Bandwidth | Light load |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | Flight (default) | 16 | 2000 | 800 | 75 | 80 | 51 (0.079 dps, 1.21 mg) | 59 (400 Hz) | 36 (16 800 B/s) |
+| 2 | Bench (today; clips in flight) | 4 | 500 | 800 | 25 | 40 | 51 (0.076 dps, 1.20 mg) | 59 (400 Hz) | 36 (16 800 B/s) |
+| 3 | Max range (low-g limit 16 g) | 16 | 4000 | 800 | 75 | 100 | 50 (0.086 dps, 1.21 mg) | 59 (400 Hz) | 36 (16 800 B/s) |
+| 4 | Smooth | 8 | 1000 | 400 | 50 | 60 | 58 (0.055 dps, 0.85 mg) | 48 (200 Hz) | 46 (8 400 B/s) |
+
+BARO, BMP581 (normal mode, FIFO off, data-ready pulsed).
+
+| Id | Name | ODR_HZ | OSR_P | OSR_T | IIR_P | IIR_T | Low noise | Fast response | Update rate | Light load |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | Balanced (default; today) | 50 | 16 | 2 | 0 | 0 | 34 (0.21 Pa, about 1.7 cm) | 65 (11.5 ms) | 63 | 40 (650 B/s) |
+| 2 | Fast | 100 | 8 | 1 | 0 | 0 | 26 (0.30 Pa, 2.5 cm) | 73 (6.4 ms) | 74 | 30 (1 300 B/s) |
+| 3 | Smooth | 25 | 32 | 2 | 3 | 0 | 62 (0.057 Pa, 0.5 cm) | 28 (141.5 ms) | 52 | 50 (325 B/s) |
+| 4 | Precise (Bosch "Highest resolution") | 10 | 128 | 8 | 0 | 0 | 55 (0.08 Pa, 0.7 cm) | 36 (82.5 ms) | 37 | 63 (130 B/s) |
+
+MAG, BMM350 (normal mode, all axes, data-ready pulsed).
+
+| Id | Name | ODR_HZ | AVG | Low noise (MODEL) | Fast response (BOUND) | Update rate | Light load |
+|---|---|---|---|---|---|---|---|
+| 1 | Balanced (default; today) | 100 | 2 | 36 (190 nT x/y, 450 z) | 77 (<= 5 ms) | 74 | 21 (2 300 B/s) |
+| 2 | Fast | 200 | 2 | 36 (190 nT, 450 z) | 77 (<= 5 ms) | 85 | 11 (4 600 B/s) |
+| 3 | Low noise | 100 | 4 | 44 (134 nT, 318 z) | 67 (<= 10 ms) | 74 | 21 (2 300 B/s) |
+| 4 | Ultra low noise | 50 | 8 | 51 (95 nT, 225 z) | 57 (<= 20 ms) | 63 | 31 (1 150 B/s) |
+
+Summaries for the cards (crate `summary`): IMU "+-16 g, +-2000 dps, 800 Hz" etc.; BARO "50 Hz, x16/x2, no filter"; MAG
+"100 Hz, average of 2".
+
+The station (Devices tab, a "Sensor presets" section above the health table; four cards IMU1, IMU2, BARO, MAG)
+- Each card: the preset picker (names from the crate), the chart, the summary line, the physical value of every axis
+  with its unit and its MODEL or BOUND tag, one status line. Cards show on Operate when the parameter list is present,
+  otherwise "parameters not loaded".
+- BARO and MAG: choose, Apply (one PARAM_SET of the selector), the vehicle applies at once; the station then reads the
+  sensor's governed fields back by name (`Command::ReadParam`) and compares them with the crate; "Applied in RAM; not
+  saved", and Save to flash (command 245 with param1 = 1) as on the Radio tab.
+- IMUs: Apply, then the vehicle's "IMUn_PRESET: applies after reboot"; the card shows "Pending: takes effect after Save
+  and reboot" with one button "Save and reboot": command 245 with param1 = 1 and, only on its ACCEPTED, command 246 with
+  param1 = 1. Pending is session-local (the selector differs from the value read after the vehicle's last boot). A
+  reboot without a save drops the preset.
+- Skew rule: a selector value the crate does not know shows "unknown preset N (station older than firmware)"; a known
+  preset whose fields differ from the crate shows "station preset table does not match the firmware" and disables that
+  card's picker. The vehicle validates every write regardless.
+- Debug switch: station-local, off at every start, "Debug: raw sensor settings" in the section header. Off: "Custom
+  (debug)" is not offered; the Parameters tab shows the selectors and the governed fields read-only with "set in Devices
+  > Sensor presets" (a vehicle already in Custom is shown as such, read-only). On: Custom is offered, and while a
+  selector is 0 the card and the Parameters tab edit its fields (IMU fields marked "applies after reboot").
+  `marv-cli param set` of a selector to 0 or of a governed field needs `--debug`. It is a gate in the station only
+  (section 9).
+- Operate and Configure: Apply, Save, Save and reboot and the Custom edits are Configure controls, shown disabled with
+  the reason on Operate (section 9); Apply is also disabled while a calibration runs.
+
+The simulator (`gcs-sim`) has the ten parameters with R-SEL, R-LOCK and the boot rule, from the crate (a test double).
