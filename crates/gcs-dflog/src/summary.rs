@@ -81,12 +81,12 @@ pub fn summary_with<R: Read>(
             if let Some(t) = r.time_us() {
                 first.get_or_insert(t);
                 last = Some(t);
-                if base.is_none() && r.type_name() == "GPS" {
-                    if let (Some(wk), Some(ms)) = (r.number_of("GWk"), r.number_of("GMS")) {
-                        if wk > 0.0 {
-                            base = Some(gps_to_unix_us(wk as i64, ms as i64) - t as i64);
-                        }
-                    }
+                if base.is_none()
+                    && r.type_name() == "GPS"
+                    && let (Some(wk), Some(ms)) = (r.number_of("GWk"), r.number_of("GMS"))
+                    && wk > 0.0
+                {
+                    base = Some(gps_to_unix_us(wk as i64, ms as i64) - t as i64);
                 }
             }
         },

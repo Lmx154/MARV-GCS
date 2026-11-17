@@ -246,8 +246,8 @@ impl Format {
             Kind::Text4 | Kind::Text16 | Kind::Text64 => Some(Value::Text(c_string(b))),
             Kind::Array32 => {
                 let mut a = [0i16; 32];
-                for (slot, pair) in a.iter_mut().zip(b.chunks_exact(2)) {
-                    *slot = i16::from_le_bytes(le(pair));
+                for (slot, pair) in a.iter_mut().zip(b.as_chunks::<2>().0.iter()) {
+                    *slot = i16::from_le_bytes(*pair);
                 }
                 Some(Value::Array(a))
             }

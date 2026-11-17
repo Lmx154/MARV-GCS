@@ -222,21 +222,21 @@ impl<R: Read> Reader<R> {
                 self.buf[self.pos + 1],
                 self.buf[self.pos + 2],
             );
-            if a == HEAD1 && b == HEAD2 {
-                if let Some(len) = self.formats[usize::from(t)]
+            if a == HEAD1
+                && b == HEAD2
+                && let Some(len) = self.formats[usize::from(t)]
                     .as_ref()
                     .map(|f| usize::from(f.length))
-                {
-                    let avail = self.ensure(len.min(MAX_RECORD))?;
-                    if avail < len {
-                        self.tail_bytes += avail as u64;
-                        self.consume(avail);
-                        return Ok(None);
-                    }
-                    let start = self.pos;
-                    self.consume(len);
-                    return Ok(Some((t, start, len)));
+            {
+                let avail = self.ensure(len.min(MAX_RECORD))?;
+                if avail < len {
+                    self.tail_bytes += avail as u64;
+                    self.consume(avail);
+                    return Ok(None);
                 }
+                let start = self.pos;
+                self.consume(len);
+                return Ok(Some((t, start, len)));
             }
             self.bad_bytes += 1;
             self.consume(1);
@@ -250,14 +250,13 @@ impl<R: Read> Reader<R> {
             return Ok(None);
         };
         let payload_start = start + 3;
-        if t == FMT_TYPE {
-            if let Some(f) = Format::from_fmt_payload(&self.buf[payload_start..start + len]) {
-                // A FMT does not redefine FMT itself.
-                if f.type_id != FMT_TYPE {
-                    let id = usize::from(f.type_id);
-                    self.formats[id] = Some(f);
-                }
-            }
+        if t == FMT_TYPE
+            && let Some(f) = Format::from_fmt_payload(&self.buf[payload_start..start + len])
+            // A FMT does not redefine FMT itself.
+            && f.type_id != FMT_TYPE
+        {
+            let id = usize::from(f.type_id);
+            self.formats[id] = Some(f);
         }
         self.records += 1;
         match self.formats[usize::from(t)].as_ref() {
