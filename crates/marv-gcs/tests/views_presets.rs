@@ -7,13 +7,16 @@ use std::time::Duration;
 
 use eframe::egui::accesskit::Role;
 use eframe::egui::{self, Color32, Shape, pos2};
+use eframe::egui::{Key, Modifiers};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use gcs_mavlink::dialect::MavCmd;
+use gcs_mavlink::services::params::WriteStatus;
 use gcs_mavlink::services::params::{FetchStatus, Param, ParamTable, ParamType, ParamValue};
 use gcs_mavlink::{Access, Command, CommandRecord, CommandStatus, VehicleState};
 use marv_gcs::views::presets::{
-    self, CUSTOM_TEXT, IMU_TEXT, MISMATCH_TEXT, NOT_LOADED_TEXT, SKEW_TEXT,
+    self, AFTER_REBOOT_TEXT, CUSTOM_TEXT, DEBUG_TEXT, MISMATCH_TEXT, NOT_LOADED_TEXT, PENDING_TEXT,
+    SAVE_AND_REBOOT, SET_IN_DEVICES_TEXT, SKEW_TEXT,
 };
 use marv_gcs::views::{self, ViewCtx};
 use marv_presets::{BARO, IMU1, MAG, SENSORS, Sensor, Value, preset};
@@ -67,6 +70,8 @@ struct Rig {
     state: Shared<VehicleState>,
     now: Rc<Cell<Duration>>,
     commands: Shared<Vec<Command>>,
+    access: Rc<Cell<Access>>,
+    view: Rc<RefCell<Box<dyn views::View>>>,
 }
 
 impl Rig {
@@ -78,11 +83,20 @@ impl Rig {
         let state = Rc::new(RefCell::new(vehicle));
         let now = Rc::new(Cell::new(Duration::from_secs(10)));
         let commands: Shared<Vec<Command>> = Rc::default();
-        let mut view = views::all()
-            .into_iter()
-            .find(|v| v.name() == "Devices")
-            .expect("Devices view is registered");
-        let (s, n, c) = (state.clone(), now.clone(), commands.clone());
+        let view = Rc::new(RefCell::new(
+            views::all()
+                .into_iter()
+                .find(|v| v.name() == "Devices")
+                .expect("Devices view is registered"),
+        ));
+        let v = view.clone();
+        let access_cell = Rc::new(Cell::new(access));
+        let (s, n, c, a) = (
+            state.clone(),
+            now.clone(),
+            commands.clone(),
+            access_cell.clone(),
+        );
         let mut harness = Harness::builder()
             .with_size(egui::vec2(1500.0, 1800.0))
             .build_ui(move |ui| {
@@ -92,9 +106,9 @@ impl Rig {
                     state: &state,
                     commands: &mut out,
                     now: Some(n.get()),
-                    access,
+                    access: a.get(),
                 };
-                view.ui(ui, &mut cx);
+                v.borrow_mut().ui(ui, &mut cx);
             });
         harness.run();
         Rig {
@@ -102,6 +116,8 @@ impl Rig {
             state,
             now,
             commands,
+            access: access_cell,
+            view,
         }
     }
 
@@ -378,17 +394,326 @@ fn a_running_calibration_disables_apply() {
     assert!(rig.has("a command is running"));
 }
 
+const IMU1_CARD: usize = 0;
+
+fn record(command: u32, started: Duration, status: CommandStatus) -> CommandRecord {
+    CommandRecord {
+        command,
+        ..storage_record(started, status)
+    }
+}
+
+fn accepted() -> CommandStatus {
+    CommandStatus::Finished {
+        text: "accepted",
+        accepted: true,
+    }
+}
+
+fn commands_of(rig: &Rig) -> Vec<(u32, f32)> {
+    rig.commands
+        .borrow()
+        .iter()
+        .filter_map(|c| match c {
+            Command::SendCommand { command, params } => Some((*command as u32, params[0])),
+            _ => None,
+        })
+        .collect()
+}
+
+/// IMU1 "Max range" applied and read back: the card shows Pending.
+fn pending_imu1(rig: &mut Rig) {
+    rig.pick(IMU1_CARD, "Max range");
+    rig.click_nth("Apply", IMU1_CARD);
+    rig.update(|s| set_sensor(&mut s.params, &IMU1, 3));
+}
+
 #[test]
-fn imu_cards_have_a_picker_and_a_disabled_apply() {
+fn imu_apply_sends_one_set_and_three_reads_then_pending_and_no_command_until_save_and_reboot() {
     let mut rig = Rig::new(Access::Configure, loaded());
-    assert_eq!(rig.count(IMU_TEXT), 2, "one per IMU card");
-    assert!(!rig.enabled_nth("Apply", 0));
-    assert!(!rig.enabled_nth("Apply", 1));
-    assert!(rig.enabled_nth("Apply", 2));
-    rig.pick(0, name_of(&IMU1, 4));
-    assert_eq!(rig.shown(0), name_of(&IMU1, 4));
-    rig.click_nth("Apply", 0);
+    rig.pick(IMU1_CARD, "Max range");
+    rig.click_nth("Apply", IMU1_CARD);
+    let sent = rig.sent();
+    assert_eq!(sent.len(), 4, "{sent:?}");
+    assert!(matches!(
+        &rig.commands.borrow()[0],
+        Command::SetParam { name, value: ParamValue::I32(3) } if name == "IMU1_PRESET"
+    ));
+    let reads: Vec<String> = rig.commands.borrow()[1..]
+        .iter()
+        .map(|c| match c {
+            Command::ReadParam { name } => name.clone(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(reads, IMU1.fields);
+    assert_eq!(reads.len(), 3);
+    // The echo carries the selector only: not yet pending.
+    rig.update(|s| put(&mut s.params, "IMU1_PRESET", Value::I32(3)));
+    assert!(!rig.has(PENDING_TEXT));
+    rig.update(|s| set_sensor(&mut s.params, &IMU1, 3));
+    assert!(rig.has(PENDING_TEXT));
+    assert!(!rig.has(NOT_SAVED), "an IMU preset is not 'applied in RAM'");
+    assert!(rig.harness.query_by_label("Save to flash").is_none());
+    assert_eq!(rig.sent().len(), 4, "nothing is sent by showing it");
+    assert!(commands_of(&rig).is_empty(), "0 COMMAND_LONG so far");
+    // One click arms, the second sends 245 only.
+    rig.click_nth(SAVE_AND_REBOOT, 0);
+    assert!(commands_of(&rig).is_empty(), "the first click only arms");
+    rig.click_nth(&format!("Confirm: {SAVE_AND_REBOOT}"), 0);
+    assert_eq!(commands_of(&rig), [(245, 1.0)]);
+    let started = rig.now.get();
+    rig.update(|s| s.command = Some(record(245, started, CommandStatus::Waiting)));
+    rig.update(|s| {
+        s.command = Some(record(
+            245,
+            started,
+            CommandStatus::InProgress { percent: None },
+        ))
+    });
+    assert_eq!(
+        commands_of(&rig),
+        [(245, 1.0)],
+        "no 246 before the ACCEPTED"
+    );
+    rig.update(|s| s.command = Some(record(245, started, accepted())));
+    assert_eq!(commands_of(&rig), [(245, 1.0), (246, 1.0)]);
+    rig.update(|_| {});
+    rig.update(|_| {});
+    assert_eq!(commands_of(&rig).len(), 2, "246 is sent once");
+    assert!(rig.harness.query_by_label(SAVE_AND_REBOOT).is_none());
+}
+
+#[test]
+fn a_refused_or_unanswered_save_sends_no_reboot_and_says_so() {
+    for (status, said) in [
+        (
+            CommandStatus::Finished {
+                text: "denied",
+                accepted: false,
+            },
+            "save refused: denied",
+        ),
+        (CommandStatus::NoAnswer, "save unanswered"),
+    ] {
+        let mut rig = Rig::new(Access::Configure, loaded());
+        pending_imu1(&mut rig);
+        rig.click_nth(SAVE_AND_REBOOT, 0);
+        rig.click_nth(&format!("Confirm: {SAVE_AND_REBOOT}"), 0);
+        let started = rig.now.get();
+        rig.update(|s| s.command = Some(record(245, started, status.clone())));
+        rig.update(|_| {});
+        assert_eq!(commands_of(&rig), [(245, 1.0)], "{status:?}: no 246");
+        assert!(rig.has(said), "{said}");
+        assert!(rig.has("not rebooted"));
+        assert!(
+            rig.harness.query_by_label(SAVE_AND_REBOOT).is_some(),
+            "it can be tried again"
+        );
+    }
+}
+
+#[test]
+fn an_accepted_save_from_before_the_press_does_not_send_the_reboot() {
+    let mut rig = Rig::new(Access::Configure, loaded());
+    rig.update(|s| s.command = Some(record(245, Duration::from_secs(1), accepted())));
+    pending_imu1(&mut rig);
+    rig.click_nth(SAVE_AND_REBOOT, 0);
+    rig.click_nth(&format!("Confirm: {SAVE_AND_REBOOT}"), 0);
+    rig.update(|_| {});
+    assert_eq!(commands_of(&rig), [(245, 1.0)]);
+}
+
+#[test]
+fn a_new_session_forgets_the_pending_preset() {
+    let mut rig = Rig::new(Access::Configure, loaded());
+    pending_imu1(&mut rig);
+    assert!(rig.has(PENDING_TEXT));
+    rig.view.borrow_mut().session_changed();
+    rig.update(|_| {});
+    assert!(!rig.has(PENDING_TEXT));
+    assert_eq!(
+        rig.shown(IMU1_CARD),
+        name_of(&IMU1, 3),
+        "the vehicle's value"
+    );
+}
+
+#[test]
+fn an_operate_session_disables_apply_save_and_save_and_reboot_with_the_reason_and_writes_nothing() {
+    let mut rig = Rig::new(Access::Configure, loaded());
+    pending_imu1(&mut rig);
+    rig.commands.borrow_mut().clear();
+    rig.access.set(Access::Operate);
+    rig.update(|_| {});
+    let reason = "Configure needs a serial or TCP link";
+    assert!(rig.has(reason));
+    assert!(rig.has(PENDING_TEXT));
+    assert!(!rig.enabled_nth(SAVE_AND_REBOOT, 0));
+    assert!(!rig.enabled_nth("Apply", IMU1_CARD));
+    rig.click_nth(SAVE_AND_REBOOT, 0);
+    rig.click_nth("Apply", IMU1_CARD);
+    assert!(
+        rig.harness
+            .query_by_label("Confirm: Save and reboot")
+            .is_none()
+    );
+    assert!(rig.commands.borrow().is_empty(), "0 bytes written");
+}
+
+#[test]
+fn an_operate_session_disables_save_to_flash_of_an_applied_baro_preset() {
+    let mut rig = Rig::new(Access::Configure, loaded());
+    applied_baro(&mut rig);
+    rig.access.set(Access::Operate);
+    rig.update(|_| {});
+    assert!(!rig.enabled_nth("Save to flash", 0));
+    rig.click_nth("Save to flash", 0);
     assert!(rig.commands.borrow().is_empty());
+}
+
+fn debug_on(rig: &mut Rig) {
+    rig.harness.get_by_label(DEBUG_TEXT).click();
+    rig.harness.run();
+}
+
+#[test]
+fn custom_is_offered_only_while_the_debug_switch_is_on_and_the_switch_starts_off() {
+    let mut rig = Rig::new(Access::Configure, loaded());
+    for card in 0..4 {
+        rig.combo(card).click();
+        rig.harness.run();
+        assert!(
+            rig.harness.query_by_label(CUSTOM_TEXT).is_none(),
+            "card {card}: Custom is not offered with the switch off"
+        );
+        rig.combo(card).click();
+        rig.harness.run();
+    }
+    debug_on(&mut rig);
+    for card in 0..4 {
+        rig.combo(card).click();
+        rig.harness.run();
+        assert!(
+            rig.harness
+                .query_all_by_role_and_label(Role::Button, CUSTOM_TEXT)
+                .next()
+                .is_some(),
+            "card {card}: Custom is offered with the switch on"
+        );
+        rig.combo(card).click();
+        rig.harness.run();
+    }
+}
+
+#[test]
+fn choosing_custom_and_apply_writes_selector_zero_only_and_the_vehicle_then_shows_editable_fields()
+{
+    let mut rig = Rig::new(Access::Configure, loaded());
+    debug_on(&mut rig);
+    rig.pick(BARO_CARD, CUSTOM_TEXT);
+    assert_eq!(rig.shown(BARO_CARD), CUSTOM_TEXT);
+    assert!(rig.commands.borrow().is_empty());
+    rig.click_nth("Apply", BARO_CARD);
+    let sent = rig.sent();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(matches!(
+        &rig.commands.borrow()[0],
+        Command::SetParam { name, value: ParamValue::I32(0) } if name == "BARO_PRESET"
+    ));
+    assert!(rig.harness.query_by_label("value of BARO_ODR_HZ").is_none());
+    rig.update(|s| put(&mut s.params, "BARO_PRESET", Value::I32(0)));
+    assert!(rig.has(NOT_SAVED));
+    for field in BARO.fields {
+        assert!(rig.has(&format!("value of {field}")), "{field}");
+    }
+    assert!(!rig.has("value of MAG_AVG"));
+}
+
+fn type_into(rig: &mut Rig, name: &str, text: &str) {
+    rig.harness.get_by_label(name).focus();
+    rig.harness.run();
+    rig.harness.key_down_modifiers(Modifiers::COMMAND, Key::A);
+    rig.harness.run();
+    rig.harness.get_by_label(name).type_text(text);
+    rig.harness.run();
+}
+
+#[test]
+fn custom_fields_are_edited_one_set_per_changed_field_marked_for_the_imu_and_refusals_are_shown() {
+    let mut params = loaded();
+    put(&mut params, "IMU1_PRESET", Value::I32(0));
+    let mut rig = Rig::new(Access::Configure, params);
+    assert_eq!(rig.shown(IMU1_CARD), CUSTOM_TEXT);
+    assert!(
+        rig.harness.query_by_label("value of IMU1_ACC_FS").is_none(),
+        "the switch is off: read only"
+    );
+    debug_on(&mut rig);
+    assert!(!rig.combo(IMU1_CARD).accesskit_node().is_disabled());
+    assert_eq!(rig.count(AFTER_REBOOT_TEXT), 3, "every IMU field is marked");
+    assert!(!rig.enabled_nth("Apply fields", 0), "nothing edited");
+    type_into(&mut rig, "value of IMU1_ACC_FS", "8");
+    type_into(&mut rig, "value of IMU1_GYR_FS", "1000");
+    type_into(&mut rig, "value of IMU1_ODR_HZ", "800");
+    rig.click_nth("Apply fields", 0);
+    let sent = rig.sent();
+    assert_eq!(sent.len(), 2, "800 is the value it has: {sent:?}");
+    assert!(matches!(
+        &rig.commands.borrow()[0],
+        Command::SetParam { name, value: ParamValue::I32(8) } if name == "IMU1_ACC_FS"
+    ));
+    assert!(matches!(
+        &rig.commands.borrow()[1],
+        Command::SetParam { name, value: ParamValue::I32(1000) } if name == "IMU1_GYR_FS"
+    ));
+    rig.update(|s| {
+        s.params.writes.insert(
+            "IMU1_ACC_FS".to_string(),
+            WriteStatus::Refused {
+                value: ParamValue::I32(8),
+                in_effect: ParamValue::I32(16),
+            },
+        );
+    });
+    assert!(rig.has("refused: vehicle uses 16"));
+}
+
+/// The Devices and the Parameters views of one registry, over one table.
+struct Pair {
+    devices: Harness<'static>,
+    params: Harness<'static>,
+}
+
+fn pair(table: ParamTable) -> Pair {
+    let state = Rc::new(VehicleState {
+        params: table,
+        ..VehicleState::default()
+    });
+    let mut all = views::all();
+    let mut take = |name: &str| {
+        let at = all.iter().position(|v| v.name() == name).expect(name);
+        all.swap_remove(at)
+    };
+    let (devices, params) = (take("Devices"), take("Parameters"));
+    let (s1, s2) = (state.clone(), state);
+    let build = |size, mut view: Box<dyn views::View>, state: Rc<VehicleState>| {
+        let mut h = Harness::builder().with_size(size).build_ui(move |ui| {
+            let mut out = Vec::new();
+            let mut cx = ViewCtx {
+                state: &state,
+                commands: &mut out,
+                now: Some(Duration::from_secs(10)),
+                access: Access::Configure,
+            };
+            view.ui(ui, &mut cx);
+        });
+        h.run();
+        h
+    };
+    let devices = build(egui::vec2(1500.0, 1800.0), devices, s1);
+    let params = build(egui::vec2(1200.0, 900.0), params, s2);
+    Pair { devices, params }
 }
 
 #[test]
@@ -498,4 +823,56 @@ fn numbers_are_shown_with_a_few_digits_and_no_trailing_zeros() {
     assert_eq!(presets::number_text(1.61), "1.61");
     assert_eq!(presets::number_text(12.34), "12.3");
     assert_eq!(presets::number_text(0.0), "0");
+}
+
+#[test]
+fn the_parameters_tab_shows_governed_fields_read_only_with_a_note_until_the_debug_switch_is_on() {
+    let mut pair = pair(loaded());
+    for title in ["BARO (6)", "IMU1 (4)", "IMU2 (4)", "MAG (3)"] {
+        if let Some(header) = pair.params.query_by_label(title) {
+            header.click();
+            pair.params.run();
+        }
+    }
+    let field = |pair: &Pair, name: &str| {
+        pair.params
+            .get_by_label(&format!("value of {name}"))
+            .accesskit_node()
+            .is_disabled()
+    };
+    for sensor in SENSORS {
+        for name in std::iter::once(&sensor.selector).chain(sensor.fields) {
+            assert!(
+                field(&pair, name),
+                "{name} is read only with the switch off"
+            );
+        }
+    }
+    assert!(
+        pair.params
+            .query_all_by_label_contains(SET_IN_DEVICES_TEXT)
+            .count()
+            >= 17,
+        "the note beside each of the 4 selectors and 13 fields"
+    );
+    pair.devices.get_by_label(DEBUG_TEXT).click();
+    pair.devices.run();
+    pair.params.run();
+    for sensor in SENSORS {
+        for name in std::iter::once(&sensor.selector).chain(sensor.fields) {
+            assert!(!field(&pair, name), "{name} is editable with the switch on");
+        }
+    }
+    assert!(
+        pair.params
+            .query_by_label_contains(SET_IN_DEVICES_TEXT)
+            .is_none()
+    );
+    assert_eq!(
+        pair.params
+            .query_all_by_label_contains(AFTER_REBOOT_TEXT)
+            .count(),
+        8,
+        "the 4 IMU1 and 4 IMU2 rows are marked"
+    );
 }

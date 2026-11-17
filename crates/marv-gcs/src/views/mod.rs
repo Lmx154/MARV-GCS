@@ -53,12 +53,13 @@ pub fn all() -> Vec<Box<dyn View>> {
 
 /// In tab order: the one line to touch when a view is added.
 fn registry(tiles: bool) -> Vec<Box<dyn View>> {
+    let debug = presets::DebugFlag::default();
     vec![
         Box::new(sensors::Sensors),
         Box::<radio::Radio>::default(),
         Box::<messages::Messages>::default(),
-        Box::<devices::Devices>::default(),
-        Box::<params::Params>::default(),
+        Box::new(devices::Devices::new(debug.clone())),
+        Box::new(params::Params::new(debug)),
         Box::<log::Log>::default(),
         Box::<link::Link>::default(),
         Box::new(map::MapView::new(tiles)),

@@ -39,9 +39,17 @@ const TITLES: [&str; 15] = [
     "Sender",
 ];
 
-#[derive(Default)]
 pub struct Devices {
     presets: super::presets::SensorPresets,
+}
+
+impl Devices {
+    /// With the station's debug switch, the one the Parameters tab reads too.
+    pub fn new(debug: super::presets::DebugFlag) -> Self {
+        Self {
+            presets: super::presets::SensorPresets::new(debug),
+        }
+    }
 }
 
 impl View for Devices {

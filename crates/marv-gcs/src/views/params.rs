@@ -16,15 +16,27 @@ use gcs_mavlink::param_file;
 use gcs_mavlink::services::params::{FetchStatus, ParamTable, ParamValue, WriteStatus};
 
 use super::actions::{self, Confirm};
+use super::presets::{self, DebugFlag};
 use super::{View, ViewCtx};
 use crate::status;
 
 const OTHER_GROUP: &str = "(other)";
 const DEFAULT_PATH: &str = "marv.param";
 
-#[derive(Default)]
 pub struct Params {
     state: State,
+    /// The station's debug switch, set on the Devices tab: off, the selectors and governed fields of
+    /// the sensor presets are read only here.
+    debug: DebugFlag,
+}
+
+impl Params {
+    pub fn new(debug: DebugFlag) -> Self {
+        Self {
+            state: State::default(),
+            debug,
+        }
+    }
 }
 
 impl View for Params {
@@ -37,7 +49,7 @@ impl View for Params {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx) {
-        draw(ui, cx, &mut self.state);
+        draw(ui, cx, &mut self.state, self.debug.get());
     }
 }
 
@@ -268,9 +280,10 @@ impl State {
     /// The valid edits that `Write changes` would send, in name order. An edit whose same value is
     /// already on its way is not sent twice: it is pending in the table, or it was sent a moment ago
     /// and the table has no write entry for it yet.
-    fn sendable(&self, table: &ParamTable) -> Vec<(String, ParamValue)> {
+    fn sendable(&self, table: &ParamTable, debug: bool) -> Vec<(String, ParamValue)> {
         self.edits
             .iter()
+            .filter(|(name, _)| debug || !presets::is_governed(name))
             .filter_map(|(name, text)| match meaning(table, name, text)? {
                 Meaning::Valid(value) => Some((name.clone(), value)),
                 _ => None,
@@ -284,8 +297,8 @@ impl State {
     }
 
     /// Queue one `SetParam` per sendable edit and remember that they were sent.
-    fn write(&mut self, table: &ParamTable, commands: &mut Vec<Command>) {
-        for (name, value) in self.sendable(table) {
+    fn write(&mut self, table: &ParamTable, debug: bool, commands: &mut Vec<Command>) {
+        for (name, value) in self.sendable(table, debug) {
             self.sent.insert(name.clone(), value);
             commands.push(Command::SetParam { name, value });
         }
@@ -403,7 +416,7 @@ fn storage_buttons(ui: &mut egui::Ui, cx: &mut ViewCtx, confirm: &mut Confirm) {
     actions::status_line(ui, cx.state);
 }
 
-fn draw(ui: &mut egui::Ui, cx: &mut ViewCtx, st: &mut State) {
+fn draw(ui: &mut egui::Ui, cx: &mut ViewCtx, st: &mut State, debug: bool) {
     let table = &cx.state.params;
     let connected = cx.now.is_some();
     let blocked = status::configure_blocked(cx.access);
@@ -420,7 +433,7 @@ fn draw(ui: &mut egui::Ui, cx: &mut ViewCtx, st: &mut State) {
             if ui.button("Refresh").clicked() {
                 cx.commands.push(Command::RefreshParams);
             }
-            let sendable = st.sendable(table).len();
+            let sendable = st.sendable(table, debug).len();
             let write = ui.add_enabled(
                 sendable > 0 && blocked.is_none(),
                 egui::Button::new(format!("Write changes ({sendable})")),
@@ -429,7 +442,7 @@ fn draw(ui: &mut egui::Ui, cx: &mut ViewCtx, st: &mut State) {
                 write.clone().on_disabled_hover_text(reason);
             }
             if write.clicked() {
-                st.write(table, cx.commands);
+                st.write(table, debug, cx.commands);
             }
             if ui
                 .add_enabled(!st.edits.is_empty(), egui::Button::new("Discard changes"))
@@ -486,7 +499,9 @@ fn draw(ui: &mut egui::Ui, cx: &mut ViewCtx, st: &mut State) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             for (scope, groups) in &tree {
-                scope_section(ui, table, st, blocked, connected, searching, *scope, groups);
+                scope_section(
+                    ui, table, st, blocked, connected, searching, debug, *scope, groups,
+                );
             }
         });
 }
@@ -509,6 +524,7 @@ fn scope_section(
     blocked: Option<&'static str>,
     connected: bool,
     searching: bool,
+    debug: bool,
     scope: Scope,
     groups: &[Group<'_>],
 ) {
@@ -542,7 +558,7 @@ fn scope_section(
             }
             header.show(ui, |ui| {
                 ui.add_enabled_ui(connected, |ui| {
-                    rows(ui, table, st, blocked, &group.name, &group.shown);
+                    rows(ui, table, st, blocked, debug, &group.name, &group.shown);
                 });
             });
         }
@@ -554,6 +570,7 @@ fn rows(
     table: &ParamTable,
     st: &mut State,
     blocked: Option<&'static str>,
+    debug: bool,
     id: &str,
     names: &[&String],
 ) {
@@ -580,7 +597,12 @@ fn rows(
                     let Some(param) = table.params.get(name) else {
                         return;
                     };
-                    let row_state = st.row_state(table, name);
+                    let locked = !debug && presets::is_governed(name);
+                    let row_state = if locked {
+                        RowState::Clear
+                    } else {
+                        st.row_state(table, name)
+                    };
                     let colour = state_colour(&row_state);
                     row.col(|ui| {
                         match colour {
@@ -592,6 +614,7 @@ fn rows(
                         let mut text = st
                             .edits
                             .get(name)
+                            .filter(|_| !locked)
                             .cloned()
                             .unwrap_or_else(|| param.value(table.encoding).to_string());
                         let mut field =
@@ -600,9 +623,13 @@ fn rows(
                             field = field.text_color(c);
                         }
                         let response = ui
-                            .add_enabled(blocked.is_none(), field)
+                            .add_enabled(blocked.is_none() && !locked, field)
                             .accessible_name(format!("value of {name}"));
-                        if let Some(reason) = blocked {
+                        if locked {
+                            response
+                                .clone()
+                                .on_disabled_hover_text(presets::SET_IN_DEVICES_TEXT);
+                        } else if let Some(reason) = blocked {
                             response.clone().on_disabled_hover_text(reason);
                         }
                         if response.changed() {
@@ -613,7 +640,12 @@ fn rows(
                         ui.label(param.kind.name());
                     });
                     row.col(|ui| {
-                        let text = state_text(&row_state);
+                        let mut text = state_text(&row_state);
+                        if text.is_empty() && locked {
+                            text = presets::SET_IN_DEVICES_TEXT.to_string();
+                        } else if text.is_empty() && presets::applies_after_reboot(name) {
+                            text = presets::AFTER_REBOOT_TEXT.to_string();
+                        }
                         match colour {
                             Some(c) => ui.colored_label(c, text),
                             None => ui.label(text),

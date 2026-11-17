@@ -338,7 +338,11 @@ impl SensorPreset {
                             pick = Some(p.id);
                         }
                     }
-                    if debug && ui.selectable_label(chosen == Some(0), CUSTOM_TEXT).clicked() {
+                    if debug
+                        && ui
+                            .selectable_label(chosen == Some(0), CUSTOM_TEXT)
+                            .clicked()
+                    {
                         pick = Some(0);
                     }
                 })
@@ -491,9 +495,8 @@ impl SensorPreset {
         gate: Option<&'static str>,
     ) {
         let table = &cx.state.params;
-        self.edits.retain(|name, text| {
-            !matches!(field_meaning(table, name, text), Some(Meaning::Same))
-        });
+        self.edits
+            .retain(|name, text| !matches!(field_meaning(table, name, text), Some(Meaning::Same)));
         ui.separator();
         ui.strong("Raw settings (Custom)");
         for field in sensor.fields {
@@ -509,10 +512,7 @@ impl SensorPreset {
                     .unwrap_or_else(|| current.to_string());
                 let response = ui
                     .add(egui::TextEdit::singleline(&mut text).desired_width(70.0))
-                    .on_hover_text(*field);
-                response.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, format!("value of {field}"))
-                });
+                    .accessible_name(format!("value of {field}"));
                 if response.changed() {
                     if text.trim() == current.to_string() {
                         self.edits.remove(*field);
@@ -533,8 +533,11 @@ impl SensorPreset {
             });
         }
         let sendable = self.sendable_fields(table);
-        if actions::button(ui, "Apply fields", gate.or(sendable.is_empty().then_some("nothing edited")))
-        {
+        if actions::button(
+            ui,
+            "Apply fields",
+            gate.or(sendable.is_empty().then_some("nothing edited")),
+        ) {
             for (name, value) in sendable {
                 cx.commands.push(Command::SetParam { name, value });
             }
