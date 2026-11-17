@@ -109,6 +109,9 @@ fn assert_fields_are_preset(rig: &Rig, sensor: &marv_presets::Sensor, id: i32) {
             (Some(ParamValue::Real32(v)), marv_presets::Value::I32(w)) => {
                 assert_eq!(v, *w as f32, "{field}")
             }
+            (Some(ParamValue::Real32(v)), marv_presets::Value::F32(w)) => {
+                assert_eq!(v, *w, "{field}")
+            }
             other => panic!("{field}: {other:?}"),
         }
     }
