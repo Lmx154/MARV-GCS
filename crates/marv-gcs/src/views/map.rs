@@ -177,6 +177,8 @@ enum TileSource {
 pub struct MapView {
     tracker: Tracker,
     memory: MapMemory,
+    /// The map has been zoomed to the vehicle once, at its first position.
+    zoomed: bool,
     tiles: TileSource,
 }
 
@@ -186,6 +188,7 @@ impl MapView {
         Self {
             tracker: Tracker::default(),
             memory: world_view(),
+            zoomed: false,
             tiles: if online {
                 TileSource::OpenStreetMap
             } else {
@@ -229,6 +232,7 @@ impl View for MapView {
     fn session_changed(&mut self) {
         self.tracker = Tracker::default();
         self.memory = world_view();
+        self.zoomed = false;
     }
 
     fn update(&mut self, state: &VehicleState, _now: Option<Duration>) {
@@ -236,9 +240,9 @@ impl View for MapView {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx) {
-        let had_position = self.tracker.last.is_some();
         self.tracker.update(&cx.state.messages);
-        if !had_position && self.tracker.last.is_some() {
+        if !self.zoomed && self.tracker.last.is_some() {
+            self.zoomed = true;
             let _ = self.memory.set_zoom(VEHICLE_ZOOM);
         }
         let status = self.tracker.status(cx.now);
@@ -569,6 +573,53 @@ mod tests {
         assert_eq!(view.tracker.status(secs(10.0)), Status::Waiting);
         assert!(view.memory.detached().is_none(), "follow is on again");
         assert_eq!(view.memory.zoom(), WORLD_ZOOM);
+        assert!(!view.zoomed);
+    }
+
+    fn draw(view: &mut MapView, state: &VehicleState, now: f64) {
+        let mut harness = egui_kittest::Harness::new_ui(|ui| {
+            let mut commands = Vec::new();
+            let mut cx = ViewCtx {
+                state,
+                commands: &mut commands,
+                now: secs(now),
+                access: gcs_mavlink::Access::Configure,
+            };
+            view.ui(ui, &mut cx);
+        });
+        harness.run();
+    }
+
+    #[test]
+    fn the_first_position_zooms_to_the_vehicle_whichever_comes_first() {
+        let mut state = VehicleState::default();
+        put(&mut state.messages, fixed("3D_FIX"), LAT, LON, 0.0, 10.0);
+
+        // The position arrives (through `update`) before the tab is first drawn.
+        let mut view = MapView::new(false);
+        view.update(&state, secs(10.0));
+        assert_eq!(view.memory.zoom(), WORLD_ZOOM);
+        draw(&mut view, &state, 10.5);
+        assert_eq!(view.memory.zoom(), VEHICLE_ZOOM);
+
+        // The tab is open and shows the world when the position arrives.
+        let mut view = MapView::new(false);
+        draw(&mut view, &VehicleState::default(), 9.0);
+        assert_eq!(view.memory.zoom(), WORLD_ZOOM);
+        view.update(&state, secs(10.0));
+        draw(&mut view, &state, 10.5);
+        assert_eq!(view.memory.zoom(), VEHICLE_ZOOM);
+
+        // Only the first position zooms: the user's zoom stays.
+        view.memory.set_zoom(10.0).unwrap();
+        put(&mut state.messages, fixed("3D_FIX"), LAT, LON, 0.0, 11.0);
+        draw(&mut view, &state, 11.5);
+        assert_eq!(view.memory.zoom(), 10.0);
+
+        // A new session starts over.
+        view.session_changed();
+        draw(&mut view, &state, 12.0);
+        assert_eq!(view.memory.zoom(), VEHICLE_ZOOM);
     }
 
     #[test]
