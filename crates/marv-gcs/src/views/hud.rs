@@ -195,7 +195,14 @@ pub fn ui(ui: &mut egui::Ui, state: &VehicleState, now: Option<Duration>) {
     let (rect, response) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
     response.widget_info(|| WidgetInfo::labeled(Role::Image, true, DRAWING_NAME));
     let painter = ui.painter_at(rect);
-    draw_horizon(&painter, rect, &colours, data.attitude);
+    // Without an attitude the level horizon is grey, so it cannot be read as a real "level".
+    let grey = Colours::grey();
+    let horizon = if data.attitude.is_some() {
+        &colours
+    } else {
+        &grey
+    };
+    draw_horizon(&painter, rect, horizon, data.attitude);
     draw_arc(&painter, rect, &colours, data.attitude);
     draw_strip(
         &painter,
