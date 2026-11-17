@@ -1,5 +1,5 @@
-//! End to end: the Devices tab's BARO preset card against the simulated vehicle over a real TCP
-//! socket, in real time (docs/link-contract.md section 13). The simulator keeps the rules of the
+//! End to end: the Devices tab's BARO and IMU preset cards against the simulated vehicle over a real
+//! TCP socket, in real time (docs/link-contract.md section 13). The simulator keeps the rules of the
 //! firmware (R-SEL: a selector write sets all its fields; the echo carries the selector only); the
 //! card reads the fields back by name and compares them with the table of `marv-presets`.
 
@@ -19,8 +19,9 @@ use gcs_mavlink::services::params::FetchStatus;
 use gcs_mavlink::{Access, Command, LinkStatus, Session, SessionConfig, VehicleState};
 use gcs_sim::{ParamValue, SimConfig, SimVehicle};
 use gcs_transport::Endpoint;
+use marv_gcs::views::presets::{PENDING_TEXT, SAVE_AND_REBOOT};
 use marv_gcs::views::{self, ViewCtx};
-use marv_presets::{BARO, Value, preset};
+use marv_presets::{BARO, IMU1, Value, preset};
 
 const POLL: Duration = Duration::from_millis(20);
 const NOT_SAVED: &str = "Applied in RAM; not saved to flash";
@@ -227,4 +228,113 @@ fn baro_smooth_is_applied_read_back_and_saved_only_when_asked() {
         std::thread::sleep(POLL);
         window.harness.run();
     }
+}
+
+#[test]
+fn imu1_smooth_is_pending_until_save_and_reboot_which_sends_245_then_246() {
+    let rig = Rig::start();
+    let mut window = Window::open(rig.session.clone());
+    assert_eq!(rig.param("IMU1_PRESET"), Some(ParamValue::Int32(1)));
+
+    window
+        .harness
+        .get_all_by_role(Role::ComboBox)
+        .next()
+        .expect("the IMU1 drop-down")
+        .click();
+    window.harness.run();
+    window
+        .harness
+        .get_all_by_role_and_label(Role::Button, "Smooth")
+        .next()
+        .expect("Smooth")
+        .click();
+    window.harness.run();
+    window.click_nth("Apply", 0);
+    let forwarded = window.forwarded.borrow().clone();
+    assert_eq!(
+        forwarded.len(),
+        4,
+        "one write and three reads: {forwarded:?}"
+    );
+    assert!(forwarded[0].starts_with("SetParam") && forwarded[0].contains("IMU1_PRESET"));
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !window.shows(PENDING_TEXT) {
+        assert!(
+            Instant::now() < deadline,
+            "the card never showed the preset pending"
+        );
+        std::thread::sleep(POLL);
+        window.harness.run();
+    }
+    assert_eq!(rig.param("IMU1_PRESET"), Some(ParamValue::Int32(4)));
+    let chosen = preset(&IMU1, 4).expect("preset 4");
+    for (field, want) in IMU1.fields.iter().zip(chosen.values) {
+        assert_eq!(stored(&rig, field), *want, "{field}");
+    }
+    assert!(
+        rig.wait(2.0, |s| s
+            .texts
+            .entries
+            .iter()
+            .any(|t| t.text == "IMU1_PRESET: applies after reboot"))
+            .is_some(),
+        "the vehicle's notice"
+    );
+    assert!(
+        window
+            .forwarded
+            .borrow()
+            .iter()
+            .all(|c| !c.starts_with("SendCommand")),
+        "no command before the button"
+    );
+
+    window.click_nth(SAVE_AND_REBOOT, 0);
+    assert!(
+        window
+            .forwarded
+            .borrow()
+            .iter()
+            .all(|c| !c.starts_with("SendCommand")),
+        "the first click only arms"
+    );
+    window.click_nth(&format!("Confirm: {SAVE_AND_REBOOT}"), 0);
+
+    // The card sends 246 in the frame in which it sees 245 accepted, so only the last record is
+    // reliably seen: 246 finished and accepted. That 246 left at all proves the vehicle's ACCEPTED of 245.
+    let mut finished: Vec<u32> = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while !finished.contains(&246) {
+        assert!(
+            Instant::now() < deadline,
+            "never saw 246 accepted: {finished:?}, {:?}",
+            window.forwarded.borrow()
+        );
+        std::thread::sleep(POLL);
+        window.harness.run();
+        if let Some(r) = rig.session.state().command.clone()
+            && matches!(
+                r.status,
+                gcs_mavlink::CommandStatus::Finished { accepted: true, .. }
+            )
+            && !finished.contains(&r.command)
+        {
+            finished.push(r.command);
+        }
+    }
+    let commands: Vec<String> = window
+        .forwarded
+        .borrow()
+        .iter()
+        .filter(|c| c.starts_with("SendCommand"))
+        .cloned()
+        .collect();
+    assert_eq!(commands.len(), 2, "{commands:?}");
+    assert!(commands[0].contains("MAV_CMD_PREFLIGHT_STORAGE"));
+    assert!(commands[1].contains("MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN"));
+    assert!(commands[1].contains("[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]"));
+    // The simulator does not reboot: the stored preset is as it was.
+    assert_eq!(rig.param("IMU1_PRESET"), Some(ParamValue::Int32(4)));
 }
