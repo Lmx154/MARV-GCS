@@ -406,27 +406,26 @@ impl SensorPreset {
                 cx.commands.push(storage_command());
             }
         }
-        if enabled {
-            if actions::button(ui, "Apply", gate)
-                && let Some(id) = chosen
-            {
-                cx.commands.push(Command::SetParam {
-                    name: sensor.selector.to_owned(),
-                    value: ParamValue::I32(id),
-                });
-                if id != 0 {
-                    for field in sensor.fields {
-                        cx.commands.push(Command::ReadParam {
-                            name: (*field).to_owned(),
-                        });
-                    }
+        if enabled
+            && actions::button(ui, "Apply", gate)
+            && let Some(id) = chosen
+        {
+            cx.commands.push(Command::SetParam {
+                name: sensor.selector.to_owned(),
+                value: ParamValue::I32(id),
+            });
+            if id != 0 {
+                for field in sensor.fields {
+                    cx.commands.push(Command::ReadParam {
+                        name: (*field).to_owned(),
+                    });
                 }
-                self.applied = Some(Applied {
-                    at: now,
-                    id,
-                    reboot: Reboot::Idle,
-                });
             }
+            self.applied = Some(Applied {
+                at: now,
+                id,
+                reboot: Reboot::Idle,
+            });
         }
         if debug && current == Current::Custom {
             self.custom_fields(ui, cx, sensor, gate);
