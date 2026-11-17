@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use gcs_mavlink::presets;
 use gcs_mavlink::dialect::{HEARTBEAT_DATA, MavAutopilot, MavModeFlag, MavState, MavType};
+use gcs_mavlink::presets;
 use gcs_mavlink::services::params::{FetchStatus, ParamEncoding, ParamValue, WriteStatus};
 use gcs_mavlink::tlog::{LogSink, TlogReader};
 use gcs_mavlink::{

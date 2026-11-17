@@ -400,7 +400,8 @@ fn writes_whose_values_never_arrive_end_as_a_mismatch_and_offer_no_save() {
     rig.click_nth("Apply", BARO_CARD);
     echo(&mut rig, "BARO_ODR_HZ", Value::I32(25));
     assert!(rig.has("applying"));
-    rig.now.set(rig.now.get() + WRITE_WAIT + Duration::from_secs(1));
+    rig.now
+        .set(rig.now.get() + WRITE_WAIT + Duration::from_secs(1));
     rig.update(|_| {});
     assert!(rig.has(MISMATCH_TEXT));
     assert!(!rig.has(NOT_SAVED));
@@ -433,7 +434,10 @@ fn mag_ultra_low_noise_from_balanced_writes_the_odr_down_then_the_averaging_up()
     rig.click_nth("Apply", 3);
     assert_eq!(
         writes_of(&rig),
-        [("MAG_ODR_HZ".to_string(), 50.0), ("MAG_AVG".to_string(), 8.0)]
+        [
+            ("MAG_ODR_HZ".to_string(), 50.0),
+            ("MAG_AVG".to_string(), 8.0)
+        ]
     );
     assert!(matches!(
         &rig.commands.borrow()[0],
@@ -807,7 +811,10 @@ fn pair(table: ParamTable) -> Pair {
 #[test]
 fn the_active_preset_is_the_one_whose_values_all_equal_the_vehicles_else_custom() {
     for sensor in SENSORS {
-        let card = SENSORS.iter().position(|s| s.device == sensor.device).unwrap();
+        let card = SENSORS
+            .iter()
+            .position(|s| s.device == sensor.device)
+            .unwrap();
         for p in sensor.presets {
             let mut params = loaded();
             set_sensor(&mut params, sensor, p.id);
@@ -838,7 +845,10 @@ fn custom_is_shown_read_only_with_the_picker_usable_and_an_unloaded_list_says_so
     put(&mut params, "MAG_AVG", Value::I32(3));
     let mut rig = Rig::new(Access::Configure, params);
     assert_eq!(rig.shown(3), CUSTOM_ACTIVE_TEXT);
-    assert!(!rig.combo(3).accesskit_node().is_disabled(), "a preset can be chosen");
+    assert!(
+        !rig.combo(3).accesskit_node().is_disabled(),
+        "a preset can be chosen"
+    );
     assert!(rig.harness.query_by_label("value of MAG_AVG").is_none());
     assert!(rig.harness.query_by_label(CUSTOM_TEXT).is_none());
     rig.pick(3, "Balanced");
@@ -1056,8 +1066,13 @@ fn every_axis_label_of_every_chart_lies_inside_the_chart_area_and_the_radius_sta
             for sensor in SENSORS {
                 let g = presets::chart_geometry(&painter, sensor, response.rect);
                 for (name, rect, _) in &g.labels {
-                    out.borrow_mut()
-                        .push((presets::sensor_name(sensor), name, *rect, response.rect, g.radius));
+                    out.borrow_mut().push((
+                        presets::sensor_name(sensor),
+                        name,
+                        *rect,
+                        response.rect,
+                        g.radius,
+                    ));
                 }
             }
         });

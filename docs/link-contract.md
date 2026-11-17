@@ -84,41 +84,26 @@ Parameters
 
   Order: for n = 1 to 8 the five `RCn_*` as MIN, TRIM, MAX, REVERSED, DZ; then `RCMAP_ROLL`, `RCMAP_PITCH`,
   `RCMAP_THROTTLE`, `RCMAP_YAW`.
-- The sensor preset block (amendment 2026-11-17; the design is section 13): 10 parameters appended after RC, so the
-  first 70 indices do not change and the count goes from 70 to 80. All INT32. Class: Configure = applied at once
-  (the value is in effect, flash only on command 245 with param1 = 1); Reboot = the vehicle answers "applies after
-  reboot" and the value takes effect after save and reboot.
+- The IMU parameters (amendment 2026-11-17; presets are a station feature, section 13): 6 parameters appended after
+  RC, so the first 70 indices do not change and the count goes from 70 to 76. All INT32. Class Reboot: the chip is
+  configured once, at boot, from these values; a write changes RAM, the vehicle answers with the INFO text
+  "<NAME>: applies after reboot", and the value takes effect after save (command 245 with param1 = 1) and reboot.
+  The defaults are the Flight preset's values (section 13). The vehicle has no preset selector and enforces no
+  preset: every write is checked against the parameter's own range (and, for BARO and MAG, the driver's rules), as
+  any parameter.
 
   | Index | Name | Type, unit | Default | Range | Class | Device |
   |---|---|---|---|---|---|---|
-  | 70 | `IMU1_PRESET` | I32 | 1 | 0..4 | Reboot | IMU1 |
-  | 71 | `IMU1_ACC_FS` | I32, g | 16 | 2..32 | Reboot | IMU1 |
-  | 72 | `IMU1_GYR_FS` | I32, dps | 2000 | 125..4000 | Reboot | IMU1 |
-  | 73 | `IMU1_ODR_HZ` | I32, Hz | 800 | 25..800 | Reboot | IMU1 |
-  | 74 | `IMU2_PRESET` | I32 | 1 | 0..4 | Reboot | IMU2 |
-  | 75 | `IMU2_ACC_FS` | I32, g | 16 | 2..16 | Reboot | IMU2 |
-  | 76 | `IMU2_GYR_FS` | I32, dps | 2000 | 250..4000 | Reboot | IMU2 |
-  | 77 | `IMU2_ODR_HZ` | I32, Hz | 800 | 25..800 | Reboot | IMU2 |
-  | 78 | `BARO_PRESET` | I32 | 1 | 0..4 | Configure | BARO |
-  | 79 | `MAG_PRESET` | I32 | 1 | 0..4 | Configure | MAG |
+  | 70 | `IMU1_ACC_FS` | I32, g | 16 | 2, 4, 8, 16, 32 | Reboot | IMU1 |
+  | 71 | `IMU1_GYR_FS` | I32, dps | 2000 | 125..4000 | Reboot | IMU1 |
+  | 72 | `IMU1_ODR_HZ` | I32, Hz | 800 | 25..800 | Reboot | IMU1 |
+  | 73 | `IMU2_ACC_FS` | I32, g | 16 | 2, 4, 8, 16 | Reboot | IMU2 |
+  | 74 | `IMU2_GYR_FS` | I32, dps | 2000 | 250..4000 | Reboot | IMU2 |
+  | 75 | `IMU2_ODR_HZ` | I32, Hz | 800 | 25..800 | Reboot | IMU2 |
 
-  Selectors and the fields each governs: `IMU1_PRESET`: `IMU1_ACC_FS`, `IMU1_GYR_FS`, `IMU1_ODR_HZ`; `IMU2_PRESET`:
-  `IMU2_ACC_FS`, `IMU2_GYR_FS`, `IMU2_ODR_HZ`; `BARO_PRESET`: `BARO_ODR_HZ`, `BARO_OSR_P`, `BARO_OSR_T`,
-  `BARO_IIR_P`, `BARO_IIR_T`; `MAG_PRESET`: `MAG_ODR_HZ`, `MAG_AVG`. The calibration offsets are not governed. A
-  selector is 0 = Custom (debug) or 1 to 4 = a preset of section 13; 1 is the default, and every governed field's
-  default equals preset 1's value. The IMU selectors and fields are Reboot-class: the IMU is configured once, at boot,
-  from `IMUn_PRESET`, and stays so until the next reboot; rates stop at 800 Hz. A selector write changes RAM only;
-  the flash changes only on command 245 with param1 = 1.
-  - R-SEL: writing a selector (after the read-only, type and range checks): 0 stores 0 and leaves the fields; p > 0
-    stores the selector and every governed field of preset p at once, checked as one configuration (a combination
-    that is invalid only in an intermediate state is accepted). A refusal stores nothing and echoes the old value.
-  - R-LOCK: while a selector is not 0 a write to one of its fields is refused unless the value equals the stored one
-    (then it is accepted, a no-op). A refusal echoes the stored value and sends one STATUSTEXT "<FIELD>: locked by
-    <SEL> (0 = custom)". With the selector at 0 the fields are written as any parameter.
-  - Echo: a selector write's PARAM_VALUE carries the selector only, not the fields it changed (the vehicle sends
-    PARAM_VALUE only for the written name). The station reads the governed fields back by name.
-  - At boot a stored selector other than 0 replaces the stored values of its fields by the preset's, with one
-    WARNING per device that differed. A firmware without presets stored no selectors: they read 1.
+  The BARO and MAG fields keep their indices, types and defaults (`BARO_ODR_HZ` 50, `BARO_OSR_P` 16, `BARO_OSR_T` 2,
+  `BARO_IIR_P` 0, `BARO_IIR_T` 0, `MAG_ODR_HZ` 100 as a REAL32, `MAG_AVG` 2: the Balanced values). The fields a
+  preset sets are these 13; the calibration offsets are not among them.
 - Amendments by the lead after review (2026-11-12). (1) Withdrawn 2026-11-15: a different echo used to be
   retried (a stale copy of the old value in flight would read as a refusal); the vehicle answers every PARAM_SET
   with exactly one PARAM_VALUE, so a differing one after the send is the refusal. (2) A write waits
@@ -439,7 +424,7 @@ Classes.
   11), because the vehicle offers log download on its USB link only and the station must not ask for it on a
   radio or a network link, where the vehicle does not answer.
 - Operate-class: everything that only reads or only concerns the station: the heartbeat (a service, not a
-  command), a parameter list request (`Command::RefreshParams`), a single parameter read (`Command::ReadParam`, by name; amendment 2026-11-17), log recording
+  command), a parameter list request (`Command::RefreshParams`), log recording
   (`Command::StartLog`, `Command::StopLog`), link management (connect, disconnect, replay).
 
 Services that run by themselves are not commands and are not gated. They only read: the capability
@@ -456,10 +441,9 @@ The Radio tab (section 12): Calibrate, Apply, the mapping edits and Save to flas
 changes: `Command::SetParam` and `Command::SendCommand` are already Configure-class (amendment 2026-11-16).
 
 The Sensor presets section of the Devices tab (section 13), amendment 2026-11-17: Apply, Save, Save and reboot and
-the Custom edits are Configure controls (`Command::SetParam`, `Command::SendCommand`), no rule changes; the read-back
-of the governed fields is `Command::ReadParam`, Operate-class. The debug switch ("Debug: raw sensor settings") is the
-station's own gate, in the owner's rule above: station-local, off at every start, and the firmware knows nothing of it
-(it enforces only R-LOCK).
+the Custom edits are Configure controls (`Command::SetParam`, `Command::SendCommand`), no rule changes. The debug
+switch ("Debug: raw sensor settings") is the station's own gate, in the owner's rule above: station-local, off at every
+start, and the firmware knows nothing of it.
 
 Views. Every configure control is SHOWN DISABLED, with the reason next to it or as hover text ("Configure
 needs a serial or TCP link; this link is operate-only"), never hidden. The Link view and the connection bar
@@ -771,18 +755,17 @@ worked-example tables).
 
 ## 13. Sensor presets
 
-Decision of 2026-11-17 (the lead, from the architect's consult; the owner accepted it: default IMU preset Flight, +-16 g /
-+-2000 dps / 800 Hz). It binds both ends. The owner's rules: "I want to keep logic in firmware."; "do not over
-engineer"; "settings should be saved when the user saves them via apply or save button."; the user does not type a
-manual rate "only if it's for debugging purposes". Parameters, R-SEL and R-LOCK: section 2, Parameters (the sensor
-preset block).
+Decision of 2026-11-17, amended the same day on the owner's redirect: "preset configs should basically be us setting
+several params at once as a verified/sane combo. not some special vip feature inside the driver/firmware". A preset is
+a station feature: the firmware has no preset, no selector and no preset rule. The owner's earlier rules still hold:
+default IMU preset Flight (+-16 g / +-2000 dps / 800 Hz); "do not over engineer"; "settings should be saved when the
+user saves them via apply or save button."; the user does not type a manual rate "only if it's for debugging
+purposes". The parameters: section 2, Parameters (the IMU parameters and the BARO and MAG fields).
 
-One source. The crate `marv-presets` (`#![no_std]`, no dependencies, own repo `Lmx154/marv-presets`), at the `rev`
-pinned in the firmware's `fw-settings` and in this workspace's `Cargo.toml`, is the normative table: ids, names,
-summaries, field values, axes, physical values and scores. The tables below are its content at the first rev. The
-station computes no preset logic: it renders the crate's table and writes the selector. Ids 1 to 4 and their names
-never change meaning or number; a new preset is appended with the next id (and the selector's range grows).
-Nothing is added to the link: parameter metadata stays "Not now" (section 2).
+One source. The module `gcs_mavlink::presets` of this workspace is the normative table: ids, names, summaries, field
+values, axes, physical values and scores; the window, `marv-cli` and the tests use it, the simulator does not. The
+tables below are its content. Ids 1 to 4 and their names do not change meaning or number; a new preset is appended with
+the next id. Nothing is added to the link: parameter metadata stays "Not now" (section 2).
 
 What a preset changes. IMU presets vary only the accelerometer range, the gyro range and the output data rate (both
 sensors of a chip at one rate); everything else is as before in every preset (internal clock, INT1 latched data-ready,
@@ -827,7 +810,7 @@ Physical values (from datasheet and driver numbers; MODEL and BOUND are shown as
 - Not shown on purpose: supply current, chip filter delay, IMU latency.
 
 Scores 0 to 100; the physical value in brackets. Computed with an independent script from the formulas above; the
-crate's tests are the oracle.
+module's tests (`crates/gcs-mavlink/tests/presets.rs`) are the oracle.
 
 IMU1, ICM-45686 (low-noise mode, internal clock, UI LPF bypass, FIR off, INT1 latched, no FIFO).
 
@@ -870,26 +853,36 @@ Summaries for the cards (crate `summary`): IMU "+-16 g, +-2000 dps, 800 Hz" etc.
 "100 Hz, average of 2".
 
 The station (Devices tab, a "Sensor presets" section above the health table; four cards IMU1, IMU2, BARO, MAG)
-- Each card: the preset picker (names from the crate), the chart, the summary line, the physical value of every axis
+- Each card: the preset picker (names from the table), the chart, the summary line, the physical value of every axis
   with its unit and its MODEL or BOUND tag, one status line. Cards show on Operate when the parameter list is present,
   otherwise "parameters not loaded".
-- BARO and MAG: choose, Apply (one PARAM_SET of the selector), the vehicle applies at once; the station then reads the
-  sensor's governed fields back by name (`Command::ReadParam`) and compares them with the crate; "Applied in RAM; not
-  saved", and Save to flash (command 245 with param1 = 1) as on the Radio tab.
-- IMUs: Apply, then the vehicle's "IMUn_PRESET: applies after reboot"; the card shows "Pending: takes effect after Save
-  and reboot" with one button "Save and reboot": command 245 with param1 = 1 and, only on its ACCEPTED, command 246 with
-  param1 = 1. Pending is session-local (the selector differs from the value read after the vehicle's last boot). A
+- Active preset: the preset whose field values all equal the vehicle's (a REAL32 compared numerically), else "Custom".
+  There is no selector to read and no version to compare.
+- Apply writes the chosen preset's fields as ordinary `PARAM_SET` writes: first every field whose value goes DOWN, then
+  every field whose value goes UP, each group in the table's field order; a field whose value does not change is not
+  written. Every intermediate combination stays valid because the limits are downward closed: BMP581 Table 7 (the
+  highest ODR falls as OSR_P or OSR_T rises) and BMM350 Table 5 (the highest averaging falls as ODR rises) only
+  forbid raising an OSR or an averaging above what the ODR allows, or raising an ODR above what the OSR allows; the
+  IIR and the IMU fields are unconstrained. Lowering an ODR, an OSR or an averaging therefore never makes a valid
+  combination invalid, and the first group never does; the second group ends on a valid combination.
+- The card judges the result from each write's echo (the vehicle's PARAM_VALUE after the write; the vehicle answers
+  every PARAM_SET with exactly one, section 2) compared with the table. Every write answered and every field equal:
+  BARO and MAG show "Applied in RAM; not saved", and Save to flash (command 245 with param1 = 1) as on the Radio tab.
+  A refused write (a differing echo): the card names the field and shows what the values now match, often "Custom".
+  A write with no answer: the same, naming the field.
+- IMUs: the same writes (the vehicle answers each with "<NAME>: applies after reboot"); the card then shows "Pending:
+  takes effect after Save and reboot" with one button "Save and reboot": command 245 with param1 = 1 and, only on its
+  ACCEPTED, command 246 with param1 = 1. Pending is session-local (the running configuration is not on the link). A
   reboot without a save drops the preset.
-- Skew rule: a selector value the crate does not know shows "unknown preset N (station older than firmware)"; a known
-  preset whose fields differ from the crate shows "station preset table does not match the firmware" and disables that
-  card's picker. The vehicle validates every write regardless.
+- Accepted costs: another tool can write raw values, and a link drop in the middle of an Apply leaves the sensor
+  between two presets ("Custom") until it is applied again. The vehicle validates every write regardless.
 - Debug switch: station-local, off at every start, "Debug: raw sensor settings" in the section header. Off: "Custom
-  (debug)" is not offered; the Parameters tab shows the selectors and the governed fields read-only with "set in Devices
-  > Sensor presets" (a vehicle already in Custom is shown as such, read-only). On: Custom is offered, and while a
-  selector is 0 the card and the Parameters tab edit its fields (IMU fields marked "applies after reboot").
-  `marv-cli param set` of a selector to 0 or of a governed field needs `--debug`. It is a gate in the station only
-  (section 9).
+  (debug)" is not offered; the Parameters tab shows the fields a preset sets read-only with "set in Devices > Sensor
+  presets" (a vehicle whose values match no preset is shown as "Custom", read-only, and a preset can be chosen). On:
+  "Custom (debug)" is offered; choosing it shows the card's fields as values to type, and the Parameters tab edits them
+  (IMU fields marked "applies after reboot"). `marv-cli param set` of a field a preset sets needs `--debug`. It is a gate
+  in the station only (section 9).
 - Operate and Configure: Apply, Save, Save and reboot and the Custom edits are Configure controls, shown disabled with
   the reason on Operate (section 9); Apply is also disabled while a calibration runs.
 
-The simulator (`gcs-sim`) has the ten parameters with R-SEL, R-LOCK and the boot rule, from the crate (a test double).
+The simulator (`gcs-sim`) has the six IMU parameters (Reboot class, the "applies after reboot" text) and the BARO and MAG fields at the Flight / Balanced values, range-checked only (a test double); it does not use the table.

@@ -27,7 +27,11 @@ const BMP581_MAX_ODR: [[i32; 8]; 8] = [
 
 /// IIR 0, 1, 3, 7, 15, 31, 63, 127 are all valid with any OSR and ODR.
 fn baro_valid(v: &BTreeMap<String, f64>) -> bool {
-    let at = |name: &str| OSR.iter().position(|o| f64::from(*o) == v[name]).expect(name);
+    let at = |name: &str| {
+        OSR.iter()
+            .position(|o| f64::from(*o) == v[name])
+            .expect(name)
+    };
     v["BARO_ODR_HZ"] <= f64::from(BMP581_MAX_ODR[at("BARO_OSR_P")][at("BARO_OSR_T")])
 }
 
@@ -99,7 +103,13 @@ fn check(sensor: &Sensor, valid: fn(&BTreeMap<String, f64>) -> bool) -> usize {
             assert!(valid(&start) && valid(&end), "{} -> {}", from.name, to.name);
             let plan = write_plan(&table_of(&start), sensor, to).expect("plan");
             let changed = start.iter().filter(|(k, v)| end[*k] != **v).count();
-            assert_eq!(plan.len(), changed, "{} -> {}: only changes", from.name, to.name);
+            assert_eq!(
+                plan.len(),
+                changed,
+                "{} -> {}: only changes",
+                from.name,
+                to.name
+            );
             let mut now = start.clone();
             let mut seen_up = false;
             for (name, value) in &plan {

@@ -25,8 +25,8 @@ const DEFAULT_PATH: &str = "marv.param";
 
 pub struct Params {
     state: State,
-    /// The station's debug switch, set on the Devices tab: off, the selectors and governed fields of
-    /// the sensor presets are read only here.
+    /// The station's debug switch, set on the Devices tab: off, the fields a preset sets of
+    /// a sensor are read only here.
     debug: DebugFlag,
 }
 

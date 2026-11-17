@@ -118,7 +118,10 @@ fn the_thirteen_parameters_exist_with_the_firmwares_defaults_and_no_selector_doe
     ] {
         assert_eq!(rig.int(name), default, "{name}");
     }
-    assert_eq!(rig.vehicle.param("MAG_ODR_HZ"), Some(ParamValue::Real32(100.0)));
+    assert_eq!(
+        rig.vehicle.param("MAG_ODR_HZ"),
+        Some(ParamValue::Real32(100.0))
+    );
     for selector in ["IMU1_PRESET", "IMU2_PRESET", "BARO_PRESET", "MAG_PRESET"] {
         assert_eq!(rig.vehicle.param(selector), None, "{selector}");
     }

@@ -343,8 +343,8 @@ fn value_types_match_the_firmware_parameters() {
     }
 }
 
-/// Invariant I5, the table's side: preset 1 equals the firmware's field defaults (design 1.4,
-/// parameters 70 to 79 and the BARO and MAG defaults of today's firmware).
+/// Preset 1 equals the firmware's field defaults (the IMU parameters 70 to 75 and the BARO and MAG
+/// defaults).
 #[test]
 fn preset_one_equals_the_firmware_field_defaults() {
     let defaults: [(&Sensor, &[(&str, i32)]); 4] = [

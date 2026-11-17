@@ -20,11 +20,11 @@ use eframe::egui::{
 };
 use gcs_mavlink::Command;
 use gcs_mavlink::dialect::MavCmd;
-use gcs_mavlink::services::params::{ParamTable, ParamValue, WriteStatus};
-use gcs_mavlink::{CommandStatus, VehicleState};
 use gcs_mavlink::presets::{
     Axis, Kind, MARV_DEVICE_IMU1, MARV_DEVICE_IMU2, Preset, SENSORS, Sensor, Value, preset,
 };
+use gcs_mavlink::services::params::{ParamTable, ParamValue, WriteStatus};
+use gcs_mavlink::{CommandStatus, VehicleState};
 
 use super::ViewCtx;
 use super::actions::{self, Confirm};
@@ -353,9 +353,10 @@ impl SensorPreset {
         } {
             self.staged = None;
         }
-        let flow = self.applied.as_ref().map(|a| {
-            apply_flow(table, sensor, a.id, &a.written, a.at, now)
-        });
+        let flow = self
+            .applied
+            .as_ref()
+            .map(|a| apply_flow(table, sensor, a.id, &a.written, a.at, now));
         if matches!(
             flow,
             Some(Flow::Refused { .. } | Flow::NoAnswer(_) | Flow::Differs)

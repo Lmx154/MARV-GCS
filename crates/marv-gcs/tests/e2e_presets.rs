@@ -203,7 +203,10 @@ fn baro_smooth_is_applied_by_three_writes_and_saved_only_when_asked() {
         .iter()
         .zip(["BARO_ODR_HZ", "BARO_OSR_P", "BARO_IIR_P"])
     {
-        assert!(sent.starts_with("SetParam") && sent.contains(field), "{sent}");
+        assert!(
+            sent.starts_with("SetParam") && sent.contains(field),
+            "{sent}"
+        );
     }
 
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -274,7 +277,10 @@ fn imu1_smooth_is_pending_until_save_and_reboot_which_sends_245_then_246() {
         .iter()
         .zip(["IMU1_ACC_FS", "IMU1_GYR_FS", "IMU1_ODR_HZ"])
     {
-        assert!(sent.starts_with("SetParam") && sent.contains(field), "{sent}");
+        assert!(
+            sent.starts_with("SetParam") && sent.contains(field),
+            "{sent}"
+        );
     }
 
     let deadline = Instant::now() + Duration::from_secs(8);
