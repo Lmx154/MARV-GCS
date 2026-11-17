@@ -18,10 +18,10 @@
 //! section 11 says the real vehicle will answer them: see [`crate::SimLog`] and [`crate::LogDataDrop`].
 
 use mavlink::dialects::common::{
-    AUTOPILOT_VERSION_DATA, COMMAND_ACK_DATA, GPS_RAW_INT_DATA, HEARTBEAT_DATA, HIGHRES_IMU_DATA,
-    LOG_DATA_DATA, LOG_ENTRY_DATA, MANUAL_CONTROL_DATA, MavMessage, MavProtocolCapability,
-    MavResult, MavSeverity, PARAM_VALUE_DATA, RC_CHANNELS_DATA, SCALED_IMU2_DATA,
-    SCALED_PRESSURE_DATA, STATUSTEXT_DATA, SYS_STATUS_DATA,
+    ATTITUDE_DATA, AUTOPILOT_VERSION_DATA, COMMAND_ACK_DATA, GPS_RAW_INT_DATA, HEARTBEAT_DATA,
+    HIGHRES_IMU_DATA, LOG_DATA_DATA, LOG_ENTRY_DATA, MANUAL_CONTROL_DATA, MavMessage,
+    MavProtocolCapability, MavResult, MavSeverity, PARAM_VALUE_DATA, RC_CHANNELS_DATA,
+    SCALED_IMU2_DATA, SCALED_PRESSURE_DATA, STATUSTEXT_DATA, SYS_STATUS_DATA,
 };
 use mavlink::types::CharArray;
 use mavlink::{MAVLinkV2MessageRaw, MavHeader, MavlinkVersion, Message, MessageData};
@@ -156,6 +156,8 @@ impl Default for SimConfig {
                 stream(GPS_RAW_INT_DATA::ID, 1.0),
                 stream(RC_CHANNELS_DATA::ID, 5.0),
                 stream(MANUAL_CONTROL_DATA::ID, 5.0),
+                // Not sent by the real firmware yet (an estimator is being designed): a test double.
+                stream(ATTITUDE_DATA::ID, 10.0),
             ],
             params: default_params(),
             param_encoding: ParamEncoding::default(),

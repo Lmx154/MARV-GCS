@@ -7,12 +7,13 @@
 //! (1 Hz), HIGHRES_IMU (IMU1 as `id` 0, with the magnetometer in `xmag`/`ymag`/`zmag`), SCALED_IMU2 (IMU2, in mG
 //! and mrad/s) and SCALED_PRESSURE (25 Hz), and RC_CHANNELS (5 Hz). [`scaled_imu`] is not a default stream
 //! (the link contract rejects SCALED_IMU: it stops at 32.7 g) but a custom [`SimConfig`](crate::SimConfig)
-//! can still stream it.
+//! can still stream it. ATTITUDE (10 Hz) is a test double: the real firmware does not send it yet (an
+//! estimator is being designed); [`attitude`] lets the station's HUD be tested and seen.
 
 use mavlink::MessageData;
 use mavlink::dialects::common::{
-    GPS_RAW_INT_DATA, GpsFixType, HEARTBEAT_DATA, HIGHRES_IMU_DATA, HighresImuUpdatedFlags,
-    MavAutopilot, MavMessage, MavModeFlag, MavState, MavSysStatusSensor,
+    ATTITUDE_DATA, GPS_RAW_INT_DATA, GpsFixType, HEARTBEAT_DATA, HIGHRES_IMU_DATA,
+    HighresImuUpdatedFlags, MavAutopilot, MavMessage, MavModeFlag, MavState, MavSysStatusSensor,
     MavSysStatusSensorExtended, MavType, RC_CHANNELS_DATA, SCALED_IMU_DATA, SCALED_IMU2_DATA,
     SCALED_PRESSURE_DATA, SYS_STATUS_DATA,
 };
@@ -229,6 +230,32 @@ pub fn gps_raw_int(now_ms: u64) -> GPS_RAW_INT_DATA {
     }
 }
 
+/// Roll amplitude of [`attitude`] in rad (20 deg) and its frequency in Hz.
+const ROLL_AMPLITUDE: f64 = 0.349;
+const ROLL_HZ: f64 = 0.10;
+/// Pitch amplitude of [`attitude`] in rad (10 deg) and its frequency in Hz.
+const PITCH_AMPLITUDE: f64 = 0.175;
+const PITCH_HZ: f64 = 0.07;
+/// Yaw rate of [`attitude`] in rad/s (about 5.7 deg/s: a turn in 63 s).
+const YAW_RATE: f64 = 0.1;
+
+/// ATTITUDE, a test double: roll 20 deg at 0.10 Hz and pitch 10 deg at 0.07 Hz (sines, the rates are their
+/// derivatives), yaw turning at 0.1 rad/s and wrapped into -pi to pi as MAVLink sends it.
+pub fn attitude(now_ms: u64) -> ATTITUDE_DATA {
+    let t = seconds(now_ms);
+    let omega = std::f64::consts::TAU;
+    let yaw = (YAW_RATE * t + std::f64::consts::PI).rem_euclid(omega) - std::f64::consts::PI;
+    ATTITUDE_DATA {
+        time_boot_ms: now_ms as u32,
+        roll: sine(now_ms, ROLL_AMPLITUDE, ROLL_HZ, 0.0) as f32,
+        pitch: sine(now_ms, PITCH_AMPLITUDE, PITCH_HZ, 0.0) as f32,
+        yaw: yaw as f32,
+        rollspeed: (ROLL_AMPLITUDE * omega * ROLL_HZ * (omega * ROLL_HZ * t).cos()) as f32,
+        pitchspeed: (PITCH_AMPLITUDE * omega * PITCH_HZ * (omega * PITCH_HZ * t).cos()) as f32,
+        yawspeed: YAW_RATE as f32,
+    }
+}
+
 /// RC_CHANNELS as the firmware sends it: 16 channels in microseconds (`chancount` 16, channels 17 and 18
 /// 65535 = not used), `rssi` [`RC_RSSI`]. Channel `n` (1 to 16) is 1500 us plus a sine of up to 400 us
 /// at (0.1 + 0.05 n) Hz, except channel 3 (throttle), which is 1000 us plus 0 to 1000 us.
@@ -282,6 +309,7 @@ pub fn messages(message_id: u32, now_ms: u64) -> Vec<MavMessage> {
         SCALED_PRESSURE_DATA::ID => vec![MavMessage::SCALED_PRESSURE(scaled_pressure(now_ms))],
         RC_CHANNELS_DATA::ID => vec![MavMessage::RC_CHANNELS(rc_channels(now_ms))],
         GPS_RAW_INT_DATA::ID => vec![MavMessage::GPS_RAW_INT(gps_raw_int(now_ms))],
+        ATTITUDE_DATA::ID => vec![MavMessage::ATTITUDE(attitude(now_ms))],
         _ => Vec::new(),
     }
 }
@@ -485,6 +513,34 @@ mod tests {
     }
 
     #[test]
+    fn attitude_stays_plausible_and_its_rates_follow_the_angles() {
+        let at = attitude(0);
+        assert_eq!((at.roll, at.pitch), (0.0, 0.0));
+        let mut yaw_min = f32::MAX;
+        let mut yaw_max = f32::MIN;
+        for t in (0..130_000).step_by(100) {
+            let a = attitude(t);
+            assert!(a.roll.abs() <= 0.35 && a.pitch.abs() <= 0.18, "{a:?}");
+            assert!(a.yaw.abs() <= std::f32::consts::PI, "{a:?}");
+            yaw_min = yaw_min.min(a.yaw);
+            yaw_max = yaw_max.max(a.yaw);
+            let b = attitude(t + 1);
+            let numeric = (b.roll - a.roll) / 0.001;
+            assert!((numeric - a.rollspeed).abs() < 0.01, "{t}: {numeric} {a:?}");
+            let numeric = (b.pitch - a.pitch) / 0.001;
+            assert!(
+                (numeric - a.pitchspeed).abs() < 0.01,
+                "{t}: {numeric} {a:?}"
+            );
+        }
+        assert!(
+            yaw_min < -3.0 && yaw_max > 3.0,
+            "yaw wraps: {yaw_min} {yaw_max}"
+        );
+        assert_eq!(attitude(10_000).yawspeed, 0.1);
+    }
+
+    #[test]
     fn message_lookup() {
         assert!(messages(999, 0).is_empty());
         assert!(matches!(&messages(26, 5)[..], [MavMessage::SCALED_IMU(m)] if *m == scaled_imu(5)));
@@ -497,5 +553,6 @@ mod tests {
         assert!(
             matches!(&messages(65, 7)[..], [MavMessage::RC_CHANNELS(m)] if *m == rc_channels(7))
         );
+        assert!(matches!(&messages(30, 7)[..], [MavMessage::ATTITUDE(m)] if *m == attitude(7)));
     }
 }
