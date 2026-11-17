@@ -277,7 +277,7 @@ fn lossy_link_still_completes_with_every_value_right() {
     };
     let rig = Rig::start(config);
     let took = rig.wait_complete(60.0);
-    eprintln!("lossy link (20% each way, 357 params): Complete after {took:?}");
+    eprintln!("lossy link (20% each way, 374 params): Complete after {took:?}");
     let sim = rig.sim_params();
     let state = rig.state();
     let problems = mismatches(&state.params, &sim, |v| v);
@@ -287,7 +287,7 @@ fn lossy_link_still_completes_with_every_value_right() {
         problems.len(),
         &problems[..problems.len().min(5)]
     );
-    assert_eq!(state.params.params.len(), 357);
+    assert_eq!(state.params.params.len(), 374);
 }
 
 #[test]
@@ -586,7 +586,7 @@ fn refresh_runs_the_whole_fetch_again() {
     let rig = Rig::start(SimConfig::default().with_synthetic_params(300));
     rig.wait_complete(10.0);
     let count = rig.state().params.params.len();
-    assert_eq!(count, 357);
+    assert_eq!(count, 374);
     rig.session().send(Command::RefreshParams);
     let left = rig.wait(4.0, |s| s.params.fetch != FetchStatus::Complete);
     assert!(left.is_some(), "the status never left Complete");

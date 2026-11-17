@@ -27,6 +27,8 @@ gcs-dflog = { path = "crates/gcs-dflog" }
 
 mavlink = { version = "=0.21.0", default-features = false, features = ["std", "serde", "dialect-common", "mav2-message-extensions"] }
 marv-dialect = { git = "https://github.com/Lmx154/marv-dialect.git", rev = "af6baa107046219dee49cd88c81f9809c134e761", features = ["std", "serde"] }
+# TEMPORARY path dependency: switch to git + rev before merge
+marv-presets = { path = "../MARV-V2-drivers/marv-presets" }
 serialport = "4.10.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }

@@ -138,7 +138,7 @@ fn param_list_prints_the_simulators_parameters() {
     let rig = Rig::start();
     let r = rig.cli("param list");
     assert_eq!(r.code, 0, "{r:?}");
-    assert_eq!(r.lines().len(), 57, "{r:?}");
+    assert_eq!(r.lines().len(), 74, "{r:?}");
     assert!(r.lines().contains(&"IMU_RATE_HZ\t800\ti32"), "{r:?}");
     assert!(r.lines().contains(&"BAT_LOW_V\t14\tf32"), "{r:?}");
     assert!(r.lines().contains(&"NAV_TEST_16CHARS\t1.5\tf32"), "{r:?}");

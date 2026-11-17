@@ -191,7 +191,7 @@ fn the_map_example_of_the_contract() {
 #[test]
 fn the_rc_block_is_44_int32_parameters_after_the_others_in_the_contracts_order() {
     let params = SimConfig::default().params;
-    let rc = &params[13..];
+    let rc = &params[13..13 + 44];
     assert_eq!(rc.len(), 44);
     assert_eq!(
         params[12].name, "NAV_TEST_16CHARS",

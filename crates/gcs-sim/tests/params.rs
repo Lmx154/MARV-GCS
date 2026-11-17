@@ -136,8 +136,8 @@ fn read_value(d: &PARAM_VALUE_DATA, encoding: ParamEncoding) -> ParamValue {
     }
 }
 
-/// The parameters of a default configuration: the 13 of the first block and the 44 of the RC block.
-const DEFAULT_PARAMS: usize = 13 + 44;
+/// The parameters of a default configuration: the 13 of the first block, the 44 of the RC block and the 17 of the sensor preset block.
+const DEFAULT_PARAMS: usize = 13 + 44 + 17;
 
 fn vehicle_with(encoding: ParamEncoding) -> SimVehicle {
     SimVehicle::new(SimConfig {
@@ -222,7 +222,7 @@ fn with_every_param_type_adds_one_of_each_other_type() {
             param_encoding: encoding,
             ..config.clone()
         });
-        let got = values(&run(&mut vehicle, 0, 130, &request_list(1, 1)));
+        let got = values(&run(&mut vehicle, 0, 160, &request_list(1, 1)));
         assert_eq!(got.len(), DEFAULT_PARAMS + 5);
         for (d, want) in got.iter().zip(&config.params) {
             assert_eq!(name(d), want.name);
@@ -245,7 +245,7 @@ fn with_every_param_type_adds_one_of_each_other_type() {
 #[test]
 fn bytewise_values_decode_back_exactly() {
     let mut vehicle = vehicle_with(ParamEncoding::Bytewise);
-    let bytes = run(&mut vehicle, 0, 130, &request_list(1, 1));
+    let bytes = run(&mut vehicle, 0, 160, &request_list(1, 1));
     let got = values(&bytes);
     let defaults = SimConfig::default().params;
     assert_eq!(got.len(), defaults.len());
@@ -269,7 +269,7 @@ fn bytewise_values_decode_back_exactly() {
 #[test]
 fn ccast_values_are_float_conversions() {
     let mut vehicle = vehicle_with(ParamEncoding::CCast);
-    let bytes = run(&mut vehicle, 0, 130, &request_list(1, 1));
+    let bytes = run(&mut vehicle, 0, 160, &request_list(1, 1));
     let got = values(&bytes);
     let defaults = SimConfig::default().params;
     assert_eq!(got.len(), defaults.len());
@@ -304,7 +304,7 @@ fn param_type_always_states_the_real_type() {
             param_encoding: encoding,
             ..SimConfig::default().with_every_param_type()
         });
-        let got = values(&run(&mut vehicle, 0, 130, &request_list(0, 0)));
+        let got = values(&run(&mut vehicle, 0, 160, &request_list(0, 0)));
         let ty = |n: &str| got.iter().find(|d| name(d) == n).unwrap().param_type;
         for n in [
             "IMU_RATE_HZ",
@@ -357,8 +357,8 @@ fn list_is_complete_in_order_and_paced_while_telemetry_flows() {
     }
     assert_eq!(name(&all[DEFAULT_PARAMS]), "P0000");
     assert_eq!(name(&all[total - 1]), "P0499");
-    // About 1114 ms (557 parameters, one per 2 ms) at 25 Hz.
-    assert!((24..=28).contains(&telemetry), "{telemetry} IMU messages");
+    // About 1148 ms (574 parameters, one per 2 ms) at 25 Hz.
+    assert!((26..=31).contains(&telemetry), "{telemetry} IMU messages");
 }
 
 #[test]

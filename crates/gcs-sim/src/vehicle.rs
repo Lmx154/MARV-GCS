@@ -33,6 +33,7 @@ use crate::logs::{
     SimLog, Transfer,
 };
 use crate::params::{ParamEncoding, ParamValue, SimParam, default_params, other_type_params};
+use crate::presets::{self, Verdict};
 use crate::{rcmap, signals};
 
 /// MAVLink 2 start-of-frame marker.
@@ -612,7 +613,7 @@ impl SimVehicle {
                 let Some(index) = self.find_param(&d.param_id[..]) else {
                     return;
                 };
-                let param = &mut self.config.params[index];
+                let param = &self.config.params[index];
                 let reason = if param.read_only {
                     Some("read only")
                 } else if d.param_type != param.value.param_type()
@@ -625,17 +626,34 @@ impl SimVehicle {
                 } else {
                     None
                 };
-                let refusal = reason.map(|reason| format!("{}: {reason}", param.name));
-                let stale = reason.is_none() && self.config.stale_echo_delay_ms > 0;
+                let mut refusal = reason.map(|reason| format!("{}: {reason}", param.name));
+                let mut changes = Vec::new();
+                let mut notice = None;
+                if reason.is_none() {
+                    let new = param
+                        .value
+                        .same_type_from_field(d.param_value, self.config.param_encoding);
+                    match presets::judge(&self.config.params, index, new) {
+                        Verdict::Plain => changes.push((index, new)),
+                        Verdict::Refuse(text) => refusal = Some(text),
+                        Verdict::Accept {
+                            changes: all,
+                            notice: text,
+                        } => {
+                            changes = all;
+                            notice = text;
+                        }
+                    }
+                }
+                let stale = refusal.is_none() && self.config.stale_echo_delay_ms > 0;
                 if stale {
                     self.push_param_value(index, out);
                     self.held_echo = Some((index, self.now_ms + self.config.stale_echo_delay_ms));
                 }
-                let param = &mut self.config.params[index];
-                if reason.is_none() {
-                    param.value = param
-                        .value
-                        .same_type_from_field(d.param_value, self.config.param_encoding);
+                if refusal.is_none() {
+                    for (at, value) in changes {
+                        self.config.params[at].value = value;
+                    }
                 }
                 if stale {
                 } else if self.echoes_dropped < self.config.drop_first_param_echoes {
@@ -645,6 +663,8 @@ impl SimVehicle {
                 }
                 if let Some(text) = refusal {
                     self.push_text_with(MavSeverity::MAV_SEVERITY_WARNING, &text, out);
+                } else if let Some(text) = notice {
+                    self.push_text(&text, out);
                 }
             }
             _ => {}

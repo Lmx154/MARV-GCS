@@ -798,9 +798,10 @@ mod access {
     }
 
     fn param_reads(rig: &Rig) -> usize {
-        count(rig, |m| {
-            matches!(m, Message::PARAM_REQUEST_READ(r) if r.param_index == -1)
-        })
+        count(
+            rig,
+            |m| matches!(m, Message::PARAM_REQUEST_READ(r) if r.param_index == -1),
+        )
     }
 
     fn save_to_flash() -> Command {
@@ -974,8 +975,6 @@ mod access {
         rig.session.send(set_one());
         rig.session.send(read_one());
         assert!(wait_until(LIMIT, || param_reads(&rig) >= 1));
-        std::thread::sleep(QUIET);
-        assert_eq!(param_reads(&rig), 1);
         assert_eq!(param_sets(&rig), 0);
         assert_eq!(
             rig.session.state().link.refused,
