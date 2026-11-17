@@ -634,6 +634,12 @@ impl Condition {
             slots: Vec::new(),
         };
         let cond = self.cond.try_map(&mut |r| binder.slot(r))?;
+        if binder.slots.is_empty() {
+            return error(
+                0,
+                "the condition names no record field, so it never changes",
+            );
+        }
         let mut by_type = vec![Vec::new(); 256];
         for (i, s) in binder.sources.iter().enumerate() {
             by_type[usize::from(s.type_id)].push(i);

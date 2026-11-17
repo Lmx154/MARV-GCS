@@ -6,7 +6,7 @@ use crate::{Control, Reader, Value, scan, summary, summary_of, summary_with};
 
 /// A value to encode into one field of a test record.
 #[derive(Clone, Debug)]
-enum V {
+pub(crate) enum V {
     Int(i64),
     Float(f64),
     Text(&'static str),
@@ -38,7 +38,7 @@ fn pad(text: &str, size: usize) -> Vec<u8> {
 }
 
 /// The FMT record defining `type_id`.
-fn fmt_record(type_id: u8, name: &str, format: &str, columns: &str) -> Vec<u8> {
+pub(crate) fn fmt_record(type_id: u8, name: &str, format: &str, columns: &str) -> Vec<u8> {
     let mut r = vec![0xA3, 0x95, 128, type_id, record_len(format)];
     r.extend(pad(name, 4));
     r.extend(pad(format, 16));
@@ -48,7 +48,7 @@ fn fmt_record(type_id: u8, name: &str, format: &str, columns: &str) -> Vec<u8> {
 }
 
 /// A record of `type_id` whose fields are encoded by the characters of `format`.
-fn record(type_id: u8, format: &str, values: &[V]) -> Vec<u8> {
+pub(crate) fn record(type_id: u8, format: &str, values: &[V]) -> Vec<u8> {
     assert_eq!(format.chars().count(), values.len());
     let mut r = vec![0xA3, 0x95, type_id];
     for (c, v) in format.chars().zip(values) {
@@ -72,7 +72,7 @@ fn record(type_id: u8, format: &str, values: &[V]) -> Vec<u8> {
     r
 }
 
-fn int(i: i64) -> V {
+pub(crate) fn int(i: i64) -> V {
     V::Int(i)
 }
 

@@ -22,6 +22,10 @@ mod summary;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_conditions;
+#[cfg(test)]
+mod tests_events;
 
 pub use condition::{
     BoundCondition, Condition, ConditionError, FieldRange, Found, Interval, MAX_INTERVALS,
