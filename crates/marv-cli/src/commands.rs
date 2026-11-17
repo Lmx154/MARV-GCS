@@ -254,8 +254,13 @@ fn send(session: &Session, command: SessionCommand) -> Outcome {
 
 /// Waits until the parameter list is complete; on an operate link it asks for it first (a read).
 fn wait_for_params(session: &Session, access: Access, echo: &mut Echo) -> Outcome {
+    // The session thread takes the request later: until it has begun the new list (the status is
+    // `Fetching`, or a PARAM_VALUE has arrived since) a `Complete` or `Failed` is the previous list's.
+    let mut began = true;
+    let echoes_before = echo_count(&session.state());
     if access == Access::Operate {
         send(session, SessionCommand::RefreshParams)?;
+        began = false;
     }
     let result = wait_with(
         LIST_DEADLINE,
@@ -263,6 +268,12 @@ fn wait_for_params(session: &Session, access: Access, echo: &mut Echo) -> Outcom
             let state = session.state();
             if let Some(fail) = closed(&state) {
                 return Some(Err(fail));
+            }
+            began = began
+                || matches!(state.params.fetch, FetchStatus::Fetching { .. })
+                || echo_count(&state) > echoes_before;
+            if !began {
+                return None;
             }
             match &state.params.fetch {
                 FetchStatus::Complete => Some(Ok(())),
