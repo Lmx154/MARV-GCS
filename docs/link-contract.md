@@ -173,7 +173,7 @@ The station shows ATTITUDE in its HUD when the vehicle sends it; the real firmwa
 estimator is being designed), and the simulator sends it at 10 Hz as a test double.
 
 Not now, each with its trigger:
-TIMESYNC (timestamps must line up with the computer); parameter metadata (descriptions or ranges wanted);
+TIMESYNC (timestamps must line up with the computer); parameter metadata on the link (the station holds the table of the firmware's parameters itself, `gcs_mavlink::param_info`: description, unit and allowed values by name; the link still carries none, and the trigger is a vehicle that must describe its own parameters);
 signing (a radio
 link); more parameter types (a value that fits neither INT32 nor REAL32); per-instance rates; RC channels 9 to 16 calibration (trigger: a use for them);
 chip filters in the sensor presets (trigger: the control loop's filter design); IMU rates above 800 Hz (trigger: FIFO
