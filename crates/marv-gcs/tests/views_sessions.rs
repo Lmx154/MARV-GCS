@@ -215,6 +215,7 @@ fn start_mark_with_a_note_and_stop_write_the_session_folder() {
     let sim = Sim::start();
     let dir = temp_dir("full");
     let mut h = connected_to(&sim, &dir, &[]);
+    frames_for(&mut h, Duration::from_millis(1500));
     type_into(&mut h, "Session", "gyro cal");
     h.get_by_label("Start").click();
     until(&mut h, "the session to run", |h| has(h, "No marks yet"));
@@ -230,6 +231,11 @@ fn start_mark_with_a_note_and_stop_write_the_session_folder() {
     assert_eq!(folders.len(), 1, "{folders:?}");
     assert!(folders[0].join("session.tlog").is_file());
     assert_eq!(session_name(&folders[0]), "gyro cal");
+    let text = fs::read_to_string(folders[0].join("session.json")).unwrap();
+    assert!(
+        text.contains("\"at_start\": {\n"),
+        "the parameters at the start are the station's table"
+    );
     let user: Vec<_> = marks(&folders[0])
         .into_iter()
         .filter(|(kind, _)| kind == "user")
