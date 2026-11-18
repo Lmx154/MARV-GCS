@@ -972,7 +972,13 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
-        for (name, age) in [("a.BIN", 30), ("c.bin", 10), ("b.BIN", 20), ("x.txt", 5)] {
+        for (name, age) in [
+            ("a.BIN", 30),
+            ("c.bin", 10),
+            ("b.BIN", 20),
+            ("x.txt", 5),
+            ("d.BIN.part", 40),
+        ] {
             let file = fs::File::create(dir.join(name)).unwrap();
             file.set_modified(base + Duration::from_secs(age)).unwrap();
         }
@@ -981,7 +987,11 @@ mod tests {
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(names, ["a.BIN", "b.BIN", "c.bin"]);
+        assert_eq!(
+            names,
+            ["a.BIN", "b.BIN", "c.bin"],
+            "a .part file is not a log"
+        );
         assert!(bin_files(&dir.join("missing")).is_empty());
         let _ = fs::remove_dir_all(&dir);
     }

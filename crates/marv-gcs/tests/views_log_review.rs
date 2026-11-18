@@ -582,7 +582,7 @@ fn a_finished_download_offers_review_and_the_file_opens() {
     h.run();
     // The download wrote to the folder; the log's bytes arrive in it (here: the test writes them).
     let file = dir.join("00000004.BIN");
-    assert!(file.is_file());
+    assert!(logfile::part_path(&file).is_file());
     fs::write(&file, small_log()).unwrap();
     h.get_by_label("Review").click();
     h.run();

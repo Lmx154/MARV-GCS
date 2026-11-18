@@ -89,6 +89,8 @@ pub enum DownloadError {
     /// The first missing byte did not arrive after [`RETRIES`] re-requests. The vehicle is silent, or
     /// the log does not exist (it answers a request for a log it does not have with nothing at all).
     Stalled { offset: u32 },
+    /// The link closed (unplugged, read or write failed) before the last byte arrived.
+    LinkLost { offset: u32 },
     /// The writer failed; the text is its error.
     Sink(String),
 }
@@ -101,6 +103,9 @@ impl fmt::Display for DownloadError {
                 f,
                 "no data from the vehicle at byte {offset} after {RETRIES} new requests"
             ),
+            DownloadError::LinkLost { offset } => {
+                write!(f, "link lost at byte {offset}")
+            }
             DownloadError::Sink(why) => write!(f, "cannot write the log: {why}"),
         }
     }
@@ -394,6 +399,8 @@ impl Logs {
             target_system: transfer.target.0,
             target_component: transfer.target.1,
         }));
+        // The writer's owner finishes its file when it is dropped, before the state says it ended.
+        drop(transfer);
         if let Some(download) = cx.state.logs.download.as_mut() {
             download.status = status;
             download.ended = Some(cx.now);
@@ -415,6 +422,7 @@ impl Logs {
                 DownloadStatus::Failed(DownloadError::Sink(error.to_string()))
             }
         };
+        drop(transfer);
         if let Some(download) = cx.state.logs.download.as_mut() {
             download.status = status;
             download.ended = Some(cx.now);
@@ -538,6 +546,16 @@ impl Service for Logs {
     fn on_tick(&mut self, cx: &mut Ctx) {
         self.tick_list(cx);
         self.tick_transfer(cx);
+    }
+
+    fn on_close(&mut self, cx: &mut Ctx) {
+        if let Some(transfer) = &self.transfer {
+            let offset = transfer.next;
+            self.abandon(
+                DownloadStatus::Failed(DownloadError::LinkLost { offset }),
+                cx,
+            );
+        }
     }
 
     fn on_command(&mut self, command: &Command, cx: &mut Ctx) {

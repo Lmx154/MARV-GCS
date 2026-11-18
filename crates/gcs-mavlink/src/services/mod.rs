@@ -31,6 +31,8 @@ pub trait Service: Send {
     /// At least every 50 ms.
     fn on_tick(&mut self, _cx: &mut Ctx) {}
     fn on_command(&mut self, _command: &Command, _cx: &mut Ctx) {}
+    /// Once, when the link has closed (the state says why): nothing more is received or sent.
+    fn on_close(&mut self, _cx: &mut Ctx) {}
 }
 
 /// The registry: the one line to touch when a service is added.

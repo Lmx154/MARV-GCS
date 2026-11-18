@@ -336,7 +336,9 @@ fn start_is_disabled_with_a_reason_while_a_log_is_replayed() {
 // ---- the on-board logs (SD card) section ----
 
 use gcs_mavlink::Access;
-use gcs_mavlink::services::logs::{DownloadState, DownloadStatus, ListStatus, LogInfo, LogList};
+use gcs_mavlink::services::logs::{
+    DownloadError, DownloadState, DownloadStatus, ListStatus, LogInfo, LogList,
+};
 use gcs_mavlink::services::messages::{Field, FieldValue, MessageEntry, MessageKey};
 
 fn sd_row(state: &str) -> (MessageKey, MessageEntry) {
@@ -520,7 +522,8 @@ fn download_sends_the_command_and_creates_the_file_in_the_folder() {
         panic!("{:?}", commands[0])
     };
     assert_eq!((*number, *size), (4, 2_097_152));
-    assert!(dir.join("00000004.BIN").is_file());
+    assert!(dir.join("00000004.BIN.part").is_file());
+    assert!(!dir.join("00000004.BIN").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -576,6 +579,7 @@ fn a_running_download_shows_progress_cancel_and_blocks_other_downloads() {
                 .accesskit_node()
                 .is_disabled()
         );
+        h.get_by_label("Keep the USB cable connected until the download finishes.");
         h.get_by_label("Cancel").click();
     });
     assert!(
@@ -591,4 +595,27 @@ fn the_end_of_a_download_is_said_in_words_and_cancel_goes_away() {
         h.get_by_label_contains("Log 4 cancelled at byte 500 of 2000");
         assert!(h.query_by_label("Cancel").is_none());
     });
+}
+
+#[test]
+fn a_download_lost_with_the_link_is_a_red_failure_and_the_buttons_work_again() {
+    let mut state = downloading(
+        DownloadStatus::Failed(DownloadError::LinkLost { offset: 500 }),
+        Some(9),
+    );
+    state.logs.download.as_mut().unwrap().size = 2_000;
+    let commands = run_with(&state, Access::Configure, NOW, "logs", |h| {
+        h.get_by_label(
+            "Download of log 4 failed: link lost at 500 of 2000 bytes; reconnect and download again",
+        );
+        assert!(h.query_by_label("Cancel").is_none());
+        assert!(
+            h.query_by_label("Keep the USB cable connected until the download finishes.")
+                .is_none()
+        );
+        for b in h.get_all_by_label("Download") {
+            assert!(!b.accesskit_node().is_disabled());
+        }
+    });
+    assert!(commands.is_empty(), "{commands:?}");
 }

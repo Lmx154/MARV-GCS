@@ -627,6 +627,37 @@ fn a_silent_vehicle_ends_after_five_fruitless_retries_with_the_distinct_error() 
 }
 
 #[test]
+fn a_closed_link_ends_a_running_download_at_once_with_the_bytes_so_far() {
+    let data = log_bytes(5000);
+    let mut rig = Rig::new();
+    rig.get(5, 5000, 0);
+    rig.frame(5, &data, 0, 10);
+    rig.frame(5, &data, 90, 20);
+    rig.call(30, |s, cx| s.on_close(cx));
+    assert_eq!(
+        rig.status(),
+        DownloadStatus::Failed(DownloadError::LinkLost { offset: 180 })
+    );
+    assert_eq!(rig.download().ended, Some(Duration::from_millis(30)));
+    assert_eq!(rig.download().done, 180);
+    // Nothing more is asked for: the transfer is over.
+    rig.tick_range(50, 10_000);
+    assert_eq!(rig.requests().len(), 1);
+}
+
+#[test]
+fn a_closed_link_leaves_a_finished_or_absent_download_alone() {
+    let mut rig = Rig::new();
+    rig.call(0, |s, cx| s.on_close(cx));
+    assert!(rig.state.logs.download.is_none());
+    let data = log_bytes(90);
+    rig.get(5, 90, 10);
+    rig.frame(5, &data, 0, 20);
+    rig.call(30, |s, cx| s.on_close(cx));
+    assert_eq!(rig.status(), DownloadStatus::Done);
+}
+
+#[test]
 fn a_log_that_does_not_exist_is_the_same_error_and_an_end_marker_does_not_finish_it() {
     // The vehicle answers a request for a log it does not have with nothing at all. A log that is
     // shorter than listed answers with the zero-count marker: that does not complete it either.

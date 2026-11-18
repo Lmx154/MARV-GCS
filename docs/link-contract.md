@@ -627,6 +627,9 @@ log data (a log of 161 MB takes about 37 minutes at best). The station paces its
   never by waiting for a zero-count LOG_DATA. A log that grew after the listing is not a failure: the station
   ends at the size it started with. A log of size 0 is complete at once and nothing is requested.
 - LOG_REQUEST_END is sent when a download is given up or cancelled, and when the file cannot be written.
+- When the link closes while a download runs (the cable is pulled, a read or write fails), the session ends the
+  download at once as failed ("link lost at byte N"; nothing is sent, the link being gone), and does not wait
+  for the retries above. Without that the state stayed `Running` for ever (seen on the real board, 2026-11-18).
 - A listing waits 1 s for a new LOG_ENTRY; it then asks again for all logs, 4 requests in all, the entries
   already in are kept; it ends when `num_logs` different entries are in, or fails ("only N of M log entries
   arrived", or no answer at all) one second after the fourth request.
@@ -641,7 +644,9 @@ What the station does (`gcs-mavlink`, service `logs`; state in `VehicleState.log
   `Failed`). `Command::DownloadLog { number, size, sink }` starts the download of one log, `size` taken from a
   listing, to a writer the caller opened (`LogSink`): the bytes are handed to it in order as they come, so a
   log is never held in memory; progress is `logs.download.done` of `size`. `Command::CancelLogDownload` ends
-  the running download. One listing or download at a time: a second request is refused and counted
+  the running download. The station drops the writer when the download ends, whatever the end: the window's
+  writer fills `NNNNNNNN.BIN.part` and renames it to `.BIN` only when exactly `size` bytes were written and
+  flushed, otherwise deletes it (`marv-cli` writes its file directly and keeps a partial one). One listing or download at a time: a second request is refused and counted
   (`logs.refused`). A request with no vehicle connected fails at once, sending nothing.
 - `marv-cli logs list` prints `NUMBER<TAB>SIZE` per log and then `last<TAB>N`; an empty card prints nothing
   but `marv-cli: no logs on the vehicle` on stderr; exit 0. `marv-cli logs get N [-o FILE] [--force]` lists,
@@ -656,7 +661,7 @@ configuration can drop chosen LOG_DATA frames by offset (`drop_log_data`) and re
 The firmware side was run against this client on the real board on 2026-11-16 (its implementer): `logs list`
 matched the card; `logs get` of two closed logs (1.26 MB and 1.17 MB) was byte-identical (sha256) to the
 card-reader copies, at about 70 kB/s; the log being written downloads up to its flushed size. Not seen yet: a
-USB drop in the middle of a transfer, and a card with hundreds of logs.
+card with hundreds of logs. A USB drop in the middle of a transfer (2026-11-18) showed the download never ending; fixed as above and tested, not yet seen on the board.
 
 ## 12. RC mapping
 

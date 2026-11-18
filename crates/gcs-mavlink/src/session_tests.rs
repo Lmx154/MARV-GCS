@@ -252,6 +252,44 @@ fn closed_when_the_pipe_is_closed() {
     assert!(text.contains("closed"), "text: {text}");
 }
 
+#[test]
+fn a_download_running_when_the_link_closes_fails_with_link_lost() {
+    use crate::services::logs::{DownloadError, DownloadStatus};
+    use crate::tlog::LogSink;
+    let mut rig = rig(3000);
+    assert!(wait_until(Duration::from_millis(300), || {
+        rig.session.state().link.status == LinkStatus::Connected
+    }));
+    rig.session.send(Command::DownloadLog {
+        number: 7,
+        size: 5000,
+        sink: LogSink::new(io::sink()),
+    });
+    assert!(wait_until(Duration::from_millis(500), || {
+        rig.session.state().logs.downloads == 1
+    }));
+    assert_eq!(
+        rig.session
+            .state()
+            .logs
+            .download
+            .as_ref()
+            .map(|d| d.status.clone()),
+        Some(DownloadStatus::Running)
+    );
+    rig.vehicle.stop();
+    assert!(wait_until(Duration::from_millis(1000), || {
+        matches!(rig.session.state().link.status, LinkStatus::Closed(_))
+    }));
+    let state = rig.session.state();
+    let download = state.logs.download.as_ref().expect("a download");
+    assert_eq!(
+        download.status,
+        DownloadStatus::Failed(DownloadError::LinkLost { offset: 0 })
+    );
+    assert!(download.ended.is_some());
+}
+
 struct FailingReader;
 
 impl Read for FailingReader {

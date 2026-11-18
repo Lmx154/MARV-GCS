@@ -2,7 +2,7 @@
 //! app pass to each other through the egui context (a request for a new log, the last failure).
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufWriter, ErrorKind};
+use std::io::{self, BufWriter, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -82,30 +82,82 @@ pub fn download_path(dir: &Path, number: u16) -> PathBuf {
     dir.join(format!("{number:08}.BIN"))
 }
 
-/// Create the directory if needed and the new file of log `number`, never overwriting a file: the command
-/// that makes the session download the log of `size` bytes into it, and the path. An existing file is
-/// refused with its name in the text.
+/// The file a download is written to until every byte is in: the final name and `.part`. It is never
+/// named like a log, so a half download is not taken for one.
+pub fn part_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".part");
+    PathBuf::from(name)
+}
+
+/// The writer of a download: it fills the `.part` file and, when it is dropped, renames it to the
+/// final name if exactly `expected` bytes were written and flushed, else deletes it.
+struct PartFile {
+    writer: Option<BufWriter<File>>,
+    part: PathBuf,
+    path: PathBuf,
+    expected: u64,
+    written: u64,
+}
+
+impl Write for PartFile {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let writer = self
+            .writer
+            .as_mut()
+            .ok_or_else(|| io::Error::other("closed"))?;
+        let n = writer.write(buf)?;
+        self.written += n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.as_mut().map_or(Ok(()), Write::flush)
+    }
+}
+
+impl Drop for PartFile {
+    fn drop(&mut self) {
+        let complete = self.written == self.expected
+            && self.writer.take().is_some_and(|mut w| w.flush().is_ok());
+        if complete && !self.path.exists() && fs::rename(&self.part, &self.path).is_ok() {
+            return;
+        }
+        let _ = fs::remove_file(&self.part);
+    }
+}
+
+/// Create the directory if needed and the `.part` file of log `number`: the command that makes the
+/// session download the log of `size` bytes into it, and the final path. The `.part` file becomes the
+/// final file when every byte arrived, and is deleted when the download fails or is cancelled. An
+/// existing final file is never overwritten: it is refused with its name in the text.
 pub fn download_command(dir: &Path, number: u16, size: u32) -> Result<(Command, PathBuf), String> {
     fs::create_dir_all(dir).map_err(|e| format!("cannot create folder {}: {e}", dir.display()))?;
     let path = download_path(dir, number);
+    if path.exists() {
+        return Err(format!(
+            "{} exists and is not overwritten: choose another folder or move the file",
+            path.display()
+        ));
+    }
+    let part = part_path(&path);
     let file = OpenOptions::new()
         .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|e| {
-            if e.kind() == ErrorKind::AlreadyExists {
-                format!(
-                    "{} exists and is not overwritten: choose another folder or move the file",
-                    path.display()
-                )
-            } else {
-                format!("cannot create {}: {e}", path.display())
-            }
-        })?;
+        .create(true)
+        .truncate(true)
+        .open(&part)
+        .map_err(|e| format!("cannot create {}: {e}", part.display()))?;
+    let writer = PartFile {
+        writer: Some(BufWriter::with_capacity(DOWNLOAD_BUFFER, file)),
+        part,
+        path: path.clone(),
+        expected: u64::from(size),
+        written: 0,
+    };
     let command = Command::DownloadLog {
         number,
         size,
-        sink: LogSink::new(BufWriter::with_capacity(DOWNLOAD_BUFFER, file)),
+        sink: LogSink::new(writer),
     };
     Ok((command, path))
 }
@@ -285,12 +337,73 @@ mod tests {
         );
         let (command, path) = download_command(&dir, 7, 1234).expect("created");
         assert_eq!(path, dir.join("00000007.BIN"));
-        assert!(path.is_file());
+        assert!(part_path(&path).is_file());
+        assert!(!path.exists());
         let Command::DownloadLog { number, size, .. } = command else {
             panic!("not DownloadLog")
         };
         assert_eq!((number, size), (7, 1234));
         let _ = fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    /// What the session does with a download's command: takes the writer, writes `bytes`, drops it.
+    fn run_download(command: Command, bytes: &[u8], flush: bool) {
+        let Command::DownloadLog { sink, .. } = command else {
+            panic!("not DownloadLog")
+        };
+        let mut writer = sink.take().expect("a writer");
+        writer.write_all(bytes).unwrap();
+        if flush {
+            writer.flush().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_whole_download_becomes_the_bin_file_and_leaves_no_part() {
+        let dir = temp("download-whole");
+        let (command, path) = download_command(&dir, 67, 5).expect("created");
+        run_download(command, b"hello", true);
+        assert_eq!(fs::read(&path).unwrap(), b"hello");
+        assert!(!part_path(&path).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_empty_log_becomes_an_empty_bin_file() {
+        let dir = temp("download-empty");
+        let (command, path) = download_command(&dir, 1, 0).expect("created");
+        run_download(command, b"", true);
+        assert_eq!(fs::read(&path).unwrap().len(), 0);
+        assert!(!part_path(&path).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_download_that_ends_short_leaves_no_file_at_all() {
+        let dir = temp("download-short");
+        let (command, path) = download_command(&dir, 67, 10).expect("created");
+        run_download(command, b"half", true);
+        assert!(!path.exists());
+        assert!(!part_path(&path).exists());
+        // A command dropped without being run leaves nothing either.
+        let (command, path) = download_command(&dir, 68, 10).expect("created");
+        drop(command);
+        assert!(!path.exists() && !part_path(&path).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_download_after_a_failed_one_needs_nothing_moved() {
+        let dir = temp("download-again");
+        let (command, path) = download_command(&dir, 67, 10).expect("created");
+        run_download(command, b"half", true);
+        // Even a part file a crash left behind does not block it.
+        fs::write(part_path(&path), b"stale stale").unwrap();
+        let (command, path) = download_command(&dir, 67, 4).expect("created again");
+        run_download(command, b"full", true);
+        assert_eq!(fs::read(&path).unwrap(), b"full");
+        assert!(!part_path(&path).exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -306,6 +419,7 @@ mod tests {
             "{e}"
         );
         assert_eq!(fs::read(dir.join("00000002.BIN")).unwrap(), b"mine");
+        assert!(!part_path(&dir.join("00000002.BIN")).exists());
         let _ = fs::remove_dir_all(&dir);
     }
 

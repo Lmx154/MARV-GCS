@@ -132,6 +132,7 @@ const LIST_HEIGHT: f32 = 170.0;
 /// take all of it.
 const TEXTS_HEIGHT: f32 = 260.0;
 const LIST_BUSY: &str = "the list is being read";
+const KEEP_CONNECTED: &str = "Keep the USB cable connected until the download finishes.";
 const DOWNLOAD_BUSY: &str = "a download is running";
 const MARKER_HELP: &str = "The vehicle's last log number: the log being written, or the highest present when none is open. Its size is as of the last flush.";
 
@@ -288,15 +289,22 @@ fn download_line(
         ),
         DownloadStatus::Cancelled => (
             format!(
-                "Log {} cancelled at byte {} of {}; the partial file stays",
+                "Log {} cancelled at byte {} of {}; the partial file was deleted",
                 d.number, d.done, d.size
             ),
             status::YELLOW,
         ),
         DownloadStatus::Failed(DownloadError::Stalled { offset }) => (
             format!(
-                "Log {} stalled at byte {offset} of {}: no data from the vehicle; {} bytes are in the file",
-                d.number, d.size, d.done
+                "Download of log {} failed: no data from the vehicle at byte {offset} of {}; the partial file was deleted, download again",
+                d.number, d.size
+            ),
+            status::RED,
+        ),
+        DownloadStatus::Failed(DownloadError::LinkLost { offset }) => (
+            format!(
+                "Download of log {} failed: link lost at {offset} of {} bytes; reconnect and download again",
+                d.number, d.size
             ),
             status::RED,
         ),
@@ -438,6 +446,7 @@ fn download_part(ui: &mut egui::Ui, cx: &mut ViewCtx, on_board: &mut OnBoard) {
                 cx.commands.push(Command::CancelLogDownload);
             }
         });
+        ui.label(KEEP_CONNECTED);
     }
     let (text, colour) = download_line(download, target, cx.now);
     let review = (download.status == DownloadStatus::Done)
@@ -700,9 +709,21 @@ mod tests {
         );
         let (text, colour) = download_line(&stalled, None, None);
         assert!(
-            text.contains("stalled at byte 900 of 2000000")
-                && text.contains("900 bytes are in the file"),
+            text.contains(
+                "Download of log 7 failed: no data from the vehicle at byte 900 of 2000000"
+            ) && text.contains("partial file was deleted"),
             "{text}"
+        );
+        assert_eq!(colour, status::RED);
+        let lost = download(
+            4_648_638,
+            DownloadStatus::Failed(DownloadError::LinkLost { offset: 4_648_638 }),
+            Some(20),
+        );
+        let (text, colour) = download_line(&lost, None, None);
+        assert_eq!(
+            text,
+            "Download of log 7 failed: link lost at 4648638 of 2000000 bytes; reconnect and download again"
         );
         assert_eq!(colour, status::RED);
         let writer = download(

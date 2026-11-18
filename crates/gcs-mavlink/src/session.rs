@@ -331,6 +331,12 @@ impl Worker {
     fn close(&mut self, reason: String) {
         lock(&self.state).link.status = LinkStatus::Closed(reason);
         self.stop.store(true, Ordering::Relaxed);
+        self.with_ctx(|services, cx| {
+            for service in services {
+                service.on_close(cx);
+            }
+        });
+        self.out.clear();
     }
 }
 
