@@ -337,7 +337,7 @@ What the tests stand on:
 
 ## Not covered, and known limits
 
-- Not built: RC mapping and calibration, a motors view, a map, parameter descriptions and ranges, missions, joystick input,
+- Not built: a motors view, parameter descriptions and ranges, missions, joystick input,
   firmware upload, changing message rates from the ground station. (On-board log download is built, in the window and in `marv-cli`.)
 - `marv-link-test` has been run on localhost and, once (2026-11-15, 30 s), over a real radio; the UDP link
   has not been run for longer than that against a real radio. The deframer releases a frame of an id the dialect does not have only when the next frame
