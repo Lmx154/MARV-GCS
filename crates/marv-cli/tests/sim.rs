@@ -50,7 +50,8 @@ fn devices_prints_eight_rows() {
         ["IMU1", "IMU2", "BARO", "MAG", "GNSS", "BATT", "RC", "SD"]
     );
     for cells in &rows {
-        assert_eq!(cells.len(), 8, "{cells:?}");
+        assert_eq!(cells.len(), 9, "{cells:?}");
+        assert_eq!(cells[8], "-", "{cells:?}");
         assert_eq!(&cells[1..3], ["OK", "NONE"], "{cells:?}");
         assert_eq!(&cells[4..7], ["0", "0", "0"], "{cells:?}");
         assert!(

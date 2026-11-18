@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gcs_mavlink::services::logs::{DownloadStatus, ListStatus, LogList};
-use gcs_mavlink::services::messages::{FieldValue, MessageEntry};
+use gcs_mavlink::services::messages::{FieldValue, MessageEntry, flags_text};
 use gcs_mavlink::services::params::FetchStatus;
 use gcs_mavlink::services::texts::TextEntry;
 use gcs_mavlink::tlog::LogSink;
@@ -464,7 +464,7 @@ fn describe(record: &CommandRecord) -> String {
 struct DeviceRow {
     device: u8,
     sender: (u8, u8),
-    cells: [String; 8],
+    cells: [String; 9],
 }
 
 fn word(entry: &MessageEntry, field: &str, prefix: &str) -> String {
@@ -480,7 +480,7 @@ fn count(entry: &MessageEntry, field: &str) -> String {
 }
 
 /// NAME, STATE, LAST_ERROR, SAMPLES, ERRORS, TIMEOUTS, RECOVERIES, LAST_SAMPLE_AGE_MS
-/// (`never` when the device has had no sample: 65535).
+/// (`never` when the device has had no sample: 65535), FLAGS (`-`, `HIL`, `self-test`).
 fn device_rows(state: &VehicleState) -> Vec<DeviceRow> {
     let mut rows: Vec<DeviceRow> = state
         .messages
@@ -503,6 +503,9 @@ fn device_rows(state: &VehicleState) -> Vec<DeviceRow> {
                     Some(ms) => format!("{}", ms as u16),
                     None => String::new(),
                 },
+                entry
+                    .number("flags")
+                    .map_or_else(String::new, |flags| flags_text(flags as u8)),
             ],
         })
         .collect();

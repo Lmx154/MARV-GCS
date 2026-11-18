@@ -846,3 +846,12 @@ fn an_undecodable_marv_device_status_is_a_row_without_fields_on_device_zero() {
     assert!(row.fields.is_empty());
     assert_eq!(row.count, 1);
 }
+
+#[test]
+fn the_flags_are_words() {
+    assert_eq!(flags_text(0), "-");
+    assert_eq!(flags_text(1), "HIL");
+    assert_eq!(flags_text(2), "self-test");
+    assert_eq!(flags_text(3), "HIL, self-test");
+    assert_eq!(flags_text(0b1000_0001), "HIL, bit 7");
+}

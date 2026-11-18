@@ -7,7 +7,9 @@ use std::time::Duration;
 use eframe::egui::{self, Color32};
 use egui_extras::{Column, TableBuilder};
 use gcs_mavlink::dialect::MavCmd;
-use gcs_mavlink::services::messages::{MessageEntry, MessageKey, MessageStore, SeriesKey};
+use gcs_mavlink::services::messages::{
+    MessageEntry, MessageKey, MessageStore, SeriesKey, flags_text,
+};
 use gcs_mavlink::{Command, UnsavedCalibration};
 
 use super::actions;
@@ -353,28 +355,6 @@ pub fn last_sample_text(ms: u16) -> String {
     }
 }
 
-/// `flags`: bit 0 the sample source is HIL, bit 1 a self-test is running; `-` for none; a bit the
-/// station does not know is shown as `bit N`.
-pub fn flags_text(flags: u8) -> String {
-    let mut words = Vec::new();
-    if flags & 1 != 0 {
-        words.push("HIL".to_string());
-    }
-    if flags & 2 != 0 {
-        words.push("self-test".to_string());
-    }
-    for bit in 2..8 {
-        if flags & (1 << bit) != 0 {
-            words.push(format!("bit {bit}"));
-        }
-    }
-    if words.is_empty() {
-        "-".to_string()
-    } else {
-        words.join(", ")
-    }
-}
-
 /// Samples per second from two successive rows of one device, each `(time_boot_ms, samples)`: the
 /// difference of `samples` over the difference of `time_boot_ms`. `None` when either went backwards
 /// (the vehicle restarted) or the time did not advance.
@@ -663,15 +643,6 @@ mod tests {
             );
         }
         assert_eq!(variant("something else", "MARV_DEVICE_"), "something else");
-    }
-
-    #[test]
-    fn the_flags_are_words() {
-        assert_eq!(flags_text(0), "-");
-        assert_eq!(flags_text(1), "HIL");
-        assert_eq!(flags_text(2), "self-test");
-        assert_eq!(flags_text(3), "HIL, self-test");
-        assert_eq!(flags_text(0b1000_0001), "HIL, bit 7");
     }
 
     #[test]

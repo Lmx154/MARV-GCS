@@ -18,7 +18,7 @@ configure links; udp is operate-only (every command that writes is refused).
 
 Commands:
   status                           one summary of the link and the vehicle
-  devices [--for <s>]              the device rows (default 2 s of collecting)
+  devices [--for <s>]              the device rows, with flags (HIL, self-test) (default 2 s of collecting)
   texts [--for <s>]                STATUSTEXTs as they arrive (default 10 s)
   watch [--for <s>]                device changes and texts (default 30 s)
   param list | get <NAME> | set <NAME> <VALUE>

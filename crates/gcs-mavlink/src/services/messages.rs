@@ -392,6 +392,28 @@ impl Service for Messages {
     }
 }
 
+/// `flags`: bit 0 the sample source is HIL, bit 1 a self-test is running; `-` for none; a bit the
+/// station does not know is shown as `bit N`.
+pub fn flags_text(flags: u8) -> String {
+    let mut words = Vec::new();
+    if flags & 1 != 0 {
+        words.push("HIL".to_string());
+    }
+    if flags & 2 != 0 {
+        words.push("self-test".to_string());
+    }
+    for bit in 2..8 {
+        if flags & (1 << bit) != 0 {
+            words.push(format!("bit {bit}"));
+        }
+    }
+    if words.is_empty() {
+        "-".to_string()
+    } else {
+        words.join(", ")
+    }
+}
+
 #[cfg(test)]
 #[path = "messages_tests.rs"]
 mod tests;
