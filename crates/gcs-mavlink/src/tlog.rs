@@ -31,6 +31,17 @@ pub struct LogState {
     pub error: Option<String>,
 }
 
+/// The recording of a monitoring session: a second file beside the automatic recording.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SessionLogState {
+    /// The label of the session log being written, or `None`.
+    pub recording: Option<String>,
+    /// The label of the session log that was closed last: flushed and released, complete on disk.
+    pub closed: Option<String>,
+    /// Why the session log stopped by itself.
+    pub error: Option<String>,
+}
+
 /// Where the recorder writes. The window opens the file and hands it over in `Command::StartLog`,
 /// so the service itself does no file handling.
 pub struct LogSink(Mutex<Option<Box<dyn Write + Send>>>);
@@ -60,6 +71,10 @@ pub struct Recorder {
     dirty: bool,
     /// Session time of the last flush (or of the start).
     last_flush: Duration,
+    /// The session recording: the writer and its label.
+    session: Option<(Box<dyn Write + Send>, String)>,
+    session_dirty: bool,
+    session_last_flush: Duration,
 }
 
 impl Recorder {
@@ -68,6 +83,7 @@ impl Recorder {
     }
 
     fn write(&mut self, raw: &[u8], cx: &mut Ctx) {
+        self.write_session(raw, cx);
         let Some(writer) = self.writer.as_mut() else {
             return;
         };
@@ -82,6 +98,39 @@ impl Recorder {
             }
             Err(error) => self.fail(&error, cx),
         }
+        cx.changed = true;
+    }
+
+    fn write_session(&mut self, raw: &[u8], cx: &mut Ctx) {
+        let Some((writer, _)) = self.session.as_mut() else {
+            return;
+        };
+        let mut record = Vec::with_capacity(TIME_LEN + raw.len());
+        record.extend_from_slice(&cx.wall_time_us.to_be_bytes());
+        record.extend_from_slice(raw);
+        match writer.write_all(&record) {
+            Ok(()) => self.session_dirty = true,
+            Err(error) => {
+                cx.state.session_log.error = Some(error.to_string());
+                self.close_session(cx);
+            }
+        }
+        cx.changed = true;
+    }
+
+    /// Flush and release the session writer, if any, and say which log is complete. A flush error
+    /// ends up in `session_log.error`.
+    fn close_session(&mut self, cx: &mut Ctx) {
+        let Some((mut writer, label)) = self.session.take() else {
+            return;
+        };
+        if let Err(error) = writer.flush() {
+            cx.state.session_log.error = Some(error.to_string());
+        }
+        drop(writer);
+        self.session_dirty = false;
+        cx.state.session_log.recording = None;
+        cx.state.session_log.closed = Some(label);
         cx.changed = true;
     }
 
@@ -119,6 +168,9 @@ impl Drop for Recorder {
         if let Some(writer) = self.writer.as_mut() {
             let _ = writer.flush();
         }
+        if let Some((writer, _)) = self.session.as_mut() {
+            let _ = writer.flush();
+        }
     }
 }
 
@@ -137,6 +189,18 @@ impl Service for Recorder {
             && let Err(error) = self.flush(cx.now)
         {
             self.fail(&error, cx);
+        }
+        if self.session_dirty
+            && cx.now.saturating_sub(self.session_last_flush) >= FLUSH_INTERVAL
+        {
+            self.session_last_flush = cx.now;
+            self.session_dirty = false;
+            if let Some((writer, _)) = self.session.as_mut()
+                && let Err(error) = writer.flush()
+            {
+                cx.state.session_log.error = Some(error.to_string());
+                self.close_session(cx);
+            }
         }
     }
 
@@ -170,6 +234,25 @@ impl Service for Recorder {
                 cx.state.log.recording = None;
                 cx.changed = true;
             }
+            Command::StartSessionLog { sink, label } => {
+                self.close_session(cx);
+                cx.state.session_log.error = None;
+                match sink.take() {
+                    Some(writer) => {
+                        self.session = Some((writer, label.clone()));
+                        self.session_dirty = false;
+                        self.session_last_flush = cx.now;
+                        cx.state.session_log.recording = Some(label.clone());
+                    }
+                    None => {
+                        cx.state.session_log.error =
+                            Some("the session log file is not available (already taken)".into());
+                        cx.state.session_log.closed = Some(label.clone());
+                    }
+                }
+                cx.changed = true;
+            }
+            Command::StopSessionLog => self.close_session(cx),
             _ => {}
         }
     }

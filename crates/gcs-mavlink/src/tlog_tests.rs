@@ -200,6 +200,76 @@ fn a_record_is_the_big_endian_time_then_the_frame() {
     assert_eq!(file.bytes(), want);
 }
 
+// ---- the session recording ----
+
+fn start_session(rig: &mut Rig, writer: impl Write + Send + 'static, label: &str) {
+    rig.command(
+        &Command::StartSessionLog {
+            sink: LogSink::new(writer),
+            label: label.into(),
+        },
+        0,
+    );
+}
+
+#[test]
+fn the_session_log_takes_both_directions_beside_the_automatic_one() {
+    let mut rig = Rig::new();
+    let auto = Shared::default();
+    let session = Shared::default();
+    rig.start(auto.clone(), 0);
+    start_session(&mut rig, session.clone(), "s.tlog");
+    assert_eq!(rig.state.session_log.recording.as_deref(), Some("s.tlog"));
+    let frame = v2_frame(0);
+    rig.received(&frame, 0, 5);
+    rig.sent(&frame, 0, 6);
+    let mut want = record(5, &frame);
+    want.extend(record(6, &frame));
+    assert_eq!(session.bytes(), want);
+    assert_eq!(auto.bytes(), want);
+    assert_eq!(rig.state.log.frames, 2);
+    assert_eq!(rig.state.log.recording.as_deref(), Some("flight.tlog"));
+}
+
+#[test]
+fn stopping_the_session_log_releases_the_file_and_names_it_closed() {
+    let mut rig = Rig::new();
+    let session = Shared::default();
+    start_session(&mut rig, session.clone(), "s.tlog");
+    rig.received(&v2_frame(0), 0, 5);
+    rig.command(&Command::StopSessionLog, 10);
+    assert_eq!(rig.state.session_log.recording, None);
+    assert_eq!(rig.state.session_log.closed.as_deref(), Some("s.tlog"));
+    assert_eq!(session.dropped.load(Ordering::SeqCst), 1);
+    assert!(session.flushes() >= 1);
+    let before = session.bytes();
+    rig.received(&v2_frame(1), 20, 7);
+    assert_eq!(session.bytes(), before);
+}
+
+#[test]
+fn a_failing_session_log_closes_itself_and_leaves_the_automatic_one_alone() {
+    let mut rig = Rig::new();
+    let auto = Shared::default();
+    rig.start(auto.clone(), 0);
+    let dropped = Arc::new(AtomicUsize::new(0));
+    start_session(
+        &mut rig,
+        Failing {
+            ok: 0,
+            dropped: Arc::clone(&dropped),
+        },
+        "s.tlog",
+    );
+    rig.received(&v2_frame(0), 0, 5);
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    assert_eq!(rig.state.session_log.recording, None);
+    assert_eq!(rig.state.session_log.closed.as_deref(), Some("s.tlog"));
+    assert_eq!(rig.state.session_log.error.as_deref(), Some("disk full"));
+    assert_eq!(rig.state.log.recording.as_deref(), Some("flight.tlog"));
+    assert_eq!(auto.bytes().len(), 8 + v2_frame(0).len());
+}
+
 // ---- the recorder ----
 
 #[test]

@@ -8,7 +8,7 @@ use crate::services::logs::LogsState;
 use crate::services::messages::MessageStore;
 use crate::services::params::{ParamTable, ParamValue};
 use crate::services::texts::TextLog;
-use crate::tlog::{LogSink, LogState};
+use crate::tlog::{LogSink, LogState, SessionLogState};
 
 /// Everything the window shows. One section per service; a new service adds a section.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -18,6 +18,8 @@ pub struct VehicleState {
     pub params: ParamTable,
     pub texts: TextLog,
     pub log: LogState,
+    /// The recording of a monitoring session, written beside the automatic one.
+    pub session_log: SessionLogState,
     /// The vehicle's logs: the last listing and the current or last download.
     pub logs: LogsState,
     /// The current or last MAVLink command the user sent; `None` before the first.
@@ -171,6 +173,14 @@ pub enum Command {
         label: String,
     },
     StopLog,
+    /// Record every frame, in both directions, to this sink as well: the recording of a monitoring session,
+    /// independent of `StartLog` (the automatic recording goes on). A running one is closed first.
+    StartSessionLog {
+        sink: LogSink,
+        label: String,
+    },
+    /// Close the session recording; `session_log.closed` then names it.
+    StopSessionLog,
     /// Send one MAVLink command to the vehicle (`COMMAND_LONG`, docs/link-contract.md section 10).
     /// The outcome shows in `VehicleState.command`.
     SendCommand {
@@ -201,6 +211,8 @@ impl Command {
             Command::SetParam { .. } => Access::Configure,
             Command::StartLog { .. } => Access::Operate,
             Command::StopLog => Access::Operate,
+            Command::StartSessionLog { .. } => Access::Operate,
+            Command::StopSessionLog => Access::Operate,
             // Every command id: an unknown one counts as Configure too.
             Command::SendCommand { .. } => Access::Configure,
             // The vehicle offers log download on its USB link only (section 11).
@@ -217,6 +229,8 @@ impl Command {
             Command::SetParam { .. } => "SetParam",
             Command::StartLog { .. } => "StartLog",
             Command::StopLog => "StopLog",
+            Command::StartSessionLog { .. } => "StartSessionLog",
+            Command::StopSessionLog => "StopSessionLog",
             Command::SendCommand { .. } => "SendCommand",
             Command::ListLogs => "ListLogs",
             Command::DownloadLog { .. } => "DownloadLog",

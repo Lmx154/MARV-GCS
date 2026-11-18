@@ -1008,9 +1008,11 @@ mod access {
             Command::ListLogs => 5,
             Command::DownloadLog { .. } => 6,
             Command::CancelLogDownload => 7,
+            Command::StartSessionLog { .. } => 8,
+            Command::StopSessionLog => 9,
         }
     }
-    const COUNT: usize = 8;
+    const COUNT: usize = 10;
 
     #[test]
     fn every_command_has_its_class_in_the_table() {
@@ -1041,6 +1043,19 @@ mod access {
                 Command::CancelLogDownload,
                 Access::Configure,
                 "CancelLogDownload",
+            ),
+            (
+                Command::StartSessionLog {
+                    sink: crate::tlog::LogSink::new(Vec::new()),
+                    label: "x".into(),
+                },
+                Access::Operate,
+                "StartSessionLog",
+            ),
+            (
+                Command::StopSessionLog,
+                Access::Operate,
+                "StopSessionLog",
             ),
         ];
         let mut seen = [false; COUNT];
