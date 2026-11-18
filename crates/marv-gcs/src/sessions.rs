@@ -42,7 +42,7 @@ pub type Exporter =
     Arc<dyn Fn(&Path, &Path, &SessionOptions) -> io::Result<Exported> + Send + Sync>;
 
 pub fn default_exporter() -> Exporter {
-    Arc::new(|tlog, dir, options| export_session(tlog, dir, options))
+    Arc::new(export_session)
 }
 
 // ---- what the views see and ask ----
