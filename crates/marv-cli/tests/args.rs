@@ -298,3 +298,55 @@ fn the_logs_errors() {
     assert!(e("logs list -o /tmp/a").contains("only applies to logs get"));
     assert!(e("status --force").contains("only applies to logs get"));
 }
+
+fn session(words: &str) -> marv_cli::args::SessionCommand {
+    match parse(&args(&format!("session {words}"))) {
+        Ok(Parsed::Session(command)) => command,
+        other => panic!("{words}: {other:?}"),
+    }
+}
+
+#[test]
+fn the_session_commands_need_no_connect() {
+    use marv_cli::args::SessionCommand;
+    assert_eq!(
+        session("export /tmp/a.tlog"),
+        SessionCommand::Export {
+            file: PathBuf::from("/tmp/a.tlog"),
+            name: None,
+            out: None
+        }
+    );
+    assert_eq!(
+        session("export /tmp/a.tlog --name cal_1 --out /tmp/s"),
+        SessionCommand::Export {
+            file: PathBuf::from("/tmp/a.tlog"),
+            name: Some("cal_1".into()),
+            out: Some(PathBuf::from("/tmp/s"))
+        }
+    );
+    assert_eq!(session("list"), SessionCommand::List { dir: None });
+    assert_eq!(
+        session("list /tmp/s"),
+        SessionCommand::List {
+            dir: Some(PathBuf::from("/tmp/s"))
+        }
+    );
+    assert_eq!(parse(&args("session --help")), Ok(Parsed::Help));
+    assert!(USAGE.contains("session export") && USAGE.contains("session list"));
+}
+
+#[test]
+fn the_session_errors() {
+    assert!(error("session").contains("export or list"));
+    assert!(error("session erase").contains("unknown session command"));
+    assert!(error("session export").contains("needs a FILE.tlog"));
+    assert!(error("session export a.tlog b.tlog").contains("unexpected argument"));
+    assert!(error("session export a.tlog --name").contains("--name needs a value"));
+    assert!(error("session export a.tlog --bad").contains("unknown option"));
+    assert!(error("session list --name x").contains("only apply to session export"));
+    assert!(error("session list a b").contains("unexpected argument"));
+    assert!(
+        error("--connect tcp:127.0.0.1:5760 session export a.tlog").contains("without --connect")
+    );
+}

@@ -200,11 +200,7 @@ fn civil_from_days(days: u64) -> (u64, u64, u64) {
     } else {
         shifted_month - 9
     };
-    (
-        era * 400 + year_of_era + u64::from(month <= 2),
-        month,
-        day,
-    )
+    (era * 400 + year_of_era + u64::from(month <= 2), month, day)
 }
 
 /// `2026-11-17T17:47:08.123Z`
@@ -443,7 +439,10 @@ impl Table {
     fn row(&mut self, t_s: f64, cells: &[(String, Cell)]) -> io::Result<()> {
         let mut line = format!("{t_s:.6}");
         let same = cells.len() == self.header.len() - 1
-            && cells.iter().zip(&self.header[1..]).all(|((n, _), h)| n == h);
+            && cells
+                .iter()
+                .zip(&self.header[1..])
+                .all(|((n, _), h)| n == h);
         if same {
             for (_, cell) in cells {
                 line.push(',');
@@ -558,10 +557,7 @@ fn raw_ack(frame: &Frame) -> Option<(String, String)> {
         *slot = *byte;
     }
     let command = u16::from_le_bytes([payload[0], payload[1]]);
-    Some((
-        format!("command {command}"),
-        result_by_number(payload[2]),
-    ))
+    Some((format!("command {command}"), result_by_number(payload[2])))
 }
 
 fn firmware_string(version: u32, custom: &[u8; 8]) -> String {
@@ -774,11 +770,7 @@ impl<'a> Pass<'a> {
             Message::STATUSTEXT(s) => {
                 let severity = format!("{:?}", s.severity);
                 let severity = severity.strip_prefix("MAV_SEVERITY_").unwrap_or(&severity);
-                let text: String = s
-                    .text
-                    .to_str()
-                    .map(str::to_owned)
-                    .unwrap_or_default();
+                let text: String = s.text.to_str().map(str::to_owned).unwrap_or_default();
                 self.mark(t_s, "text", format!("{severity}: {text}"));
             }
             Message::PARAM_VALUE(p) => {
@@ -789,11 +781,15 @@ impl<'a> Pass<'a> {
                     gcs_mavlink::dialect::MavParamType::MAV_PARAM_TYPE_UINT16 => {
                         Some(ParamType::U16)
                     }
-                    gcs_mavlink::dialect::MavParamType::MAV_PARAM_TYPE_INT16 => Some(ParamType::I16),
+                    gcs_mavlink::dialect::MavParamType::MAV_PARAM_TYPE_INT16 => {
+                        Some(ParamType::I16)
+                    }
                     gcs_mavlink::dialect::MavParamType::MAV_PARAM_TYPE_UINT32 => {
                         Some(ParamType::U32)
                     }
-                    gcs_mavlink::dialect::MavParamType::MAV_PARAM_TYPE_INT32 => Some(ParamType::I32),
+                    gcs_mavlink::dialect::MavParamType::MAV_PARAM_TYPE_INT32 => {
+                        Some(ParamType::I32)
+                    }
                     gcs_mavlink::dialect::MavParamType::MAV_PARAM_TYPE_REAL32 => {
                         Some(ParamType::F32)
                     }
@@ -813,12 +809,16 @@ impl<'a> Pass<'a> {
     fn encoding(&self) -> ParamEncoding {
         match self.capabilities {
             Some(caps)
-                if caps.contains(MavProtocolCapability::MAV_PROTOCOL_CAPABILITY_PARAM_ENCODE_BYTEWISE) =>
+                if caps.contains(
+                    MavProtocolCapability::MAV_PROTOCOL_CAPABILITY_PARAM_ENCODE_BYTEWISE,
+                ) =>
             {
                 ParamEncoding::Bytewise
             }
             Some(caps)
-                if caps.contains(MavProtocolCapability::MAV_PROTOCOL_CAPABILITY_PARAM_ENCODE_C_CAST) =>
+                if caps.contains(
+                    MavProtocolCapability::MAV_PROTOCOL_CAPABILITY_PARAM_ENCODE_C_CAST,
+                ) =>
             {
                 ParamEncoding::CCast
             }
@@ -1080,10 +1080,7 @@ pub fn list_sessions(dir: &Path) -> io::Result<Vec<SessionInfo>> {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned(),
-            duration_s: map
-                .get("duration_s")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.0),
+            duration_s: map.get("duration_s").and_then(Value::as_f64).unwrap_or(0.0),
             marks: map
                 .get("marks")
                 .and_then(Value::as_array)

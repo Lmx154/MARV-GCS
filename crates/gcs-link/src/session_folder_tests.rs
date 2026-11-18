@@ -338,7 +338,10 @@ fn the_summary_splits_at_the_user_mark() {
     let (_dir2, exported) = export(&rec, &none);
     let json = read_json(&exported.folder);
     assert_eq!(
-        json["summary"]["intervals"].as_array().expect("array").len(),
+        json["summary"]["intervals"]
+            .as_array()
+            .expect("array")
+            .len(),
         0
     );
 }
@@ -375,8 +378,14 @@ fn a_snapshot_is_the_start_and_the_first_value_is_compared_to_it() {
     assert_eq!(start["GYRO_GAIN"], 0.5);
     let changes = json["parameters"]["changes"].as_array().expect("changes");
     assert_eq!(changes.len(), 2);
-    assert_eq!((&changes[0]["old"], &changes[0]["new"]), (&json!(0.5), &json!(1.0)));
-    assert_eq!((&changes[1]["old"], &changes[1]["new"]), (&json!(1.0), &json!(2.0)));
+    assert_eq!(
+        (&changes[0]["old"], &changes[0]["new"]),
+        (&json!(0.5), &json!(1.0))
+    );
+    assert_eq!(
+        (&changes[1]["old"], &changes[1]["new"]),
+        (&json!(1.0), &json!(2.0))
+    );
 }
 
 #[test]
@@ -411,14 +420,15 @@ fn no_latitude_or_longitude_reaches_the_csv_or_the_json() {
         header.contains(&"alt") && header.contains(&"satellites_visible"),
         "{header:?}"
     );
+    let position = ["lat", "lon", "latitude", "longitude"];
     for column in &header {
-        assert!(!is_position_field(column), "{column}");
+        assert!(!position.contains(column), "{column}");
     }
     let text = fs::read_to_string(exported.folder.join("session.json")).expect("json");
     let mut keys = Vec::new();
     walk(&read_json(&exported.folder), &mut keys);
     assert!(
-        !keys.iter().any(|k| is_position_field(k)),
+        !keys.iter().any(|k| position.contains(&k.as_str())),
         "a position key in session.json: {keys:?}"
     );
     assert!(
@@ -447,10 +457,7 @@ fn position_fields_and_position_only_messages_are_recognised() {
         assert!(!is_position_field(name), "{name}");
     }
     let mut rec = Recording::new();
-    rec.vehicle(
-        0.0,
-        Message::HOME_POSITION(HOME_POSITION_DATA::default()),
-    );
+    rec.vehicle(0.0, Message::HOME_POSITION(HOME_POSITION_DATA::default()));
     rec.vehicle(0.5, heartbeat());
     let (_dir, exported) = export(&rec, &SessionOptions::default());
     assert!(!exported.folder.join("HOME_POSITION.csv").exists());
@@ -484,7 +491,12 @@ fn an_empty_or_missing_file_is_an_error_and_leaves_no_folder() {
     assert!(error.to_string().contains("no frames"), "{error}");
     assert!(!out.exists());
     assert!(
-        export_session(&dir.path().join("none.tlog"), &out, &SessionOptions::default()).is_err()
+        export_session(
+            &dir.path().join("none.tlog"),
+            &out,
+            &SessionOptions::default()
+        )
+        .is_err()
     );
 }
 

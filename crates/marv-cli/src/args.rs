@@ -10,6 +10,8 @@ pub const USAGE: &str = "\
 marv-cli: the MARV ground station on the command line
 
 Usage: marv-cli --connect <endpoint> [--timeout <s>] <command> [args]
+       marv-cli session export <file.tlog> [--name <name>] [--out <dir>]
+       marv-cli session list [<dir>]
 
 Endpoint: serial:PATH[:BAUD], tcp:HOST:PORT or udp:ADDR:PORT. serial and tcp are
 configure links; udp is operate-only (every command that writes is refused).
@@ -31,6 +33,10 @@ Commands:
   record <FILE> [--for <s>]        record the link to a .tlog (default 60 s)
   logs list                        the logs on the vehicle's card: NUMBER<TAB>SIZE, then last<TAB>N (USB or TCP only)
   logs get <N> [-o FILE] [--force] download log N (default file NNNNNNNN.BIN here; an existing file is kept without --force)
+  session export <file.tlog>       a recording into a session folder (CSV per message, session.json, a copy of the .tlog);
+                                   no vehicle and no --connect; --name (default the file's name), --out (default
+                                   <the file's directory>/sessions); an existing folder is never overwritten
+  session list [<dir>]             the sessions in <dir> (default logs/sessions): FOLDER NAME START DURATION MARKS
 
 Options:
   --connect <endpoint>   where the vehicle is (required)
@@ -39,6 +45,8 @@ Options:
   --yes                  confirm reset-all, reset-calibration and reboot
   --debug                allow param set of a field a sensor preset sets
   -o, --output <file>    where logs get writes the log
+  --name <name>          session export: the session's name
+  --out <dir>            session export: where the session folder goes
   --force                let logs get overwrite an existing file
   --help                 this text
 
@@ -51,6 +59,8 @@ pub const DEFAULT_DEVICES: Duration = Duration::from_secs(2);
 pub const DEFAULT_TEXTS: Duration = Duration::from_secs(10);
 pub const DEFAULT_WATCH: Duration = Duration::from_secs(30);
 pub const DEFAULT_RECORD: Duration = Duration::from_secs(60);
+/// Where the window puts its sessions: `logs` (its `--log-dir` default) and `sessions`.
+pub const DEFAULT_SESSIONS: &str = "logs/sessions";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Calibration {
@@ -101,6 +111,19 @@ pub enum Command {
     },
 }
 
+/// The commands that need no link.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionCommand {
+    Export {
+        file: PathBuf,
+        name: Option<String>,
+        out: Option<PathBuf>,
+    },
+    List {
+        dir: Option<PathBuf>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Invocation {
     pub endpoint: Endpoint,
@@ -114,6 +137,8 @@ pub struct Invocation {
 pub enum Parsed {
     Help,
     Run(Invocation),
+    /// `session ...`: works on files, with no `--connect`.
+    Session(SessionCommand),
 }
 
 /// The `MARV_DEVICE` ids by name (docs/link-contract.md, section 8).
@@ -145,6 +170,9 @@ fn seconds(option: &str, text: &str) -> Result<Duration, String> {
 
 /// Parses the arguments after the program name. The error text is the whole message.
 pub fn parse(args: &[String]) -> Result<Parsed, String> {
+    if args.first().map(String::as_str) == Some("session") {
+        return session(&args[1..]);
+    }
     let mut connect = None;
     let mut timeout = DEFAULT_TIMEOUT;
     let mut duration = None;
@@ -223,6 +251,47 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         duration,
         command,
     }))
+}
+
+/// `session export <file> [--name N] [--out DIR]` and `session list [DIR]`.
+fn session(args: &[String]) -> Result<Parsed, String> {
+    let mut name = None;
+    let mut out = None;
+    let mut words: Vec<&str> = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let mut value = |option: &str| {
+            iter.next()
+                .map(String::as_str)
+                .ok_or_else(|| format!("{option} needs a value"))
+        };
+        match arg.as_str() {
+            "--help" | "-h" => return Ok(Parsed::Help),
+            "--name" => name = Some(value("--name")?.to_string()),
+            "--out" => out = Some(PathBuf::from(value("--out")?)),
+            option if option.starts_with("--") => return Err(format!("unknown option {option}")),
+            word => words.push(word),
+        }
+    }
+    match words.as_slice() {
+        ["export", file] => Ok(Parsed::Session(SessionCommand::Export {
+            file: PathBuf::from(file),
+            name,
+            out,
+        })),
+        ["export"] => Err("session export needs a FILE.tlog".to_string()),
+        ["export", _, extra, ..] => Err(format!("unexpected argument {extra:?}")),
+        _ if name.is_some() || out.is_some() => {
+            Err("--name and --out only apply to session export".to_string())
+        }
+        ["list"] => Ok(Parsed::Session(SessionCommand::List { dir: None })),
+        ["list", dir] => Ok(Parsed::Session(SessionCommand::List {
+            dir: Some(PathBuf::from(dir)),
+        })),
+        ["list", _, extra, ..] => Err(format!("unexpected argument {extra:?}")),
+        [] => Err("session needs export or list".to_string()),
+        [other, ..] => Err(format!("unknown session command {other:?}: export or list")),
+    }
 }
 
 /// Why a write to the parameter `name` is a raw sensor setting, if it is: a field a sensor preset sets
@@ -366,6 +435,9 @@ fn command(words: &[&str], yes: bool) -> Result<(Command, bool), String> {
             [] => Err("logs needs list or get".to_string()),
             [other, ..] => Err(format!("unknown logs command {other:?}: list or get")),
         },
+        "session" => Err(
+            "session works on files: marv-cli session export|list, without --connect".to_string(),
+        ),
         other => Err(format!("unknown command {other:?}")),
     }
 }
