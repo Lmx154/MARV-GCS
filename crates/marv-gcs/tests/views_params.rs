@@ -582,3 +582,62 @@ fn an_operate_link_that_has_not_downloaded_says_so_and_a_refresh_is_allowed() {
         [Command::RefreshParams]
     ));
 }
+
+fn firmware_table() -> ParamTable {
+    let mut table = ParamTable {
+        fetch: FetchStatus::Complete,
+        encoding_known: true,
+        ..ParamTable::default()
+    };
+    for (i, (name, kind, raw)) in [
+        ("MAG_OFFX", ParamType::F32, 0.0f32.to_le_bytes()),
+        ("MAG_AVG", ParamType::I32, 2i32.to_le_bytes()),
+        ("MAG_UNLISTED", ParamType::I32, 1i32.to_le_bytes()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        table
+            .params
+            .insert(name.to_string(), param(name, i as u16, kind, raw));
+    }
+    table
+}
+
+fn firmware_harness() -> Harness<'static> {
+    let (mut harness, _) = connected(firmware_table());
+    harness.get_by_label("MAG (3)").click();
+    harness.run();
+    harness
+}
+
+#[test]
+fn a_known_parameters_unit_is_shown_in_its_own_column() {
+    let harness = firmware_harness();
+    harness.get_by_label("Unit");
+    harness.get_by_label("MAG_OFFX");
+    harness.get_by_label("uT");
+    assert_eq!(harness.query_all_by_label("uT").count(), 1);
+}
+
+#[test]
+fn hovering_a_known_name_shows_its_description_and_range_and_an_unknown_one_nothing() {
+    let mut harness = firmware_harness();
+    assert!(harness.query_by_label_contains("Allowed:").is_none());
+
+    let name = harness.get_by_label("MAG_OFFX").rect();
+    harness.hover_at(name.center());
+    harness.run();
+    harness.get_by_label_contains("Compass offset of the X axis");
+    harness.get_by_label_contains("Allowed: -200 to 200");
+
+    harness.hover_at(eframe::egui::pos2(0.0, 0.0));
+    harness.run();
+    assert!(harness.query_by_label_contains("Allowed:").is_none());
+
+    let unlisted = harness.get_by_label("MAG_UNLISTED").rect();
+    harness.hover_at(unlisted.center());
+    harness.run();
+    assert!(harness.query_by_label_contains("Allowed:").is_none());
+    assert_eq!(harness.query_all_by_label("uT").count(), 1);
+}

@@ -13,6 +13,7 @@ use egui_extras::{Column, TableBuilder};
 use gcs_mavlink::Command;
 use gcs_mavlink::dialect::MavCmd;
 use gcs_mavlink::param_file;
+use gcs_mavlink::param_info;
 use gcs_mavlink::services::params::{FetchStatus, ParamTable, ParamValue, WriteStatus};
 
 use super::actions::{self, Confirm};
@@ -597,9 +598,10 @@ fn rows(
             .column(Column::initial(220.0).at_least(60.0).clip(true))
             .column(Column::initial(160.0).at_least(60.0).clip(true))
             .column(Column::exact(50.0))
+            .column(Column::initial(60.0).at_least(40.0).clip(true))
             .column(Column::remainder().clip(true))
             .header(row_height, |mut header| {
-                for title in ["Name", "Value", "Type", "State"] {
+                for title in ["Name", "Value", "Type", "Unit", "State"] {
                     header.col(|ui| {
                         ui.strong(title);
                     });
@@ -618,11 +620,18 @@ fn rows(
                         st.row_state(table, name)
                     };
                     let colour = state_colour(&row_state);
+                    let info = param_info::lookup(name);
                     row.col(|ui| {
-                        match colour {
+                        let label = match colour {
                             Some(c) => ui.colored_label(c, name),
                             None => ui.label(name),
                         };
+                        if let Some(info) = info {
+                            label.on_hover_text(format!(
+                                "{}\nAllowed: {}",
+                                info.description, info.range
+                            ));
+                        }
                     });
                     row.col(|ui| {
                         let mut text = st
@@ -652,6 +661,11 @@ fn rows(
                     });
                     row.col(|ui| {
                         ui.label(param.kind.name());
+                    });
+                    row.col(|ui| {
+                        if let Some(unit) = info.and_then(|i| i.unit) {
+                            ui.label(unit);
+                        }
                     });
                     row.col(|ui| {
                         let mut text = state_text(&row_state);
