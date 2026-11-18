@@ -150,6 +150,7 @@ pub fn is_position_field(name: &str) -> bool {
 /// list is every field of the dialect whose type is a `bitflags` type (they are CSV cells as numbers).
 macro_rules! flag_fields {
     ($($message:ident { $($field:ident),+ }),+ $(,)?) => {
+        #[allow(deprecated)] // the dialect still has a few superseded messages
         fn flag_values(message: &Message) -> Vec<(&'static str, u64)> {
             match message {
                 $(Message::$message(d) => vec![$((stringify!($field), u64::from(d.$field.bits()))),+],)+
