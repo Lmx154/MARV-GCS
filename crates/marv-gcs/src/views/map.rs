@@ -1,7 +1,9 @@
 //! The Map tab: the vehicle's GPS position and this session's track on OpenStreetMap tiles. The position
 //! comes from GPS_RAW_INT (`lat` and `lon` in degE7, `cog`, `fix_type`) and nothing is computed from it. The
 //! tiles are fetched over HTTPS only for what is on the screen and kept on disk (`cache_dir`); no coordinate
-//! is written anywhere and nothing is sent to the vehicle.
+//! is written anywhere and nothing is sent to the vehicle. The marker turns by the yaw of ATTITUDE (radians,
+//! 0 = north, clockwise) while that message is fresh (the HUD's rule); otherwise by the GPS course when there is
+//! one, otherwise it is a circle. The map is always north up.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -17,6 +19,7 @@ use walkers::{
     HeaderValue, HttpOptions, HttpTiles, MapMemory, Position, Projector, Tiles, lat_lon,
 };
 
+use super::hud::ATTITUDE_STALE;
 use super::{View, ViewCtx};
 use crate::status::GREY;
 
@@ -218,6 +221,17 @@ fn tiles<'a>(source: &'a mut TileSource, ctx: &egui::Context) -> Option<&'a mut 
     }
 }
 
+/// The marker's heading in radians clockwise from north: a fresh ATTITUDE's yaw, else the GPS course.
+fn marker_heading(store: &MessageStore, now: Option<Duration>, course: Option<f64>) -> Option<f32> {
+    let yaw = store
+        .entry("ATTITUDE", 0)
+        .filter(|e| now.is_some_and(|now| now.saturating_sub(e.last_seen) <= ATTITUDE_STALE))
+        .and_then(|e| e.number("yaw"))
+        .filter(|yaw| yaw.is_finite());
+    yaw.or_else(|| course.map(f64::to_radians))
+        .map(|a| a as f32)
+}
+
 fn world_view() -> MapMemory {
     let mut memory = MapMemory::default();
     let _ = memory.set_zoom(WORLD_ZOOM);
@@ -257,12 +271,18 @@ impl View for MapView {
         let ctx = ui.ctx().clone();
         let tiles = tiles(&mut self.tiles, &ctx);
         let tracker = &self.tracker;
+        let heading = marker_heading(
+            &cx.state.messages,
+            cx.now,
+            tracker.last.and_then(|fix| fix.course),
+        );
         walkers::Map::new(tiles, &mut self.memory, vehicle)
             .zoom_with_ctrl(false)
             .show(ui, |ui, response, projector, _| {
-                draw_track(ui, projector, tracker, status);
+                draw_track(ui, projector, tracker, status, heading);
                 overlay_status(ui, response.rect, status);
-                overlay_attribution(ui, response.rect);
+                let attribution = overlay_attribution(ui, response.rect);
+                overlay_compass(ui, response.rect, attribution);
             });
     }
 }
@@ -306,7 +326,13 @@ fn controls(
     });
 }
 
-fn draw_track(ui: &egui::Ui, projector: &Projector, tracker: &Tracker, status: Status) {
+fn draw_track(
+    ui: &egui::Ui,
+    projector: &Projector,
+    tracker: &Tracker,
+    status: Status,
+    heading: Option<f32>,
+) {
     let painter = ui.painter();
     let live = status == Status::Live;
     if tracker.track.len() > 1 {
@@ -329,9 +355,8 @@ fn draw_track(ui: &egui::Ui, projector: &Projector, tracker: &Tracker, status: S
         } else {
             (GREY, Color32::DARK_GRAY)
         };
-        match fix.course {
-            Some(course) => {
-                let angle = course.to_radians() as f32;
+        match heading {
+            Some(angle) => {
                 let forward = vec2(angle.sin(), -angle.cos());
                 let side = vec2(-forward.y, forward.x);
                 painter.add(Shape::convex_polygon(
@@ -381,14 +406,64 @@ fn overlay_status(ui: &mut egui::Ui, area: Rect, status: Status) {
     .add(text_on_map(text, colour));
 }
 
-fn overlay_attribution(ui: &mut egui::Ui, area: Rect) {
+/// Draws the attribution and returns the rectangle it took.
+fn overlay_attribution(ui: &mut egui::Ui, area: Rect) -> Rect {
     let area = area.shrink(4.0);
     ui.new_child(
         UiBuilder::new()
             .max_rect(area)
             .layout(Layout::bottom_up(Align::Max)),
     )
-    .add(text_on_map(ATTRIBUTION, Color32::BLACK));
+    .add(text_on_map(ATTRIBUTION, Color32::BLACK))
+    .rect
+}
+
+/// Half the side of the compass square.
+const COMPASS_RADIUS: f32 = 20.0;
+
+/// The compass square: in the bottom-right corner of the map, its bottom edge just above the attribution.
+fn compass_rect(area: Rect, attribution: Rect) -> Rect {
+    let right = area.right() - 6.0;
+    let bottom = attribution.top().min(area.bottom() - 4.0) - 4.0;
+    Rect::from_min_max(
+        pos2(right - 2.0 * COMPASS_RADIUS, bottom - 2.0 * COMPASS_RADIUS),
+        pos2(right, bottom),
+    )
+}
+
+/// A small compass rose. The map is always north up (walkers cannot rotate it), so north is straight up.
+fn overlay_compass(ui: &egui::Ui, area: Rect, attribution: Rect) {
+    let square = compass_rect(area, attribution);
+    let painter = ui.painter_at(square.expand(1.0));
+    let centre = square.center();
+    let ring = Color32::from_gray(60);
+    painter.circle(
+        centre,
+        COMPASS_RADIUS,
+        Color32::from_white_alpha(215),
+        Stroke::new(1.0, ring),
+    );
+    let needle = |tip: Pos2, colour: Color32| {
+        let side = vec2(5.0, 0.0);
+        let base = centre;
+        painter.add(Shape::convex_polygon(
+            vec![tip, base + side, base - side],
+            colour,
+            Stroke::new(0.5, ring),
+        ));
+    };
+    needle(
+        centre + vec2(0.0, -COMPASS_RADIUS * 0.8),
+        Color32::from_rgb(200, 30, 30),
+    );
+    needle(centre + vec2(0.0, COMPASS_RADIUS * 0.8), ring);
+    painter.text(
+        centre + vec2(0.0, -COMPASS_RADIUS * 0.8) + vec2(0.0, 1.0),
+        egui::Align2::CENTER_TOP,
+        "N",
+        egui::FontId::proportional(9.0),
+        Color32::BLACK,
+    );
 }
 
 #[cfg(test)]
@@ -621,6 +696,84 @@ mod tests {
         view.session_changed();
         draw(&mut view, &state, 12.0);
         assert_eq!(view.memory.zoom(), VEHICLE_ZOOM);
+    }
+
+    #[test]
+    fn the_compass_is_in_the_bottom_right_corner_above_the_attribution() {
+        let area = Rect::from_min_size(pos2(0.0, 40.0), vec2(800.0, 500.0));
+        let attribution = Rect::from_min_max(pos2(640.0, 520.0), pos2(796.0, 536.0));
+        let compass = compass_rect(area, attribution);
+        assert!(area.contains_rect(compass));
+        assert!(!compass.intersects(attribution));
+        assert!(compass.center().x > area.center().x && compass.center().y > area.center().y);
+        assert!(
+            area.right() - compass.right() < 12.0,
+            "against the right edge"
+        );
+        assert!(compass.bottom() <= attribution.top());
+    }
+
+    #[test]
+    fn the_map_draws_the_compass_and_keeps_the_attribution() {
+        use egui_kittest::kittest::Queryable;
+        let mut view = MapView::new(false);
+        let state = VehicleState::default();
+        let mut harness = egui_kittest::Harness::new_ui(|ui| {
+            let mut commands = Vec::new();
+            let mut cx = ViewCtx {
+                state: &state,
+                commands: &mut commands,
+                now: secs(1.0),
+                access: gcs_mavlink::Access::Configure,
+            };
+            view.ui(ui, &mut cx);
+        });
+        harness.run();
+        harness.get_by_label(ATTRIBUTION);
+    }
+
+    fn attitude(yaw: f64, seen: f64) -> MessageStore {
+        let mut store = MessageStore::default();
+        store.entries.insert(
+            MessageKey {
+                system_id: 1,
+                component_id: 1,
+                message_id: 30,
+                instance: 0,
+            },
+            MessageEntry {
+                name: "ATTITUDE".into(),
+                label: "ATTITUDE".into(),
+                count: 1,
+                rate_hz: 1.0,
+                last_seen: Duration::from_secs_f64(seen),
+                fields: vec![number("yaw", yaw)],
+            },
+        );
+        store
+    }
+
+    #[test]
+    fn the_marker_turns_by_a_fresh_attitude_yaw_before_the_gps_course() {
+        let store = attitude(1.0, 10.0);
+        assert_eq!(marker_heading(&store, secs(11.0), Some(90.0)), Some(1.0));
+        assert_eq!(marker_heading(&store, secs(11.0), None), Some(1.0));
+    }
+
+    #[test]
+    fn a_stale_attitude_falls_back_to_the_course_and_none_gives_the_circle() {
+        let store = attitude(1.0, 10.0);
+        let late = secs(10.0 + ATTITUDE_STALE.as_secs_f64() + 0.5);
+        assert_eq!(
+            marker_heading(&store, late, Some(90.0)),
+            Some(90f64.to_radians() as f32)
+        );
+        assert_eq!(marker_heading(&store, late, None), None);
+        assert_eq!(
+            marker_heading(&MessageStore::default(), secs(1.0), None),
+            None
+        );
+        assert_eq!(marker_heading(&store, None, None), None);
     }
 
     #[test]

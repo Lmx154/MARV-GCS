@@ -285,6 +285,38 @@ pub struct Review {
     export: ExportPart,
     /// The folder of the drop-down was listed once.
     started: bool,
+    /// The file picker's answer, while its dialog is open (it runs on a thread of its own).
+    browsing: Option<Receiver<Option<PathBuf>>>,
+    /// Why the picker could not be used.
+    browse_error: Option<String>,
+}
+
+/// The one-line reason shown when the desktop's file picker cannot be reached.
+const NO_PICKER: &str =
+    "The desktop file picker is not available (no desktop portal): type the path instead";
+
+/// Whether a D-Bus session bus can be reached; the portal's file picker is a service on it.
+fn session_bus_present() -> bool {
+    std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|v| !v.is_empty())
+        || std::env::var_os("XDG_RUNTIME_DIR").is_some_and(|d| Path::new(&d).join("bus").exists())
+}
+
+/// The file picker on its own thread: the desktop's dialog, in `dir`, showing `.BIN` files (any case) first
+/// and all files as the other choice. A thread that dies (no libdbus) closes the channel without an answer.
+fn browse_thread(ctx: &egui::Context, dir: PathBuf) -> Receiver<Option<PathBuf>> {
+    let (tx, rx) = mpsc::channel();
+    let ctx = ctx.clone();
+    thread::spawn(move || {
+        let picked = rfd::FileDialog::new()
+            .set_title("Open a log file")
+            .set_directory(dir)
+            .add_filter("DataFlash logs (.BIN)", &["[bB][iI][nN]"])
+            .add_filter("All files", &["*"])
+            .pick_file();
+        let _ = tx.send(picked);
+        ctx.request_repaint();
+    });
+    rx
 }
 
 impl Review {
@@ -307,6 +339,42 @@ impl Review {
         self.listing.read_at = None;
         let file = path.clone();
         self.opening = Some((path, Job::spawn(ctx, 2, move |pass| open_pass(&file, pass))));
+    }
+
+    /// What the file picker answered: a path opens like Open does; no path (Cancel) does nothing.
+    fn picked(&mut self, ctx: &egui::Context, path: Option<PathBuf>) {
+        if let Some(path) = path {
+            self.open(ctx, path);
+        }
+    }
+
+    fn start_browse(&mut self, ctx: &egui::Context, dir: &str) {
+        self.browse_error = None;
+        if !session_bus_present() {
+            self.browse_error = Some(NO_PICKER.to_string());
+            return;
+        }
+        let dir = std::path::absolute(dir).unwrap_or_else(|_| PathBuf::from(dir));
+        self.browsing = Some(browse_thread(ctx, dir));
+    }
+
+    fn poll_browse(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.browsing else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(path) => {
+                self.browsing = None;
+                self.picked(ctx, path);
+            }
+            Err(TryRecvError::Empty) => {
+                ctx.request_repaint_after(REPAINT_WHILE_RUNNING);
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.browsing = None;
+                self.browse_error = Some(NO_PICKER.to_string());
+            }
+        }
     }
 
     fn busy(&self) -> bool {
@@ -346,6 +414,7 @@ impl Review {
             self.open(&ctx, path);
         }
         self.poll();
+        self.poll_browse(&ctx);
         self.open_part(ui, &ctx);
         if let Some(opened) = &self.opened {
             summary_part(ui, opened);
@@ -382,6 +451,10 @@ impl Review {
                 } else {
                     to_open = Some(PathBuf::from(text));
                 }
+            }
+            let browse = ui.add_enabled(self.browsing.is_none(), egui::Button::new("Browse…"));
+            if browse.clicked() {
+                self.start_browse(ctx, &dir);
             }
         });
         ui.horizontal(|ui| {
@@ -424,6 +497,9 @@ impl Review {
             self.open_error = Some("Open cancelled".to_string());
         }
         if let Some(error) = &self.open_error {
+            ui.colored_label(status::RED, error);
+        }
+        if let Some(error) = &self.browse_error {
             ui.colored_label(status::RED, error);
         }
     }
@@ -958,6 +1034,30 @@ mod tests {
         assert_eq!(wall_clock(0), "1970-01-01 00:00:00.000 UTC");
         // 2024-02-29 12:34:56.789 UTC
         assert_eq!(wall_clock(1_709_210_096_789), "2024-02-29 12:34:56.789 UTC");
+    }
+
+    #[test]
+    fn a_path_from_the_file_picker_opens_like_open_and_cancel_does_nothing() {
+        let ctx = egui::Context::default();
+        let mut review = Review::default();
+        review.picked(&ctx, None);
+        assert!(review.opening.is_none());
+        assert!(review.path_text.is_empty());
+        review.picked(&ctx, Some(PathBuf::from("/some/dir/00000007.BIN")));
+        assert_eq!(review.path_text, "/some/dir/00000007.BIN");
+        let (path, _) = review.opening.as_ref().expect("the file is being opened");
+        assert_eq!(path, Path::new("/some/dir/00000007.BIN"));
+        assert_eq!(review.export.folder, "/some/dir");
+    }
+
+    #[test]
+    fn the_review_section_has_a_browse_button_next_to_open() {
+        use egui_kittest::kittest::Queryable;
+        let mut review = Review::default();
+        let mut harness = egui_kittest::Harness::new_ui(|ui| review.ui(ui));
+        harness.run();
+        harness.get_by_label("Open");
+        harness.get_by_label("Browse…");
     }
 
     #[test]

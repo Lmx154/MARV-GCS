@@ -37,6 +37,8 @@ egui_extras = "0.37.0"
 egui_kittest = "0.37.0"
 png = "0.18"
 walkers = "0.65.0"
+# The desktop's own file picker through the XDG desktop portal (D-Bus, libdbus loaded at run time): no GTK.
+rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal"] }
 
 [profile.dev]
 # Line tables only: backtraces keep file and line, and linking the many test binaries (each with the Map tab's

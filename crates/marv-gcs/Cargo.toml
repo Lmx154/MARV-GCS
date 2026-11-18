@@ -21,6 +21,7 @@ egui_plot.workspace = true
 egui_extras.workspace = true
 png.workspace = true
 walkers.workspace = true
+rfd.workspace = true
 
 [dev-dependencies]
 gcs-sim.workspace = true

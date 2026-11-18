@@ -20,7 +20,7 @@ pub const PANEL_WIDTH: f32 = 260.0;
 /// Side of the square drawing.
 const DRAWING: f32 = 240.0;
 /// An ATTITUDE older than this is not shown.
-const ATTITUDE_STALE: Duration = Duration::from_secs(2);
+pub(super) const ATTITUDE_STALE: Duration = Duration::from_secs(2);
 /// A GPS_RAW_INT older than this is not shown.
 const GPS_STALE: Duration = Duration::from_secs(3);
 /// GPS_RAW_INT `vel` and `cog` when unknown.
