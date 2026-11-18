@@ -21,7 +21,7 @@ pub use services::{Ctx, Service, default_services};
 pub use session::{Session, SessionConfig};
 pub use state::{
     Access, CancelStatus, Command, CommandRecord, CommandStatus, LinkState, LinkStatus, Refused,
-    RefusedCommand, VehicleId, VehicleState,
+    RefusedCommand, UnsavedCalibration, VehicleId, VehicleState,
 };
 
 pub type Message = dialect::MavMessage;

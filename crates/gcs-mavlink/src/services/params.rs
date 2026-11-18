@@ -13,6 +13,7 @@ use crate::dialect::{
     PARAM_VALUE_DATA,
 };
 use crate::session::SessionConfig;
+use crate::state::{CommandStatus, UnsavedCalibration};
 use crate::{Access, Body, Command, Frame, LinkStatus, Message};
 
 /// How a vehicle puts a value into the 4-byte value field.
@@ -353,6 +354,8 @@ pub struct Params {
     fetch: Fetch,
     restarts: u8,
     writes: BTreeMap<String, WriteTrack>,
+    /// The command whose end already caused the offset reads (its start and end time).
+    offsets_read_for: Option<(Duration, Duration)>,
 }
 
 impl Params {
@@ -364,6 +367,7 @@ impl Params {
             fetch: Fetch::Idle,
             restarts: 0,
             writes: BTreeMap::new(),
+            offsets_read_for: None,
         }
     }
 
@@ -580,6 +584,48 @@ impl Params {
                 cx.state.params.writes.insert(name.clone(), status);
                 cx.changed = true;
             }
+        }
+    }
+
+    /// The vehicle sends no PARAM_VALUE for the offsets a calibration writes or a reload restores, so
+    /// after an accepted calibration (its offsets) or an accepted reload from flash (all offsets) the
+    /// station asks for them by name. A name with a write of its own under way is left out: its echo
+    /// rule would take the reply for the write's answer.
+    fn read_changed_offsets(&mut self, target: (u8, u8), cx: &mut Ctx) {
+        if self.access != Access::Configure {
+            return;
+        }
+        let Some(record) = cx.state.command.as_ref() else {
+            return;
+        };
+        let (CommandStatus::Finished { accepted: true, .. }, Some(ended)) =
+            (&record.status, record.ended)
+        else {
+            return;
+        };
+        if self.offsets_read_for == Some((record.started, ended)) {
+            return;
+        }
+        self.offsets_read_for = Some((record.started, ended));
+        let p = record.params;
+        let names = if record.command == MavCmd::MAV_CMD_PREFLIGHT_CALIBRATION as u32 {
+            UnsavedCalibration::offsets(p[0] == 1.0, p[4] == 4.0, p[1] == 1.0)
+        } else if record.command == MavCmd::MAV_CMD_PREFLIGHT_STORAGE as u32 && p[0] == 0.0 {
+            UnsavedCalibration::offsets(true, true, true)
+        } else {
+            return;
+        };
+        for name in names {
+            if self.writes.contains_key(name) {
+                continue;
+            }
+            cx.out
+                .push(Message::PARAM_REQUEST_READ(PARAM_REQUEST_READ_DATA {
+                    param_index: -1,
+                    target_system: target.0,
+                    target_component: target.1,
+                    param_id: name_to_wire(name).into(),
+                }));
         }
     }
 
@@ -895,6 +941,7 @@ impl Service for Params {
         self.tick_encoding(target, cx);
         self.tick_fetch(target, cx);
         self.tick_writes(target, cx);
+        self.read_changed_offsets(target, cx);
     }
 
     fn on_command(&mut self, command: &Command, cx: &mut Ctx) {

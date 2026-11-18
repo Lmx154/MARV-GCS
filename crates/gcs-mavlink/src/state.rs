@@ -24,6 +24,55 @@ pub struct VehicleState {
     pub logs: LogsState,
     /// The current or last MAVLink command the user sent; `None` before the first.
     pub command: Option<CommandRecord>,
+    /// The calibrations the vehicle applies in RAM and has not saved to flash.
+    pub calibration: UnsavedCalibration,
+}
+
+/// The calibrations that ended accepted and are not yet saved (`MAV_CMD_PREFLIGHT_STORAGE` param1 = 1)
+/// or dropped (param1 = 0). The vehicle applies the offsets at once; a reboot loses them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnsavedCalibration {
+    pub gyro: bool,
+    pub accel: bool,
+    pub compass: bool,
+    /// The vehicle restarted while some were unsaved: they are gone. Kept until the next calibration or storage.
+    pub lost_at_reboot: bool,
+}
+
+impl UnsavedCalibration {
+    /// Whether any calibration waits to be saved.
+    pub fn any(&self) -> bool {
+        self.gyro || self.accel || self.compass
+    }
+
+    /// The parameters a calibration writes, which the vehicle does not report by itself.
+    pub fn offsets(gyro: bool, accel: bool, compass: bool) -> Vec<&'static str> {
+        let mut names = Vec::new();
+        if gyro {
+            names.extend([
+                "IMU1_GYR_OFFX",
+                "IMU1_GYR_OFFY",
+                "IMU1_GYR_OFFZ",
+                "IMU2_GYR_OFFX",
+                "IMU2_GYR_OFFY",
+                "IMU2_GYR_OFFZ",
+            ]);
+        }
+        if accel {
+            names.extend([
+                "IMU1_ACC_OFFX",
+                "IMU1_ACC_OFFY",
+                "IMU1_ACC_OFFZ",
+                "IMU2_ACC_OFFX",
+                "IMU2_ACC_OFFY",
+                "IMU2_ACC_OFFZ",
+            ]);
+        }
+        if compass {
+            names.extend(["MAG_OFFX", "MAG_OFFY", "MAG_OFFZ"]);
+        }
+        names
+    }
 }
 
 /// Where a command stands (docs/link-contract.md, section 10).

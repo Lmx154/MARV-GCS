@@ -787,3 +787,96 @@ fn the_calibration_waiting_for_its_first_ack_can_be_cancelled_too() {
     rig.ack(CAL, MavResult::MAV_RESULT_CANCELLED, 0, 200);
     assert!(!rig.record().outstanding());
 }
+
+// ---------------------------------------------------------------- calibrations in use and not saved
+
+fn accel() -> [f32; 7] {
+    [0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0]
+}
+
+fn compass() -> [f32; 7] {
+    [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+}
+
+/// A calibration with these parameters that the vehicle answers with `result`.
+fn calibrate(rig: &mut Rig, params: [f32; 7], result: MavResult, at_ms: u64) {
+    rig.send(CAL, params, at_ms);
+    rig.ack(CAL, MavResult::MAV_RESULT_IN_PROGRESS, 50, at_ms + 100);
+    rig.ack(CAL, result, 0, at_ms + 200);
+}
+
+fn unsaved(rig: &Rig) -> (bool, bool, bool) {
+    let c = &rig.state.calibration;
+    (c.gyro, c.accel, c.compass)
+}
+
+fn boot_status(rig: &mut Rig, time_boot_ms: u32, now_ms: u64) {
+    let frame = Frame {
+        system_id: 1,
+        component_id: 1,
+        sequence: 0,
+        message_id: 0,
+        raw: Vec::new(),
+        body: Body::Known(Message::MARV_DEVICE_STATUS(
+            crate::dialect::MARV_DEVICE_STATUS_DATA {
+                time_boot_ms,
+                ..Default::default()
+            },
+        )),
+    };
+    rig.call(now_ms, |s, cx| s.on_frame(&frame, cx));
+}
+
+#[test]
+fn only_an_accepted_calibration_is_in_use_and_unsaved_and_several_accumulate() {
+    let mut rig = Rig::new();
+    calibrate(&mut rig, gyro(), MavResult::MAV_RESULT_FAILED, 0);
+    assert_eq!(unsaved(&rig), (false, false, false));
+    calibrate(&mut rig, accel(), MavResult::MAV_RESULT_CANCELLED, 1_000);
+    assert_eq!(unsaved(&rig), (false, false, false));
+    calibrate(&mut rig, gyro(), MavResult::MAV_RESULT_ACCEPTED, 2_000);
+    assert_eq!(unsaved(&rig), (true, false, false));
+    calibrate(&mut rig, compass(), MavResult::MAV_RESULT_ACCEPTED, 3_000);
+    assert_eq!(unsaved(&rig), (true, false, true));
+    // A later failure takes nothing back.
+    calibrate(&mut rig, accel(), MavResult::MAV_RESULT_FAILED, 4_000);
+    assert_eq!(unsaved(&rig), (true, false, true));
+    assert!(rig.state.calibration.any());
+}
+
+#[test]
+fn an_accepted_save_or_reload_from_any_tab_clears_them_and_the_other_storage_actions_do_not() {
+    for action in [1.0, 0.0] {
+        let mut rig = Rig::new();
+        calibrate(&mut rig, gyro(), MavResult::MAV_RESULT_ACCEPTED, 0);
+        calibrate(&mut rig, accel(), MavResult::MAV_RESULT_ACCEPTED, 1_000);
+        rig.send(STORAGE, [action, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 2_000);
+        rig.ack(STORAGE, MavResult::MAV_RESULT_DENIED, 0, 2_100);
+        assert_eq!(unsaved(&rig), (true, true, false), "a refused save");
+        rig.send(STORAGE, [action, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 3_000);
+        rig.ack(STORAGE, MavResult::MAV_RESULT_ACCEPTED, 0, 3_100);
+        assert_eq!(unsaved(&rig), (false, false, false), "storage {action}");
+        assert!(!rig.state.calibration.lost_at_reboot);
+    }
+    let mut rig = Rig::new();
+    calibrate(&mut rig, gyro(), MavResult::MAV_RESULT_ACCEPTED, 0);
+    rig.send(STORAGE, [2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1_000);
+    rig.ack(STORAGE, MavResult::MAV_RESULT_ACCEPTED, 0, 1_100);
+    assert_eq!(unsaved(&rig), (true, false, false));
+}
+
+#[test]
+fn a_restart_of_the_vehicle_drops_them_and_leaves_a_note_until_the_next_calibration() {
+    let mut rig = Rig::new();
+    boot_status(&mut rig, 60_000, 0);
+    calibrate(&mut rig, gyro(), MavResult::MAV_RESULT_ACCEPTED, 100);
+    // A frame slightly out of order is not a restart.
+    boot_status(&mut rig, 59_500, 1_000);
+    assert_eq!(unsaved(&rig), (true, false, false));
+    boot_status(&mut rig, 2_000, 5_000);
+    assert_eq!(unsaved(&rig), (false, false, false));
+    assert!(rig.state.calibration.lost_at_reboot);
+    calibrate(&mut rig, compass(), MavResult::MAV_RESULT_ACCEPTED, 6_000);
+    assert_eq!(unsaved(&rig), (false, false, true));
+    assert!(!rig.state.calibration.lost_at_reboot);
+}

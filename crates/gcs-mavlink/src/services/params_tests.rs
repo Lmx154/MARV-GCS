@@ -1,6 +1,6 @@
 use super::*;
 use crate::dialect::{MavParamType, MavProtocolCapability};
-use crate::{VehicleId, VehicleState};
+use crate::{CommandRecord, VehicleId, VehicleState};
 use std::collections::BTreeSet;
 
 const GENERIC: &str = "MAV_AUTOPILOT_GENERIC";
@@ -2056,4 +2056,183 @@ fn fake_the_four_encoding_outcomes() {
         encoding_outcome(GENERIC, None, 2500),
         (true, ParamEncoding::Bytewise, 3)
     );
+}
+
+// ---------------------------------------------------------------- reads after a calibration or a reload
+
+const OFFSETS: [&str; 15] = [
+    "IMU1_GYR_OFFX",
+    "IMU1_GYR_OFFY",
+    "IMU1_GYR_OFFZ",
+    "IMU2_GYR_OFFX",
+    "IMU2_GYR_OFFY",
+    "IMU2_GYR_OFFZ",
+    "IMU1_ACC_OFFX",
+    "IMU1_ACC_OFFY",
+    "IMU1_ACC_OFFZ",
+    "IMU2_ACC_OFFX",
+    "IMU2_ACC_OFFY",
+    "IMU2_ACC_OFFZ",
+    "MAG_OFFX",
+    "MAG_OFFY",
+    "MAG_OFFZ",
+];
+
+fn real_pv(name: &str, index: u16, count: u16, value: f32) -> Message {
+    pv(
+        name,
+        index,
+        count,
+        MavParamType::MAV_PARAM_TYPE_REAL32,
+        value.to_le_bytes(),
+    )
+}
+
+/// A completed list of the 15 offsets, all 0.0, in a Configure session.
+fn offsets_rig() -> Rig {
+    let mut rig = Rig::new();
+    rig.connect(0);
+    rig.deliver(version(CAP_BYTEWISE | CAP_MAVLINK2), 10);
+    for (i, name) in OFFSETS.iter().enumerate() {
+        rig.deliver(real_pv(name, i as u16, 15, 0.0), 20 + i as u64);
+    }
+    assert_eq!(rig.table().fetch, FetchStatus::Complete);
+    rig.tick(100);
+    rig
+}
+
+fn finished(command: MavCmd, param: usize, value: f32, accepted: bool) -> CommandRecord {
+    let mut params = [0.0; 7];
+    params[param] = value;
+    CommandRecord {
+        command: command as u32,
+        name: None,
+        params,
+        status: CommandStatus::Finished {
+            text: if accepted { "accepted" } else { "failed" },
+            accepted,
+        },
+        sends: 1,
+        started: Duration::from_millis(100),
+        ended: Some(Duration::from_millis(200)),
+        refused: None,
+        cancel: None,
+    }
+}
+
+fn read_names(messages: &[Message]) -> Vec<String> {
+    messages
+        .iter()
+        .filter_map(|m| match m {
+            Message::PARAM_REQUEST_READ(r) => {
+                assert_eq!(r.param_index, -1, "by name");
+                assert_eq!((r.target_system, r.target_component), (1, 1));
+                let id: &[u8] = &r.param_id[..];
+                let end = id.iter().position(|b| *b == 0).unwrap_or(id.len());
+                Some(String::from_utf8(id[..end].to_vec()).unwrap())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn an_accepted_calibration_reads_exactly_its_offsets_by_name_once() {
+    for (param, value, expected) in [
+        (0, 1.0, &OFFSETS[0..6]),
+        (4, 4.0, &OFFSETS[6..12]),
+        (1, 1.0, &OFFSETS[12..15]),
+    ] {
+        let mut rig = offsets_rig();
+        rig.state.command = Some(finished(
+            MavCmd::MAV_CMD_PREFLIGHT_CALIBRATION,
+            param,
+            value,
+            true,
+        ));
+        let out = rig.tick(150);
+        assert_eq!(read_names(&out), expected);
+        // The same command is not read for again.
+        assert!(rig.tick(200).is_empty());
+    }
+}
+
+#[test]
+fn a_failed_or_cancelled_calibration_and_a_save_read_nothing() {
+    let mut rig = offsets_rig();
+    rig.state.command = Some(finished(
+        MavCmd::MAV_CMD_PREFLIGHT_CALIBRATION,
+        0,
+        1.0,
+        false,
+    ));
+    assert!(rig.tick(150).is_empty());
+    rig.state.command = Some(finished(MavCmd::MAV_CMD_PREFLIGHT_STORAGE, 0, 1.0, true));
+    assert!(rig.tick(160).is_empty());
+    rig.state.command = Some(CommandRecord {
+        status: CommandStatus::InProgress { percent: None },
+        ended: None,
+        ..finished(MavCmd::MAV_CMD_PREFLIGHT_CALIBRATION, 0, 1.0, true)
+    });
+    assert!(rig.tick(170).is_empty());
+}
+
+#[test]
+fn an_accepted_reload_reads_every_offset() {
+    let mut rig = offsets_rig();
+    rig.state.command = Some(finished(MavCmd::MAV_CMD_PREFLIGHT_STORAGE, 0, 0.0, true));
+    let out = rig.tick(150);
+    assert_eq!(read_names(&out), OFFSETS);
+    assert!(rig.tick(200).is_empty());
+}
+
+#[test]
+fn the_replies_of_the_reads_update_the_table_and_do_not_disturb_a_write_under_way() {
+    let mut rig = offsets_rig();
+    rig.command(&set("MAG_OFFX", ParamValue::F32(0.5)), 120);
+    rig.state.command = Some(finished(
+        MavCmd::MAV_CMD_PREFLIGHT_CALIBRATION,
+        1,
+        1.0,
+        true,
+    ));
+    let out = rig.tick(150);
+    // MAG_OFFX has a write of its own under way: its echo rule would take the read's reply for it.
+    assert_eq!(read_names(&out), ["MAG_OFFY", "MAG_OFFZ"]);
+    rig.deliver(real_pv("MAG_OFFY", 13, 15, 0.25), 160);
+    rig.deliver(real_pv("MAG_OFFZ", 14, 15, -1.5), 161);
+    assert_eq!(rig.table().value("MAG_OFFY"), Some(ParamValue::F32(0.25)));
+    assert_eq!(rig.table().value("MAG_OFFZ"), Some(ParamValue::F32(-1.5)));
+    assert_eq!(rig.table().fetch, FetchStatus::Complete);
+    assert!(matches!(
+        rig.table().writes["MAG_OFFX"],
+        WriteStatus::Pending { .. }
+    ));
+}
+
+#[test]
+fn a_read_reply_during_a_fetch_is_stored_by_its_index() {
+    let mut rig = Rig::new();
+    rig.connect(0);
+    rig.deliver(version(CAP_BYTEWISE | CAP_MAVLINK2), 10);
+    rig.deliver(real_pv("IMU1_GYR_OFFX", 0, 3, 0.0), 20);
+    assert!(matches!(rig.table().fetch, FetchStatus::Fetching { .. }));
+    rig.deliver(real_pv("IMU1_GYR_OFFX", 0, 3, 0.125), 30);
+    assert_eq!(
+        rig.table().value("IMU1_GYR_OFFX"),
+        Some(ParamValue::F32(0.125))
+    );
+}
+
+#[test]
+fn an_operate_session_reads_nothing_after_a_calibration() {
+    let mut rig = offsets_rig();
+    rig.service.access = crate::Access::Operate;
+    rig.state.command = Some(finished(
+        MavCmd::MAV_CMD_PREFLIGHT_CALIBRATION,
+        0,
+        1.0,
+        true,
+    ));
+    assert!(rig.tick(150).is_empty());
 }

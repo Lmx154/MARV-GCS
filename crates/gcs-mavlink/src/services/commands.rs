@@ -6,7 +6,9 @@ use std::time::Duration;
 use super::{Ctx, Service};
 use crate::dialect::{COMMAND_ACK_DATA, COMMAND_LONG_DATA, MavCmd, MavResult};
 use crate::session::SessionConfig;
-use crate::state::{CancelStatus, CommandRecord, CommandStatus, RefusedCommand};
+use crate::state::{
+    CancelStatus, CommandRecord, CommandStatus, RefusedCommand, UnsavedCalibration,
+};
 use crate::{Body, Command, Frame, LinkStatus, Message};
 
 /// Without any ACK, a command is sent again after this long.
@@ -38,6 +40,25 @@ pub fn result_text(result: MavResult) -> &'static str {
         MavResult::MAV_RESULT_COMMAND_INT_ONLY => "only as COMMAND_INT",
         MavResult::MAV_RESULT_COMMAND_UNSUPPORTED_MAV_FRAME => "frame not supported",
         MavResult::MAV_RESULT_NOT_IN_CONTROL => "not in control",
+    }
+}
+
+/// A time on the vehicle's clock that goes back by more than this is a restart, not a reordered frame.
+const REBOOT_BACK_MS: u32 = 1000;
+
+/// An accepted final ACK: a calibration is now in use and unsaved; a storage save or reload ends that.
+fn note_accepted(command: MavCmd, params: [f32; 7], calibration: &mut UnsavedCalibration) {
+    if command == CALIBRATION {
+        let (gyro, accel, compass) = (params[0] == 1.0, params[4] == 4.0, params[1] == 1.0);
+        if gyro || accel || compass {
+            calibration.gyro |= gyro;
+            calibration.accel |= accel;
+            calibration.compass |= compass;
+            calibration.lost_at_reboot = false;
+        }
+    } else if command == MavCmd::MAV_CMD_PREFLIGHT_STORAGE && (params[0] == 0.0 || params[0] == 1.0)
+    {
+        *calibration = UnsavedCalibration::default();
     }
 }
 
@@ -109,6 +130,8 @@ pub struct Commands {
     system_id: u8,
     component_id: u8,
     track: Option<Track>,
+    /// The last `time_boot_ms` of the vehicle's device status, to see a restart.
+    last_boot_ms: Option<u32>,
 }
 
 impl Commands {
@@ -117,6 +140,7 @@ impl Commands {
             system_id: config.system_id,
             component_id: config.component_id,
             track: None,
+            last_boot_ms: None,
         }
     }
 
@@ -267,6 +291,9 @@ impl Commands {
             },
         };
         record.status = CommandStatus::Finished { text, accepted };
+        if accepted {
+            note_accepted(track.command, track.params, &mut cx.state.calibration);
+        }
         self.end(cx);
     }
 
@@ -338,8 +365,22 @@ impl Service for Commands {
         if frame.system_id != system {
             return;
         }
-        if let Body::Known(Message::COMMAND_ACK(ack)) = &frame.body {
-            self.on_ack(ack, cx);
+        match &frame.body {
+            Body::Known(Message::COMMAND_ACK(ack)) => self.on_ack(ack, cx),
+            Body::Known(Message::MARV_DEVICE_STATUS(status)) => {
+                let back = self
+                    .last_boot_ms
+                    .is_some_and(|last| status.time_boot_ms.saturating_add(REBOOT_BACK_MS) < last);
+                self.last_boot_ms = Some(status.time_boot_ms);
+                if back && cx.state.calibration.any() {
+                    cx.state.calibration = UnsavedCalibration {
+                        lost_at_reboot: true,
+                        ..UnsavedCalibration::default()
+                    };
+                    cx.changed = true;
+                }
+            }
+            _ => {}
         }
     }
 

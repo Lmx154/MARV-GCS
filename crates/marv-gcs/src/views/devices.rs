@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use eframe::egui::{self, Color32};
 use egui_extras::{Column, TableBuilder};
-use gcs_mavlink::Command;
 use gcs_mavlink::dialect::MavCmd;
 use gcs_mavlink::services::messages::{MessageEntry, MessageKey, MessageStore, SeriesKey};
+use gcs_mavlink::{Command, UnsavedCalibration};
 
 use super::actions;
 use super::{View, ViewCtx};
@@ -64,6 +64,7 @@ impl View for Devices {
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx) {
         let gate = status::command_gate(cx.access, cx.state, cx.now.is_some());
         calibration_buttons(ui, cx, gate);
+        unsaved_bar(ui, cx, gate);
         self.presets.ui(ui, cx);
         let rows = rows(&cx.state.messages, cx.now);
         if rows.is_empty() {
@@ -183,6 +184,55 @@ fn calibration_buttons(ui: &mut egui::Ui, cx: &mut ViewCtx, gate: Option<&'stati
         if let Some(hint) = status::compass_hint(cx.state) {
             ui.colored_label(YELLOW, hint);
         }
+    });
+}
+
+/// What the bar says of the calibrations in use and not saved, e.g. "Gyro, accel calibrated: in use now, not
+/// saved to flash"; `None` when there are none.
+pub fn unsaved_text(calibration: &UnsavedCalibration) -> Option<String> {
+    let kinds: Vec<&str> = [
+        (calibration.gyro, "gyro"),
+        (calibration.accel, "accel"),
+        (calibration.compass, "compass"),
+    ]
+    .into_iter()
+    .filter_map(|(done, name)| done.then_some(name))
+    .collect();
+    let list = kinds.join(", ");
+    let mut chars = list.chars();
+    let first = chars.next()?;
+    Some(format!(
+        "{}{} calibrated: in use now, not saved to flash",
+        first.to_uppercase(),
+        chars.as_str()
+    ))
+}
+
+pub const LOST_AT_REBOOT_TEXT: &str = "unsaved calibration lost at reboot";
+pub const DISCARD_TEXT: &str = "Discard returns to the saved settings and drops every unsaved change, not only the calibrations";
+
+/// After a calibration ended accepted: what is in use and not saved, with Save to flash and Discard
+/// (the Parameters tab's storage commands), until a save or a reload is accepted or the vehicle restarts.
+fn unsaved_bar(ui: &mut egui::Ui, cx: &mut ViewCtx, gate: Option<&'static str>) {
+    if cx.state.calibration.lost_at_reboot {
+        ui.colored_label(YELLOW, LOST_AT_REBOOT_TEXT);
+    }
+    let Some(text) = unsaved_text(&cx.state.calibration) else {
+        return;
+    };
+    let storage = |action: f32| Command::SendCommand {
+        command: MavCmd::MAV_CMD_PREFLIGHT_STORAGE,
+        params: [action, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    };
+    ui.horizontal(|ui| {
+        ui.colored_label(YELLOW, text);
+        if actions::button(ui, "Save to flash", gate) {
+            cx.commands.push(storage(1.0));
+        }
+        if actions::button(ui, "Discard", gate) {
+            cx.commands.push(storage(0.0));
+        }
+        ui.label(DISCARD_TEXT);
     });
 }
 

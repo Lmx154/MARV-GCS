@@ -9,7 +9,8 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use gcs_mavlink::dialect::MavCmd;
 use gcs_mavlink::services::messages::{Field, FieldValue, MessageEntry, MessageKey};
 use gcs_mavlink::{
-    Access, CancelStatus, Command, CommandRecord, CommandStatus, RefusedCommand, VehicleState,
+    Access, CancelStatus, Command, CommandRecord, CommandStatus, RefusedCommand,
+    UnsavedCalibration, VehicleState,
 };
 use marv_gcs::views::{self, ViewCtx};
 
@@ -529,4 +530,109 @@ fn calibration_buttons_send_their_parameters_and_cancel_is_enabled_only_during_a
                 .is_disabled()
         );
     }
+}
+
+fn with_unsaved(gyro: bool, accel: bool, compass: bool) -> VehicleState {
+    let mut state = devices_state();
+    state.calibration = UnsavedCalibration {
+        gyro,
+        accel,
+        compass,
+        lost_at_reboot: false,
+    };
+    state
+}
+
+#[test]
+fn the_unsaved_calibration_bar_names_the_calibrations_and_offers_save_and_discard() {
+    let (mut h, commands) = harness("Devices", devices_state(), Access::Configure);
+    h.run();
+    assert!(h.query_by_label("Discard").is_none());
+    assert!(h.query_by_label_contains("not saved to flash").is_none());
+    drop(h);
+
+    let (mut h, commands_none) = harness(
+        "Devices",
+        with_unsaved(true, true, false),
+        Access::Configure,
+    );
+    h.run();
+    h.get_by_label("Gyro, accel calibrated: in use now, not saved to flash");
+    h.get_by_label("Save to flash").click();
+    h.run();
+    h.get_by_label("Discard").click();
+    h.run();
+    let sent: Vec<(MavCmd, f32)> = commands_none
+        .borrow()
+        .iter()
+        .map(|c| match c {
+            Command::SendCommand { command, params } => (*command, params[0]),
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        vec![
+            (MavCmd::MAV_CMD_PREFLIGHT_STORAGE, 1.0),
+            (MavCmd::MAV_CMD_PREFLIGHT_STORAGE, 0.0)
+        ]
+    );
+    h.get_by_label_contains("drops every unsaved change");
+    assert!(commands.borrow().is_empty());
+}
+
+#[test]
+fn the_unsaved_calibration_bar_text_lists_the_kinds_in_order() {
+    for (state, text) in [
+        (
+            with_unsaved(false, true, true),
+            "Accel, compass calibrated: in use now, not saved to flash",
+        ),
+        (
+            with_unsaved(true, true, true),
+            "Gyro, accel, compass calibrated: in use now, not saved to flash",
+        ),
+    ] {
+        let (mut h, _) = harness("Devices", state, Access::Configure);
+        h.run();
+        h.get_by_label(text);
+    }
+}
+
+#[test]
+fn the_bar_buttons_use_the_command_gate_and_a_lost_calibration_leaves_a_note() {
+    let mut state = with_unsaved(false, false, true);
+    state.command = Some(record(
+        241,
+        p(1, 1.0),
+        CommandStatus::InProgress { percent: None },
+    ));
+    let (mut h, commands) = harness("Devices", state, Access::Configure);
+    h.run();
+    for label in ["Save to flash", "Discard"] {
+        assert!(
+            h.get_by_label(label).accesskit_node().is_disabled(),
+            "{label}"
+        );
+        h.get_by_label(label).click();
+    }
+    h.run();
+    assert!(commands.borrow().is_empty());
+    drop(h);
+
+    let (mut h, _) = harness("Devices", with_unsaved(true, false, false), Access::Operate);
+    h.run();
+    assert!(
+        h.get_by_label("Save to flash")
+            .accesskit_node()
+            .is_disabled()
+    );
+    drop(h);
+
+    let mut state = devices_state();
+    state.calibration.lost_at_reboot = true;
+    let (mut h, _) = harness("Devices", state, Access::Configure);
+    h.run();
+    h.get_by_label("unsaved calibration lost at reboot");
+    assert!(h.query_by_label("Discard").is_none());
 }

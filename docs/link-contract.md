@@ -392,6 +392,23 @@ What the station does with it
 The Devices view also has the restart and self-test buttons and the calibration buttons of section 10; the
 table itself is read only. The access gate of section 9 is built.
 
+After a calibration ends with an accepted final ACK, the Devices view shows a bar until it is resolved, for
+example "Gyro, accel calibrated: in use now, not saved to flash". The vehicle applies the offsets at once and
+writes them to flash only on command 245 with param1 = 1, so a reboot loses them. The bar has **Save to
+flash** (245 param1 = 1; one save covers every calibration done so far) and **Discard** (245 param1 = 0, the
+vehicle's reload from flash: it returns to the saved settings and drops every unsaved change, not only the
+calibrations). Calibrations in a row add up in one bar; a failed or cancelled one adds nothing. The bar goes
+when a 245 with param1 = 1 or 0 ends accepted (from any tab), or when the vehicle restarts (seen as the
+`time_boot_ms` of `MARV_DEVICE_STATUS` going back by more than 1 s) or the link is opened again; after a restart
+with calibrations unsaved the view keeps the line "unsaved calibration lost at reboot" until the next
+calibration or accepted 245 param1 = 0 or 1. Save and Discard use the gate of the other command buttons. The
+vehicle sends no `PARAM_VALUE` for values it changes itself, so the station asks for them: after an accepted
+calibration, `PARAM_REQUEST_READ` by name for its offsets (gyro `IMU1_GYR_OFFX/Y/Z` and `IMU2_GYR_OFFX/Y/Z`,
+accelerometer `IMU1_ACC_OFFX/Y/Z` and `IMU2_ACC_OFFX/Y/Z`, compass `MAG_OFFX/Y/Z`), and after an accepted 245
+param1 = 0 all 15 of them (Configure sessions only; a name with a write of its own under way is left out; one
+request each, not repeated). Other parameters that a reload changes are not re-read: use Refresh on the
+Parameters tab.
+
 The simulator (`gcs-sim`) sends `MARV_DEVICE_STATUS` for IMU1, IMU2, BARO, MAG, GNSS, BATT and RC, each
 once per second, with advancing counters (`samples` at the device's nominal rate), state OK, error NONE and
 no flags. It builds the frame from this section, not from `marv-dialect`.
@@ -480,8 +497,8 @@ What the vehicle answers (binding for the station and for the simulator)
 The commands of the first build (`COMMAND_LONG`, `confirmation` as below, parameters not named are 0)
 | Command | Parameters |
 |---|---|
-| 241 `MAV_CMD_PREFLIGHT_CALIBRATION` | param1 = 1: gyro; param5 = 4: accelerometer, one position, level; param2 = 1 and all others 0: compass (the user rotates the vehicle through all orientations for 30 s; progress about twice a second; FAILED when an axis saw too little movement); all seven 0: cancel the running calibration |
-| 245 `MAV_CMD_PREFLIGHT_STORAGE` | param1: 0 reload from flash, 1 save, 2 all parameters to defaults, 3 sensor calibration parameters to defaults (not the RC end points) |
+| 241 `MAV_CMD_PREFLIGHT_CALIBRATION` | param1 = 1: gyro; param5 = 4: accelerometer, one position, level; param2 = 1 and all others 0: compass (the user rotates the vehicle through all orientations for 30 s; progress about twice a second; FAILED when an axis saw too little movement); all seven 0: cancel the running calibration; the offsets apply at once and are saved only by 245 param1 = 1 |
+| 245 `MAV_CMD_PREFLIGHT_STORAGE` | param1: 0 reload from flash (the vehicle sends no `PARAM_VALUE` afterwards), 1 save, 2 all parameters to defaults, 3 sensor calibration parameters to defaults (not the RC end points) |
 | 246 `MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN` | param1 = 1: reboot |
 | 42430 `MAV_CMD_MARV_DEVICE` | param1 = device id (`MARV_DEVICE`), param2 = 1 restart, 2 self-test; restart for IMU1, IMU2, BARO, MAG, GNSS, BATT, self-test for IMU1, IMU2, MAG |
 
