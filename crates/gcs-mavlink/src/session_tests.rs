@@ -1052,11 +1052,7 @@ mod access {
                 Access::Operate,
                 "StartSessionLog",
             ),
-            (
-                Command::StopSessionLog,
-                Access::Operate,
-                "StopSessionLog",
-            ),
+            (Command::StopSessionLog, Access::Operate, "StopSessionLog"),
         ];
         let mut seen = [false; COUNT];
         for (command, access, name) in &rows {

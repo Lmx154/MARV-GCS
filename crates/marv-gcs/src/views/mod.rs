@@ -55,7 +55,7 @@ pub fn all() -> Vec<Box<dyn View>> {
 fn registry(tiles: bool) -> Vec<Box<dyn View>> {
     let debug = presets::DebugFlag::default();
     vec![
-        Box::new(sensors::Sensors),
+        Box::<sensors::Sensors>::default(),
         Box::<radio::Radio>::default(),
         Box::<messages::Messages>::default(),
         Box::new(devices::Devices::new(debug.clone())),

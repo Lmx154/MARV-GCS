@@ -190,9 +190,7 @@ impl Service for Recorder {
         {
             self.fail(&error, cx);
         }
-        if self.session_dirty
-            && cx.now.saturating_sub(self.session_last_flush) >= FLUSH_INTERVAL
-        {
+        if self.session_dirty && cx.now.saturating_sub(self.session_last_flush) >= FLUSH_INTERVAL {
             self.session_last_flush = cx.now;
             self.session_dirty = false;
             if let Some((writer, _)) = self.session.as_mut()

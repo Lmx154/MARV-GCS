@@ -15,7 +15,7 @@ use gcs_mavlink::{Access, Command, VehicleState};
 use super::devices::{self, DeviceRow};
 use super::log_review::Review;
 use super::{View, ViewCtx, actions};
-use crate::{logfile, status};
+use crate::{logfile, sessions, status};
 
 /// What the user chose in this view.
 struct Choices {
@@ -52,11 +52,16 @@ pub struct Log {
     choices: Choices,
     on_board: OnBoard,
     review: Review,
+    sessions: sessions::SessionList,
 }
 
 impl View for Log {
     fn name(&self) -> &'static str {
         "Log"
+    }
+
+    fn update(&mut self, _state: &VehicleState, _now: Option<Duration>) {
+        self.sessions.update();
     }
 
     fn session_changed(&mut self) {
@@ -71,6 +76,8 @@ impl View for Log {
             .show(ui, |ui| {
                 ui.heading("Station recording (.tlog)");
                 recording_part(ui, cx);
+                ui.add_space(4.0);
+                self.sessions.ui(ui);
                 ui.separator();
                 ui.heading("On-board logs (SD card)");
                 on_board_part(ui, cx, &mut self.on_board);

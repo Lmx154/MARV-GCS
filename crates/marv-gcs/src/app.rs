@@ -12,6 +12,7 @@ use crate::cli::Cli;
 use crate::connection::{self, Action, Bar};
 use crate::logfile;
 use crate::screenshot::{Outcome, Screenshot};
+use crate::sessions::{self, Request};
 use crate::status;
 use crate::views::{self, View, ViewCtx};
 
@@ -33,6 +34,8 @@ pub struct App {
     auto_log: bool,
     /// The session replays a log: nothing is recorded.
     replaying: bool,
+    /// The monitoring session of the Sensors tab's bar.
+    sessions: sessions::Manager,
 }
 
 impl App {
@@ -42,6 +45,7 @@ impl App {
 
     /// As [`App::new`], from the egui context alone (the tests have no window).
     pub fn with_context(ctx: &egui::Context, cli: Cli, outcome: Outcome) -> Self {
+        let sessions = sessions::Manager::new(ctx, &cli.log_dir);
         let mut app = App {
             bar: Bar::default(),
             views: views::all_with_tiles(),
@@ -56,6 +60,7 @@ impl App {
             log_dir: cli.log_dir,
             auto_log: !cli.no_log,
             replaying: false,
+            sessions,
         };
         logfile::set_log_dir(ctx, &app.log_dir);
         if let Some(path) = &cli.review {
@@ -69,6 +74,55 @@ impl App {
             app.replay(&path, speed, ctx);
         }
         app
+    }
+
+    /// Replace how sessions are written (a test holds the export up with it).
+    pub fn set_exporter(&mut self, exporter: sessions::Exporter) {
+        self.sessions.set_exporter(exporter);
+    }
+
+    /// Drop the link session. A monitoring session running on it ends first: the recording is closed
+    /// (dropping joins the session thread) and the export starts.
+    fn retire_session(&mut self) {
+        let Some(session) = self.session.take() else {
+            return;
+        };
+        self.sessions.stop(Some(&session));
+        drop(session);
+        self.sessions.session_gone();
+    }
+
+    /// Why a monitoring session cannot start now, or `None`.
+    fn session_blocked(&self) -> Option<String> {
+        if self.session.is_none() {
+            Some(status::NOT_CONNECTED.to_owned())
+        } else if self.replaying {
+            Some(sessions::REPLAYING.to_owned())
+        } else if !self.auto_log {
+            Some(sessions::RECORDING_OFF.to_owned())
+        } else {
+            None
+        }
+    }
+
+    fn handle_request(&mut self, request: Request, ctx: &egui::Context) {
+        match request {
+            Request::Start(name) => {
+                if self.session_blocked().is_none()
+                    && !self.sessions.busy()
+                    && let Some(session) = &self.session
+                    && let Err(e) = self.sessions.start(session, &name)
+                {
+                    self.sessions.report(e);
+                }
+            }
+            Request::Mark(note) => self.sessions.mark(&note),
+            Request::Stop => self.sessions.stop(self.session.as_ref()),
+            Request::Replay(path) => {
+                self.bar.set_replay(&path, ReplaySpeed::RealTime);
+                self.replay(&path, ReplaySpeed::RealTime, ctx);
+            }
+        }
     }
 
     /// A session started or ended: every view drops what belonged to the previous one.
@@ -90,6 +144,7 @@ impl App {
             Box::new(move || repaint.request_repaint()),
         ) {
             Ok(session) => {
+                self.retire_session();
                 self.access = access;
                 self.session_started = Instant::now();
                 self.session = Some(session);
@@ -108,6 +163,7 @@ impl App {
         logfile::set_error(ctx, None);
         match connection::start_replay(path, speed, ctx) {
             Ok(session) => {
+                self.retire_session();
                 self.access = connection::REPLAY_ACCESS;
                 self.session_started = Instant::now();
                 self.session = Some(session);
@@ -146,9 +202,11 @@ impl App {
 
         let mut commands: Vec<Command> = Vec::new();
         let mut action = None;
+        let mut closed = None;
         {
             let guard = self.session.as_ref().map(Session::state);
             let state = guard.as_deref().unwrap_or(&self.no_session_state);
+            closed.clone_from(&state.session_log.closed);
             let now = self
                 .session
                 .as_ref()
@@ -197,12 +255,17 @@ impl App {
             Some(Action::Connect(endpoint)) => self.connect(&endpoint, &ctx),
             Some(Action::Replay(path, speed)) => self.replay(&path, speed, &ctx),
             Some(Action::Disconnect) => {
-                self.session = None;
+                self.retire_session();
                 self.replaying = false;
                 self.session_changed(&ctx);
             }
             None => {}
         }
+        self.sessions.poll(closed.as_deref());
+        for request in sessions::take_requests(&ctx) {
+            self.handle_request(request, &ctx);
+        }
+        sessions::publish(&ctx, self.sessions.bar_status(self.session_blocked()));
         if logfile::take_request(&ctx) && self.session.is_some() {
             self.start_recording(&ctx);
         }
@@ -218,5 +281,12 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.frame(ui);
+    }
+
+    /// The window closes: a session that runs is ended and written before the process goes. This waits for
+    /// the exports (the window is gone, nothing waits on the screen); a failure goes to stderr.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.retire_session();
+        self.sessions.finish();
     }
 }

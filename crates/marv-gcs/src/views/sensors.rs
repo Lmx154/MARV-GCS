@@ -7,6 +7,7 @@ use gcs_mavlink::services::messages::{MessageStore, Series};
 
 use super::plot;
 use super::{View, ViewCtx};
+use crate::sessions;
 
 /// One plot: the fields of one message instance, each value times `scale`, a raw value in
 /// `unavailable` left out (the message's "not available"). Adding a plot is adding a row. Every row
@@ -97,7 +98,9 @@ pub const PRESETS: &[Preset] = &[
 const PLOT_HEIGHT: f32 = 170.0;
 
 #[derive(Default)]
-pub struct Sensors;
+pub struct Sensors {
+    session: sessions::BarInput,
+}
 
 impl View for Sensors {
     fn name(&self) -> &'static str {
@@ -106,6 +109,8 @@ impl View for Sensors {
 
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx) {
         let store = &cx.state.messages;
+        sessions::bar_ui(ui, &mut self.session);
+        ui.separator();
         gps_line(ui, store);
         ui.label(battery_text(store));
         let window = plot::window_selector(ui, "sensors");

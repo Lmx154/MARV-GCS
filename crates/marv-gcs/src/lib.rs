@@ -13,6 +13,7 @@ pub mod connection;
 pub mod link_test;
 pub mod logfile;
 pub mod screenshot;
+pub mod sessions;
 pub mod status;
 pub mod views;
 
