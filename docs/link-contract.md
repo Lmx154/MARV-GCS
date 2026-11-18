@@ -398,16 +398,17 @@ writes them to flash only on command 245 with param1 = 1, so a reboot loses them
 flash** (245 param1 = 1; one save covers every calibration done so far) and **Discard** (245 param1 = 0, the
 vehicle's reload from flash: it returns to the saved settings and drops every unsaved change, not only the
 calibrations). Calibrations in a row add up in one bar; a failed or cancelled one adds nothing. The bar goes
-when a 245 with param1 = 1 or 0 ends accepted (from any tab), or when the vehicle restarts (seen as the
-`time_boot_ms` of `MARV_DEVICE_STATUS` going back by more than 1 s) or the link is opened again; after a restart
+when a 245 with param1 = 1 or 0 ends accepted (from any tab), or when the vehicle restarts. On USB a reboot closes the link and the station reconnects with a new session
+(a new recording), which starts with no bar; on a link that survives the restart (UDP) it is seen as the
+`time_boot_ms` of `MARV_DEVICE_STATUS` going back by more than 1 s; after a restart
 with calibrations unsaved the view keeps the line "unsaved calibration lost at reboot" until the next
 calibration or accepted 245 param1 = 0 or 1. Save and Discard use the gate of the other command buttons. The
 vehicle sends no `PARAM_VALUE` for values it changes itself, so the station asks for them: after an accepted
 calibration, `PARAM_REQUEST_READ` by name for its offsets (gyro `IMU1_GYR_OFFX/Y/Z` and `IMU2_GYR_OFFX/Y/Z`,
 accelerometer `IMU1_ACC_OFFX/Y/Z` and `IMU2_ACC_OFFX/Y/Z`, compass `MAG_OFFX/Y/Z`), and after an accepted 245
-param1 = 0 all 15 of them (Configure sessions only; a name with a write of its own under way is left out; one
-request each, not repeated). Other parameters that a reload changes are not re-read: use Refresh on the
-Parameters tab.
+param1 = 0 (from any tab; it can change any parameter) the whole list again, as the Refresh button does
+(Configure sessions only; a name with a write of its own under way is left out of the offset reads; one
+request each, not repeated).
 
 The simulator (`gcs-sim`) sends `MARV_DEVICE_STATUS` for IMU1, IMU2, BARO, MAG, GNSS, BATT and RC, each
 once per second, with advancing counters (`samples` at the device's nominal rate), state OK, error NONE and

@@ -2178,12 +2178,26 @@ fn a_failed_or_cancelled_calibration_and_a_save_read_nothing() {
 }
 
 #[test]
-fn an_accepted_reload_reads_every_offset() {
+fn an_accepted_reload_fetches_the_whole_list_again_once() {
     let mut rig = offsets_rig();
     rig.state.command = Some(finished(MavCmd::MAV_CMD_PREFLIGHT_STORAGE, 0, 0.0, true));
     let out = rig.tick(150);
-    assert_eq!(read_names(&out), OFFSETS);
-    assert!(rig.tick(200).is_empty());
+    assert!(read_names(&out).is_empty());
+    assert_eq!(
+        out.iter()
+            .filter(|m| matches!(m, Message::PARAM_REQUEST_LIST(_)))
+            .count(),
+        1
+    );
+    assert!(rig.table().params.is_empty());
+    assert!(matches!(rig.table().fetch, FetchStatus::Fetching { .. }));
+    // The same command does not start it again.
+    rig.deliver(real_pv("MAG_OFFX", 12, 15, 0.5), 160);
+    assert!(
+        !rig.tick(200)
+            .iter()
+            .any(|m| matches!(m, Message::PARAM_REQUEST_LIST(_)))
+    );
 }
 
 #[test]

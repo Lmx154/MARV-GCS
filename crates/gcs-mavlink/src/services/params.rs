@@ -588,8 +588,9 @@ impl Params {
     }
 
     /// The vehicle sends no PARAM_VALUE for the offsets a calibration writes or a reload restores, so
-    /// after an accepted calibration (its offsets) or an accepted reload from flash (all offsets) the
-    /// station asks for them by name. A name with a write of its own under way is left out: its echo
+    /// after an accepted calibration the station asks for its offsets by name, and after an accepted
+    /// reload from flash (245 param1 = 0, which can change any parameter) it fetches the whole list again,
+    /// as the Refresh button does. A name with a write of its own under way is left out: its echo
     /// rule would take the reply for the write's answer.
     fn read_changed_offsets(&mut self, target: (u8, u8), cx: &mut Ctx) {
         if self.access != Access::Configure {
@@ -611,7 +612,9 @@ impl Params {
         let names = if record.command == MavCmd::MAV_CMD_PREFLIGHT_CALIBRATION as u32 {
             UnsavedCalibration::offsets(p[0] == 1.0, p[4] == 4.0, p[1] == 1.0)
         } else if record.command == MavCmd::MAV_CMD_PREFLIGHT_STORAGE as u32 && p[0] == 0.0 {
-            UnsavedCalibration::offsets(true, true, true)
+            self.restarts = 0;
+            self.begin_fetch(target, cx);
+            return;
         } else {
             return;
         };
