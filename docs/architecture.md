@@ -214,6 +214,8 @@ pub enum Command {
     SetParam { name: String, value: ParamValue },
     StartLog { sink: LogSink, label: String },   // the window opens the file and hands it over
     StopLog,
+    StartSessionLog { sink: LogSink, label: String },  // a second recording, for a monitoring session; `session_log` says when it is closed
+    StopSessionLog,
     SendCommand { command: MavCmd, params: [f32; 7] },          // Configure
     ListLogs,                                                    // Configure: the three log commands
     DownloadLog { number: u16, size: u32, sink: LogSink },      // (docs/link-contract.md section 11):

@@ -437,7 +437,7 @@ Classes.
   radio or a network link, where the vehicle does not answer.
 - Operate-class: everything that only reads or only concerns the station: the heartbeat (a service, not a
   command), a parameter list request (`Command::RefreshParams`), log recording
-  (`Command::StartLog`, `Command::StopLog`), link management (connect, disconnect, replay).
+  (`Command::StartLog`, `Command::StopLog`, `Command::StartSessionLog`, `Command::StopSessionLog`), link management (connect, disconnect, replay).
 
 Services that run by themselves are not commands and are not gated. They only read: the capability
 request (`MAV_CMD_REQUEST_MESSAGE` for `AUTOPILOT_VERSION`) at connect, the repair reads of a list that is
