@@ -5,6 +5,8 @@
 //! to a role (`access_of`) and the one way to start a session on an endpoint (`start_session`); the
 //! transport knows only bytes and `gcs-mavlink` knows no transport.
 
+pub mod session_folder;
+
 use gcs_mavlink::{Access, Session, SessionConfig};
 use gcs_transport::{Endpoint, OpenError};
 
