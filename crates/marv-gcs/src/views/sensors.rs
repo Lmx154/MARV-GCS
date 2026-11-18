@@ -165,14 +165,22 @@ fn draw_preset(ui: &mut egui::Ui, store: &MessageStore, preset: &Preset, window:
     if traces.is_empty() {
         ui.label("no data");
     } else {
-        plot::draw(
+        plot::draw_with_readout(
             ui,
             ("sensors_plot", preset.title),
             PLOT_HEIGHT,
             window,
             &traces,
+            title_unit(preset.title),
         );
     }
+}
+
+/// The unit in a plot title: the first word inside the parentheses ("IMU1 rotation (rad/s)" gives
+/// "rad/s", "Magnetic field (gauss, HIGHRES_IMU)" gives "gauss").
+pub fn title_unit(title: &str) -> &str {
+    let inside = title.split_once('(').map_or("", |(_, rest)| rest);
+    inside.split([',', ')']).next().unwrap_or("").trim()
 }
 
 /// The battery in one line: volts and amps from SYS_STATUS, or "not available" (65535 mV, -1 cA).
@@ -294,6 +302,16 @@ mod tests {
                 "{needed}"
             );
         }
+    }
+
+    #[test]
+    fn every_preset_title_names_its_unit() {
+        let units: Vec<&str> = PRESETS.iter().map(|p| title_unit(p.title)).collect();
+        assert_eq!(
+            units,
+            ["m/s²", "rad/s", "m/s²", "rad/s", "gauss", "hPa", "V", "A"]
+        );
+        assert_eq!(title_unit("no unit"), "");
     }
 
     fn put(store: &mut MessageStore, message: &str, field: &str, points: &[[f64; 2]]) {

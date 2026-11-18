@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use eframe::egui;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use gcs_mavlink::VehicleState;
@@ -223,6 +224,33 @@ fn sensors_view_shows_the_gps_line() {
     harness.get_by_label("lon 8.5455940°");
     harness.get_by_label("alt 408.0 m");
     harness.get_by_label("fix GPS_FIX_TYPE_3D_FIX");
+}
+
+#[test]
+fn hovering_a_sensors_plot_pops_up_the_values_of_its_series_with_the_unit() {
+    let mut harness = run_view("Sensors", &state_with(filled_store()), None);
+    assert!(harness.query_by_label_contains("t = ").is_none());
+    assert!(harness.query_by_label_contains("m/s² ").is_none());
+
+    let legend = harness.get_all_by_label("xacc").count();
+    let title = harness.get_by_label("IMU1 acceleration (m/s²)").rect();
+    harness.hover_at(egui::pos2(title.left() + 250.0, title.bottom() + 100.0));
+    harness.run();
+
+    harness.get_by_label_contains("t = ");
+    for field in ["xacc", "yacc", "zacc"] {
+        assert_eq!(
+            harness.get_all_by_label(field).count(),
+            legend + 1,
+            "{field}"
+        );
+    }
+    assert_eq!(harness.query_all_by_label_contains(" m/s²").count(), 3);
+    assert!(harness.query_by_label_contains(" rad/s").is_none());
+
+    harness.hover_at(egui::pos2(0.0, 0.0));
+    harness.run();
+    assert!(harness.query_by_label_contains("t = ").is_none());
 }
 
 #[test]
