@@ -22,7 +22,9 @@ does not build or shows up in `cargo tree`.
    never depends on `gcs-transport`, `serialport` or a GUI crate.
 3. **The join is small and has no GUI.** Only `gcs-link` and the applications (`marv-gcs`, `marv-cli`) depend
    on both `gcs-transport` and `gcs-mavlink`. `gcs-link` holds exactly what every application needs to turn an
-   endpoint into a running session: `access_of` (the role a link gives the station) and `start_session`. Only
+   endpoint into a running session: `access_of` (the role a link gives the station) and `start_session`; it also
+   holds `session_folder`, the converter of a `.tlog` into a session folder (it writes files, which `gcs-mavlink`
+   never does, and both applications call it; it adds `serde_json` and no GUI crate). Only
    `marv-gcs` depends on `eframe` and on `walkers` (the Map tab's tiles; it brings an HTTP client); `gcs-link`
    and `marv-cli` never depend on a GUI crate or an HTTP client.
 4. **The simulator is independent.** `gcs-sim` never depends on `gcs-mavlink`; it is written from the
@@ -96,6 +98,12 @@ pub fn access_of(endpoint: &gcs_transport::Endpoint) -> gcs_mavlink::Access;
 /// Open the endpoint and start a session on it with `access`; `wake` is called when the state changed.
 pub fn start_session(endpoint: &Endpoint, access: Access, wake: Box<dyn Fn() + Send + Sync>)
     -> Result<gcs_mavlink::Session, gcs_transport::OpenError>;
+
+// gcs_link::session_folder (README, "Sessions"): a recording into <out_dir>/<UTC start>_<name>/, never overwriting.
+pub fn export_session(tlog: &Path, out_dir: &Path, options: &SessionOptions) -> io::Result<Exported>;
+pub struct SessionOptions { pub name: String, pub parameters: Option<Vec<(String, f64)>>, pub marks: Vec<UserMark> }
+pub struct UserMark { pub time_us: u64 /* Unix microseconds */, pub text: String }
+pub fn list_sessions(dir: &Path) -> io::Result<Vec<SessionInfo>>;
 ```
 
 ### `gcs-mavlink`: framing

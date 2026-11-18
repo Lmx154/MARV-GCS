@@ -159,6 +159,8 @@ stderr (a command whose own stdout shows texts does not echo them). A text belon
 | `logs list` | the logs on the vehicle's card, one line each, `NUMBER<TAB>SIZE` (bytes), then `last<TAB>N`: the number of the log being written, or the highest present when none is open; numbers have gaps; an empty card prints nothing on stdout and `marv-cli: no logs on the vehicle` on stderr, exit 0. Configure links only (`serial:`, `tcp:`) |
 | `logs get N [-o FILE] [--force]` | lists, then downloads log N to FILE (default `NNNNNNNN.BIN`, the card's name, in the current directory); prints `downloaded<TAB>FILE<TAB>SIZE bytes`. Progress on stderr, at most twice a second: `log N: DONE of SIZE bytes (P %)`. An existing file is refused (exit 1) unless `--force`, which truncates it when the download starts, so a failed download leaves the partial new data in its place; a log that is not in the list is exit 1 and creates no file; a download that ends without all its bytes is exit 1 and keeps the partial file, saying how many bytes are in it. Configure links only. See "Logs" below |
 | `record FILE [--for s]` | records the link to a `.tlog` (the session's own recording) for `--for` (default 60 s), then prints `recorded<TAB>FILE<TAB>N frames<TAB>N bytes`; an existing file is never overwritten (exit 1) |
+| `session export FILE.tlog [--name N] [--out DIR]` | no `--connect`, no vehicle: converts a recording into a session folder (see "Sessions"). `--name` defaults to the file's name without `.tlog`; `--out` defaults to `sessions/` next to the file. Prints `session<TAB>FOLDER`, then `FILE.csv<TAB>N rows` for each CSV, `skipped<TAB>MESSAGE<TAB>WHY` for messages not written, and `marks<TAB>N`. An existing folder is never overwritten (exit 1); a file with no frames or one that cannot be read is exit 1 |
+| `session list [DIR]` | no `--connect`: the sessions in DIR (default `logs/sessions`, where the window puts them), one line each: `FOLDER<TAB>NAME<TAB>START<TAB>D s<TAB>N marks`; none (or no such folder) is exit 0 with a line on stderr |
 
 Output is one record per line; fields are separated by a TAB, so `cut -f`, `awk -F'\t'` and `grep` do. A
 command that sends a MAVLink command follows the commands service's record to its end and prints a line each
@@ -212,6 +214,76 @@ cargo run -p gcs-sim &                                          # on 127.0.0.1:5
 cargo run -p marv-cli -- --connect tcp:127.0.0.1:5760 devices
 ```
 
+### Sessions
+
+A session is a folder an agent (or a person) reads with Python's `csv` and `json`, `awk` and `grep`: no
+MAVLink library. `marv-cli session export FILE.tlog` makes one from any recording (the window's automatic
+recordings too); the converter is `gcs_link::session_folder::export_session` (a `.tlog`, an optional parameter
+snapshot, optional user marks and a name in; a folder out). Written by hand to the layout below; nothing is
+read from the vehicle.
+
+```
+logs/sessions/2026-11-17_17-47-08Z_calibration_1/     <UTC time of the first frame>_<name, file-safe>
+  session.tlog          the frames (the export of a whole recording is a copy of it): the window's Log tab replays it
+  session.json          what this session was: read it first (below)
+  HIGHRES_IMU.csv       one file per message type that is in the recording
+  SCALED_PRESSURE.csv   ...
+```
+
+A folder that exists is never overwritten. The vehicle's own frames only go to the CSVs and the summaries;
+the station's own (system 255: its commands, heartbeats, parameter requests) stay in `session.tlog` and are
+counted in `station_frames`.
+
+**CSV.** A header row, then one row per message. The first column is `t_s`, seconds since the session's start
+(the receive time of the first frame, so a session starts at 0; 6 decimals); the second is the message's own time
+(`time_usec` or `time_boot_ms`) when it has one; then the other fields in the order of the `mavlink` crate's
+structs, which is the wire order (large fields first), not the order of the XML definition. An array field is
+flat: `name_0`, `name_1`, ... An enum is its name (`MAV_STATE_ACTIVE`), a bit set `A | B` (empty: an empty cell), an infinite or not-a-number value `nan`;
+a text containing a comma is in double quotes. Messages of different instances (`HIGHRES_IMU` `id`,
+`MARV_DEVICE_STATUS` `device_id`) are in the same file; the `id` or `device_id` column tells them apart.
+
+**Privacy.** No latitude or longitude is in any CSV or in `session.json`; only `session.tlog` holds them. Every field
+named `lat`, `lon`, `latitude`, `longitude`, `*_lat`, `*_lon`, `lat_*` or `lon_*` is dropped (so `GPS_RAW_INT.csv`
+has no `lat` and no `lon` column, `GLOBAL_POSITION_INT.csv` keeps `alt`, `relative_alt`, `vx`, `vy`, `vz`, `hdg`); the
+messages that are only positions (`GPS_GLOBAL_ORIGIN`, `SET_GPS_GLOBAL_ORIGIN`, `HOME_POSITION`, `SET_HOME_POSITION`,
+`MISSION_ITEM`, `MISSION_ITEM_INT`, `COMMAND_INT`) are not written and are listed in `skipped`. Tested with a `GPS_RAW_INT` recording.
+
+**`session.json`** (`schema_version` 1; `t_s` is always seconds since the start):
+
+| Key | Type | Meaning |
+|---|---|---|
+| `schema_version` | number | 1 |
+| `name` | string | the name as given |
+| `start_utc`, `stop_utc` | string | `2026-11-17T17:47:08.697Z`; the first and the last frame |
+| `duration_s` | number | `stop - start` |
+| `source` | string | the input file's name, no directory |
+| `vehicle` | object | `system_id` (the sender of the first heartbeat of an autopilot, else of the first frame; null if none) and `firmware` (from `AUTOPILOT_VERSION`: `major.minor.patch`, `-dev`, `-alpha`, `-beta` or `-rc` for an unofficial one, and the 8 custom bytes in hex in brackets when not all zero; null when the recording has none) |
+| `station_frames` | number | frames the station sent (in `session.tlog` only) |
+| `parameters.at_start` | object | name -> value: the snapshot when one was given, else the first `PARAM_VALUE` of each name |
+| `parameters.changes` | list | `{t_s, name, old, new}` for each later `PARAM_VALUE` whose value differs from the one before (a name not in the snapshot starts from its first value) |
+| `marks` | list | `{t_s, kind, text}` by time, `kind` is one of: `user` (given by the user), `command` (every `COMMAND_ACK`: `MAV_CMD_PREFLIGHT_CALIBRATION (gyro): ACCEPTED`), `text` (every `STATUSTEXT`: `INFO: ...`), `link` (`link lost` at the last frame before a silence of more than 3 s and `link back` at the first after it) |
+| `files` | object | CSV file name -> number of rows |
+| `skipped` | list | `{message, why}`: frames not written (positions only, not in the dialect, refused by the decoder) with their count |
+| `units` | object | `{MESSAGE: {column: unit}}` for the columns that have one (below) |
+| `summary.messages` | object | by message (`NAME`, or `NAME[instance]` for `HIGHRES_IMU` and `MARV_DEVICE_STATUS`): `count`, `rate_hz` (`count - 1` over the time from the first to the last; null with one message) and `fields`: for every numeric column except the time column, `{mean, sd, min, max}` (6 significant digits; `sd` is the sample standard deviation, 0 for one value) |
+| `summary.intervals` | list | empty without user marks; else one entry per interval between consecutive user marks, the start and the stop: `{from, to, start_s, end_s, messages}` (`from` is `start` or a mark's text, `to` is `stop` or a mark's text; `messages` as above, over that interval only; a mark belongs to the interval it starts). "Before" and "after" a mark are two entries to compare. |
+| `warnings` | list | text: the recording ends inside a record (the frames before it are converted) |
+
+**What a command's mark says.** The `.tlog` records the frames the station sends as well as the ones it receives
+(`Recorder::on_sent`), so a `MAV_CMD_PREFLIGHT_CALIBRATION` acknowledgement names the calibration of the station's
+latest `COMMAND_LONG` for that command: `gyro`, `compass`, `accelerometer`, `ground pressure`, `radio`, `cancel`. A
+recording without the station's frame gives `MAV_CMD_PREFLIGHT_CALIBRATION: ACCEPTED`. An acknowledgement of a command
+the dialect does not know gives `command N: RESULT` (read from the payload).
+
+**Units.** The `mavlink` crate does not expose the definitions' units at run time (they are only in its doc comments), so
+`units` comes from a table in `crates/gcs-link/src/session_folder.rs` copied from the MAVLink and marv-dialect
+definitions, for `HIGHRES_IMU`, `SCALED_IMU2`, `SCALED_PRESSURE`, `SYS_STATUS`, `GPS_RAW_INT`, `RC_CHANNELS` (`chanN_raw`: us),
+`MANUAL_CONTROL` (the definition has none) and `MARV_DEVICE_STATUS`. A message that is not in the table has no `units`
+entry; add its fields to the table.
+
+Not in a first version: starting and stopping a session from the window (the converter is what it will call), and the
+cut of a longer recording to a time range.
+
 ## Two roles: Operate and Configure
 
 The station is either only a telemetry display and controller (Operate) or also the flight controller's
@@ -240,7 +312,7 @@ Seven crates; the dependency graph enforces the layers (`docs/architecture.md`).
 | `gcs-transport` | Bytes only: USB serial port, TCP and UDP. It never names MAVLink. |
 | `gcs-mavlink` | MAVLink 2 on any reader and writer: framing, one small state machine per sub-protocol (heartbeat, messages, parameters, commands, text, recorder, logs), the vehicle state, the log reader and replay. No transport, no window. |
 | `gcs-sim` | The simulated vehicle (`marv-sim`). Written from the specification and never using `gcs-mavlink`, so the two check each other. |
-| `gcs-link` | The join, with no GUI: the role an endpoint gives the station (`access_of`, the one mapping) and the start of a session on it. Used by both applications. |
+| `gcs-link` | The join, with no GUI: the role an endpoint gives the station (`access_of`, the one mapping) and the start of a session on it, and `session_folder`, the converter of a `.tlog` into a session folder (file writing, so it is not in `gcs-mavlink`). Used by both applications. |
 | `gcs-dflog` | Reads ArduPilot DataFlash `.BIN` logs, generically, from the file's own FMT records (`A3 95 <type> <payload>`; every format character decoded and scaled as pymavlink does; resynchronisation over bad bytes and a truncated last record counted, not an error), one record at a time in constant memory, with progress and cancellation; and a one-pass summary (records per type, first and last `TimeUS`, bad and tail bytes, the FMT list, the wall-clock start from a `GPS` record with `GWk` > 0). The event timeline (device state changes, status texts, parameter changes, GPS fix changes, sticks present, dropped records) and the condition search (below), each one pass with progress and cancellation. The CSV export (below), one pass with progress and cancellation. No GUI, no dependency; the Log tab's "Review a log file" section of `marv-gcs` uses it. |
 | `marv-cli` | The command line (`marv-cli`), for a computer with no display: see below. |
 | `marv-gcs` | The window: the connection bar and one file per tab; also the link test tool `marv-link-test` (`src/link_test.rs`, `src/bin/marv_link_test.rs`), which builds `MARV_TEST` with `marv-dialect`. |
@@ -304,7 +376,7 @@ do better than the station (a spreadsheet, a plotting script).
 ## Tests
 
 ```
-cargo test --workspace          # 856 tests (11 more are ignored: they need a board or a recording, or only time a pass), about 60 s; needs /usr/bin/socat for the serial tests
+cargo test --workspace          # 875 tests (11 more are ignored: they need a board or a recording, or only time a pass), about 60 s; needs /usr/bin/socat for the serial tests
 cargo clippy --workspace --all-targets -- -D warnings
 tools/board_check.sh <dir>      # with the board on its debug probe and its USB port cabled: about 3 minutes
 ```
@@ -323,7 +395,7 @@ What the tests stand on:
   simulated vehicle over TCP and over a pseudo serial port (and, with a hand-played vehicle, over UDP): connect, loss of the vehicle and recovery,
   message rates and values, the full parameter list with 20 % of frames dropped in each direction, writes
   confirmed, refused and unanswered, both parameter encodings, recording and replay.
-- The command line (`crates/marv-cli/tests`, 49 tests): every command and option and every error of the arguments; every command against the simulator over TCP, the log download included (byte for byte, with lost frames, a stalled vehicle, an existing file); no vehicle (nothing listening, a silent peer); the negative control, where a counting writer on an Operate session sees no `PARAM_SET`, no log message and no `COMMAND_LONG` but the capability request while `devices`, `status` and `param list` work; and the dependency rule (no GUI crate in `cargo tree -p marv-cli`).
+- The command line (`crates/marv-cli/tests`, 54 tests): every command and option and every error of the arguments, `session export` and `session list` (a recording made against the simulator, converted, refused when the folder exists); every command against the simulator over TCP, the log download included (byte for byte, with lost frames, a stalled vehicle, an existing file); no vehicle (nothing listening, a silent peer); the negative control, where a counting writer on an Operate session sees no `PARAM_SET`, no log message and no `COMMAND_LONG` but the capability request while `devices`, `status` and `param list` work; and the dependency rule (no GUI crate in `cargo tree -p marv-cli`).
 - The views are drawn and clicked without a window (`egui_kittest`). The HUD was looked at on 2026-11-17 in `--screenshot` pictures against the simulator (moving attitude) and the real board (no attitude: grey horizon and the text); one fault found and fixed (the text lines were drawn over the drawing). The Log, Sensors, Radio and Devices tabs were looked at on 2026-11-16 in pictures taken with `--screenshot` against the real board (one fault found and fixed: the Radio bars of channels 10 to 16 were shifted); the Radio tab's function bars, `MIN`/`TRIM`/`MAX` marks and the mapping section at rest were looked at the same way against the simulator and against the board running the firmware's RC-mapping build (one fault found and fixed: the mapping rows did not line up). Besides that they are checked by tests of the views' logic and by one ignored test that replays a recording of the real vehicle (`MARV_TLOG=file.tlog cargo test -p marv-gcs --test real_recording -- --ignored --nocapture`; 2026-11-16: every Sensors preset, RC_CHANNELS, and the SD and RC rows found their data in a 20 s recording; RADIO_STATUS is not sent on USB). Not yet seen on a screen: the Map tab (the tiles, the marker and arrow, the track line, the buttons; it is checked headless only, with no tiles, and no test touches the network), the table of on-board logs, the download's progress bar, in the Log tab's "Review a log file" section the progress bars, the scrolling of the whole tab and the results of Find and Export (the section opened on a real 43 s log with `--review` was looked at on 2026-11-17 in a `--screenshot`: summary, events, the Find and Export controls; one fault fixed: wall-clock cells wrapped), the two battery plots (below the first six on the Sensors tab), the Sensors plots' hover readout (the popup, its placement near the pointer, the bold and outlined marks for lines under the pointer; checked headless only), and the Radio tab's calibration screens (capture, centre, review, the "not saved" line) and the mapping editor in use (an open drop-down, staged edits, the warning), and the Devices tab's Sensor presets cards in use (the hover comparison, the status lines, the Pending line and the Save and reboot button, the editable fields in Custom; the four cards at rest, their charts and labels were looked at on 2026-11-17 in `--screenshot` pictures against the simulator and the real board), and the Parameters tab's read-only rows with their note. A calibration and a mapping change have been made only against the simulator, not yet with a real transmitter.
 - Checked with independent implementations: framing against the `mavlink` crate's own reader and writer
   for all 234 message types; the simulator's output with a hand-written decoder; a recorded log read with
