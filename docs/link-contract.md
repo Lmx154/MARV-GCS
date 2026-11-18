@@ -104,6 +104,14 @@ Parameters
   The BARO and MAG fields keep their indices, types and defaults (`BARO_ODR_HZ` 50, `BARO_OSR_P` 16, `BARO_OSR_T` 2,
   `BARO_IIR_P` 0, `BARO_IIR_T` 0, `MAG_ODR_HZ` 100 as a REAL32, `MAG_AVG` 2: the Balanced values). The fields a
   preset sets are these 13; the calibration offsets are not among them.
+- The orientation parameters (amendment 2026-11-17; `_plan/decision-orientation-20261117.md`): 2 parameters appended
+  after the IMU parameters, so the count goes from 76 to 78. Values are ArduPilot's rotation numbers 0..15 (0 none,
+  1..7 yaw 45..315, 8 roll 180, 9..11 roll 180 + yaw 45..135, 12 pitch 180, 13..15 roll 180 + yaw 225..315).
+
+  | Index | Name | Type | Default | Range | Class | Device | Meaning |
+  |---|---|---|---|---|---|---|---|
+  | 76 | `AHRS_ORIENTATION` | I32 | 0 | 0..15 | Reboot | 0 (system) | the board's rotation in the vehicle (both IMUs) |
+  | 77 | `MAG_ORIENT` | I32 | 10 | 0..15 | Live | MAG | the external compass's rotation in the vehicle |
 - Amendments by the lead after review (2026-11-12). (1) Withdrawn 2026-11-15: a different echo used to be
   retried (a stale copy of the old value in flight would read as a refusal); the vehicle answers every PARAM_SET
   with exactly one PARAM_VALUE, so a differing one after the send is the refusal. (2) A write waits
@@ -120,6 +128,10 @@ What the real firmware sends on its USB port (the simulator's default streams ar
 - Amendment 2026-11-17: SCALED_IMU2's gyro fields are int16 mrad/s and saturate at +-32.767 rad/s (about 1877 dps).
   In IMU2's Flight and Max range presets (section 13) a faster rate shows as that limit. HIGHRES_IMU (floats) and the
   log carry the full range.
+- Amendment 2026-11-17 (orientation): every IMU and magnetometer field is in the vehicle's body frame, FRD (x forward,
+  y right, z down), after the firmware's rotation (the parameters above), with the calibration offsets removed. Level
+  and at rest the accelerometer's z reads about -9.81 m/s^2 (SCALED_IMU2 about -1000 mG). Firmware before this
+  amendment sent the chips' own axes.
 - SYS_STATUS and GPS_RAW_INT at 1 Hz. RC_CHANNELS at 5 Hz.
 - MANUAL_CONTROL (69) at 5 Hz (fastest 50 Hz), USB only, sent only while a CRSF stick report is younger than
   1 s. Its fields and scaling are in section 12.
