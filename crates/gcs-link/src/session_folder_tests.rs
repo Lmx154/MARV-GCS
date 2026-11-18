@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use gcs_mavlink::Encoder;
 use gcs_mavlink::dialect::{
     AUTOPILOT_VERSION_DATA, COMMAND_ACK_DATA, COMMAND_LONG_DATA, GPS_RAW_INT_DATA, HEARTBEAT_DATA,
-    HIGHRES_IMU_DATA, HOME_POSITION_DATA, MavAutopilot, MavCmd, MavMessage as Message,
-    MavParamType, MavResult, MavSeverity, PARAM_VALUE_DATA, STATUSTEXT_DATA,
+    HIGHRES_IMU_DATA, HOME_POSITION_DATA, HighresImuUpdatedFlags, MavAutopilot, MavCmd,
+    MavMessage as Message, MavParamType, MavResult, MavSeverity, PARAM_VALUE_DATA, STATUSTEXT_DATA,
 };
 use serde_json::Value;
 
@@ -92,6 +92,8 @@ fn imu(gyro: f32, id: u8) -> Message {
         time_usec: 5_000,
         xgyro: gyro,
         zacc: -9.5,
+        fields_updated: HighresImuUpdatedFlags::HIGHRES_IMU_UPDATED_XACC
+            | HighresImuUpdatedFlags::HIGHRES_IMU_UPDATED_XGYRO,
         id,
         ..HIGHRES_IMU_DATA::default()
     })
@@ -544,4 +546,42 @@ fn units_come_from_the_table_for_arrays_and_rc_channels() {
     );
     assert_eq!(unit_of("MANUAL_CONTROL", "x"), None);
     assert_eq!(unit_of("HIGHRES_IMU", "nothing"), None);
+}
+
+#[test]
+fn bit_flag_fields_are_written_as_integers() {
+    let rec = calibration_recording();
+    let (_dir, exported) = export(&rec, &options());
+    let imu = lines(&exported.folder.join("HIGHRES_IMU.csv"));
+    let header: Vec<&str> = imu[0].split(',').collect();
+    let at = header
+        .iter()
+        .position(|c| *c == "fields_updated")
+        .expect("column");
+    let want = (HighresImuUpdatedFlags::HIGHRES_IMU_UPDATED_XACC
+        | HighresImuUpdatedFlags::HIGHRES_IMU_UPDATED_XGYRO)
+        .bits();
+    assert!(want > 1);
+    assert_eq!(imu[1].split(',').nth(at), Some(want.to_string().as_str()));
+    let json = read_json(&exported.folder);
+    assert!(
+        json["summary"]["messages"]["HIGHRES_IMU[1]"]["fields"]
+            .get("fields_updated")
+            .is_none()
+    );
+}
+
+#[test]
+fn a_name_equal_to_the_start_stamp_gives_the_stamp_alone() {
+    let rec = calibration_recording();
+    let named = SessionOptions {
+        name: "2023-11-14_22-13-20Z".to_owned(),
+        ..SessionOptions::default()
+    };
+    let (dir, exported) = export(&rec, &named);
+    assert_eq!(
+        exported.folder,
+        dir.path().join("sessions/2023-11-14_22-13-20Z")
+    );
+    assert_eq!(read_json(&exported.folder)["name"], "2023-11-14_22-13-20Z");
 }

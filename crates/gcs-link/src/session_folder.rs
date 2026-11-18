@@ -146,6 +146,71 @@ pub fn is_position_field(name: &str) -> bool {
         || n.starts_with("lon_")
 }
 
+/// The integer value of the bit-flag fields of a message, which `serde` shows as `A | B` text. The
+/// list is every field of the dialect whose type is a `bitflags` type (they are CSV cells as numbers).
+macro_rules! flag_fields {
+    ($($message:ident { $($field:ident),+ }),+ $(,)?) => {
+        fn flag_values(message: &Message) -> Vec<(&'static str, u64)> {
+            match message {
+                $(Message::$message(d) => vec![$((stringify!($field), u64::from(d.$field.bits()))),+],)+
+                _ => Vec::new(),
+            }
+        }
+    };
+}
+
+flag_fields! {
+    ADSB_VEHICLE { flags },
+    AIRSPEED { flags },
+    AIS_VESSEL { flags },
+    ATTITUDE_TARGET { type_mask },
+    AUTOPILOT_STATE_FOR_GIMBAL_DEVICE { estimator_status },
+    AUTOPILOT_VERSION { capabilities },
+    AVAILABLE_MODES { properties },
+    BATTERY_STATUS { fault_bitmask },
+    CAMERA_IMAGE_CAPTURED { capture_result },
+    CAMERA_INFORMATION { flags },
+    CAMERA_TRACKING_GEO_STATUS { tracking_status },
+    CAMERA_TRACKING_IMAGE_STATUS { tracking_status, target_data },
+    COMPONENT_INFORMATION_BASIC { capabilities },
+    CURRENT_EVENT_SEQUENCE { flags },
+    ESTIMATOR_STATUS { flags },
+    GENERATOR_STATUS { status },
+    GIMBAL_DEVICE_ATTITUDE_STATUS { failure_flags, flags },
+    GIMBAL_DEVICE_INFORMATION { cap_flags, cap_flags2 },
+    GIMBAL_DEVICE_SET_ATTITUDE { flags },
+    GIMBAL_MANAGER_INFORMATION { cap_flags },
+    GIMBAL_MANAGER_SET_ATTITUDE { flags },
+    GIMBAL_MANAGER_SET_MANUAL_CONTROL { flags },
+    GIMBAL_MANAGER_SET_PITCHYAW { flags },
+    GIMBAL_MANAGER_STATUS { flags },
+    GLOBAL_POSITION_SENSOR { flags },
+    GPS_INPUT { ignore_flags },
+    HEARTBEAT { base_mode },
+    HIGHRES_IMU { fields_updated },
+    HIGH_LATENCY { base_mode },
+    HIGH_LATENCY2 { failure_flags },
+    HIL_ACTUATOR_CONTROLS { flags, mode },
+    HIL_SENSOR { fields_updated },
+    ILLUMINATOR_STATUS { error_status },
+    LANDING_TARGET { position_valid },
+    ONBOARD_COMPUTER_STATUS { status_flags },
+    POSITION_TARGET_GLOBAL_INT { type_mask },
+    POSITION_TARGET_LOCAL_NED { type_mask },
+    POWER_STATUS { flags },
+    SERIAL_CONTROL { flags },
+    SET_ATTITUDE_TARGET { type_mask },
+    SET_MODE { base_mode },
+    SET_POSITION_TARGET_GLOBAL_INT { type_mask },
+    SET_POSITION_TARGET_LOCAL_NED { type_mask },
+    STORAGE_INFORMATION { storage_usage },
+    SYS_STATUS { onboard_control_sensors_present, onboard_control_sensors_enabled, onboard_control_sensors_health, onboard_control_sensors_present_extended, onboard_control_sensors_enabled_extended, onboard_control_sensors_health_extended },
+    UTM_GLOBAL_POSITION { flags },
+    VIDEO_STREAM_INFORMATION { flags },
+    VIDEO_STREAM_STATUS { flags },
+    WINCH_STATUS { status },
+}
+
 /// A mark the user made, at a Unix time.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UserMark {
@@ -662,6 +727,14 @@ impl<'a> Pass<'a> {
                 flatten(field, value, &mut cells);
             }
         }
+        for (field, bits) in flag_values(message) {
+            if let Some((_, cell)) = cells.iter_mut().find(|(n, _)| n == field) {
+                *cell = Cell {
+                    text: bits.to_string(),
+                    number: None,
+                };
+            }
+        }
         let time_column = ["time_usec", "time_boot_ms"]
             .iter()
             .find(|t| cells.iter().any(|(n, _)| n == *t))
@@ -869,7 +942,7 @@ fn sig6(t_s: f64) -> f64 {
 
 /// Convert the `.tlog` at `tlog` into a session folder under `out_dir`.
 ///
-/// The folder is `<out_dir>/<UTC time of the first frame>_<name>`; it must not exist (an existing one
+/// The folder is `<out_dir>/<UTC time of the first frame>_<name>` (just the time when the name is that time); it must not exist (an existing one
 /// is never touched). A truncated last record is reported in `warnings` of `session.json` and the
 /// frames before it are used. On any other failure the half-written folder is removed.
 pub fn export_session(
@@ -888,11 +961,12 @@ pub fn export_session(
         }
     };
     fs::create_dir_all(out_dir)?;
-    let folder = out_dir.join(format!(
-        "{}_{}",
-        folder_time(first.time_us),
-        file_safe(&options.name)
-    ));
+    let stamp = folder_time(first.time_us);
+    let folder = if options.name == stamp {
+        out_dir.join(&stamp)
+    } else {
+        out_dir.join(format!("{stamp}_{}", file_safe(&options.name)))
+    };
     fs::create_dir(&folder).map_err(|e| {
         if e.kind() == io::ErrorKind::AlreadyExists {
             io::Error::new(

@@ -223,7 +223,7 @@ snapshot, optional user marks and a name in; a folder out). Written by hand to t
 read from the vehicle.
 
 ```
-logs/sessions/2026-11-17_17-47-08Z_calibration_1/     <UTC time of the first frame>_<name, file-safe>
+logs/sessions/2026-11-17_17-47-08Z_calibration_1/     <UTC time of the first frame>_<name, file-safe> (the time alone when the name is that time)
   session.tlog          the frames (the export of a whole recording is a copy of it): the window's Log tab replays it
   session.json          what this session was: read it first (below)
   HIGHRES_IMU.csv       one file per message type that is in the recording
@@ -238,7 +238,7 @@ counted in `station_frames`.
 (the receive time of the first frame, so a session starts at 0; 6 decimals); the second is the message's own time
 (`time_usec` or `time_boot_ms`) when it has one; then the other fields in the order of the `mavlink` crate's
 structs, which is the wire order (large fields first), not the order of the XML definition. An array field is
-flat: `name_0`, `name_1`, ... An enum is its name (`MAV_STATE_ACTIVE`), a bit set `A | B` (empty: an empty cell), an infinite or not-a-number value `nan`;
+flat: `name_0`, `name_1`, ... An enum is its name (`MAV_STATE_ACTIVE`); a bit-flag field (`HIGHRES_IMU.fields_updated`, the `SYS_STATUS` sensor masks, `HEARTBEAT.base_mode`, ...) is its integer value, so `awk` and Python can mask and compare it (and it has no mean in the summary); an infinite or not-a-number value `nan`;
 a text containing a comma is in double quotes. Messages of different instances (`HIGHRES_IMU` `id`,
 `MARV_DEVICE_STATUS` `device_id`) are in the same file; the `id` or `device_id` column tells them apart.
 
@@ -376,7 +376,7 @@ do better than the station (a spreadsheet, a plotting script).
 ## Tests
 
 ```
-cargo test --workspace          # 875 tests (11 more are ignored: they need a board or a recording, or only time a pass), about 60 s; needs /usr/bin/socat for the serial tests
+cargo test --workspace          # 877 tests (11 more are ignored: they need a board or a recording, or only time a pass), about 60 s; needs /usr/bin/socat for the serial tests
 cargo clippy --workspace --all-targets -- -D warnings
 tools/board_check.sh <dir>      # with the board on its debug probe and its USB port cabled: about 3 minutes
 ```
