@@ -175,11 +175,6 @@ impl<R: Read> Reader<R> {
         self.formats.iter().flatten()
     }
 
-    /// The definition of a type, if its FMT has been seen.
-    pub fn format_of(&self, type_id: u8) -> Option<&Format> {
-        self.formats[usize::from(type_id)].as_ref()
-    }
-
     /// Makes at least `need` bytes available if the stream has them; returns how many are.
     fn ensure(&mut self, need: usize) -> io::Result<usize> {
         if self.end - self.pos < need && !self.eof {
