@@ -661,7 +661,7 @@ configuration can drop chosen LOG_DATA frames by offset (`drop_log_data`) and re
 The firmware side was run against this client on the real board on 2026-11-16 (its implementer): `logs list`
 matched the card; `logs get` of two closed logs (1.26 MB and 1.17 MB) was byte-identical (sha256) to the
 card-reader copies, at about 70 kB/s; the log being written downloads up to its flushed size. Not seen yet: a
-card with hundreds of logs. A USB drop in the middle of a transfer (2026-11-18) showed the download never ending; fixed as above and tested, not yet seen on the board.
+card with hundreds of logs. A USB drop in the middle of a transfer (2026-11-18) showed the download never ending; fixed as above, tested, and seen on the board the same day (the link-lost line within seconds, the re-download completed).
 
 ## 12. RC mapping
 

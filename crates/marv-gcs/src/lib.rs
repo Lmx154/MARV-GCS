@@ -1,7 +1,7 @@
 //! MARV ground control station: the desktop window.
 //!
 //! Layer rule: only `gcs-link` and the applications (this crate, `marv-cli`) depend on both
-//! `gcs-transport` and `gcs-mavlink`; only this crate depends on `eframe`.
+//! `gcs-transport` and `gcs-mavlink`; only this crate depends on `eframe`, `walkers` and `rfd`.
 
 use std::sync::{Arc, Mutex};
 

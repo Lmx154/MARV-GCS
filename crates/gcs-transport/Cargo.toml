@@ -1,6 +1,6 @@
 [package]
 name = "gcs-transport"
-description = "Byte transports for the ground station: USB serial port and TCP. Bytes only; knows nothing about MAVLink."
+description = "Byte transports for the ground station: USB serial port, TCP and UDP. Bytes only; knows nothing about MAVLink."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

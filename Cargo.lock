@@ -1159,7 +1159,6 @@ version = "0.1.0"
 dependencies = [
  "marv-dialect",
  "mavlink",
- "serde",
  "serde_json",
 ]
 

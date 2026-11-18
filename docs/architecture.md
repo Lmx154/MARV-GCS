@@ -25,7 +25,7 @@ does not build or shows up in `cargo tree`.
    endpoint into a running session: `access_of` (the role a link gives the station) and `start_session`; it also
    holds `session_folder`, the converter of a `.tlog` into a session folder (it writes files, which `gcs-mavlink`
    never does, and both applications call it; it adds `serde_json` and no GUI crate). Only
-   `marv-gcs` depends on `eframe` and on `walkers` (the Map tab's tiles; it brings an HTTP client); `gcs-link`
+   `marv-gcs` depends on `eframe`, on `walkers` (the Map tab's tiles; it brings an HTTP client) and on `rfd` (the file dialog); `gcs-link`
    and `marv-cli` never depend on a GUI crate or an HTTP client.
 4. **The simulator is independent.** `gcs-sim` never depends on `gcs-mavlink`; it is written from the
    MAVLink specification so the two check each other.
@@ -35,7 +35,7 @@ does not build or shows up in `cargo tree`.
    parameter list is whatever the vehicle reports. Every received message is listed and plottable by
    generic field access.
 7. **The log reader is independent.** `gcs-dflog` reads a file, not a link: it depends on no crate of the
-   workspace and on no external crate (the applications will use it for the Log tab's review section), and has no GUI.
+   workspace and on no external crate (the applications use it for the Log tab's review section), and has no GUI.
 
 Check: `cargo tree -p gcs-transport | grep -c mavlink` is 0; `cargo tree -p gcs-mavlink | grep -cE 'serialport|egui|eframe'` is 0; `cargo tree -p gcs-sim | grep -c gcs-mavlink` is 0; `cargo tree -p gcs-dflog -e normal | wc -l` is 1 (the crate has no dependency: only its own line is printed); `cargo tree -p gcs-link -e normal | grep -ciE 'eframe|egui|winit|wgpu|glow'` is 0; `cargo tree -p marv-cli -e normal | grep -ciE 'eframe|egui|winit|wgpu|glow'` is 0 (`crates/marv-cli/tests/dependencies.rs` runs the last two).
 
@@ -153,6 +153,7 @@ pub struct Event { pub time_us: u64, pub source: EventSource, pub text: String, 
 pub fn Condition::parse(text) -> Result<Condition, ConditionError>;       // syntax: see the README
 pub fn Condition::bind(&self, formats: &[Format]) -> Result<BoundCondition, ConditionError>;
 pub fn find_with(reader, &BoundCondition, on_progress) -> io::Result<Option<Found>>; // the intervals
+pub fn export_with(reader, &ExportRequest, on_progress) -> Result<Export, ExportError>; // CSV files, one per type
 ```
 
 ### `gcs-sim`
