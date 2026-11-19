@@ -5,7 +5,7 @@
 //! nothing extra for it.
 //!
 //! Source: the firmware's `fw-settings` tables (names, ranges) and its README's parameter tables
-//! (descriptions, units); `AHRS_ORIENTATION` and `MAG_ORIENT` from the orientation decision.
+//! (descriptions, units); `AHRS_ORIENTATION` and `MAG_ORIENT` from the orientation decision, `MOT_POLES` from the ESC telemetry decision.
 
 /// What the station knows about one parameter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,7 +20,7 @@ pub struct ParamInfo {
 }
 
 /// The number of parameters of the firmware (`fw_settings::COUNT`).
-pub const COUNT: usize = 78;
+pub const COUNT: usize = 79;
 
 const fn p(
     name: &'static str,
@@ -45,7 +45,7 @@ const OSR_RANGE: &str = "1, 2, 4, 8, 16, 32, 64 or 128";
 const IIR_RANGE: &str = "0 (off), 1, 3, 7, 15, 31, 63 or 127";
 
 /// Every parameter except the RC channels' (see [`RC`]), in the firmware's order.
-pub static GENERAL: [ParamInfo; 38] = [
+pub static GENERAL: [ParamInfo; 39] = [
     p(
         "BARO_ODR_HZ",
         "Barometer output rate; the chip runs at its nearest rate (50 is 50.056 Hz).",
@@ -258,6 +258,12 @@ pub static GENERAL: [ParamInfo; 38] = [
         "Compass orientation: the rotation from the compass chip's axes to the vehicle's, applied before the offsets; 10 is the BMM350 mounted +X right, +Y forward, +Z up.",
         "",
         ROTATION,
+    ),
+    p(
+        "MOT_POLES",
+        "Magnets per motor, used to turn the ESC's electrical speed into rpm.",
+        "",
+        "2 to 64",
     ),
 ];
 
