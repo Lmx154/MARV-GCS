@@ -118,6 +118,7 @@ Parameters
   | Index | Name | Type | Default | Range | Class | Device | Meaning |
   |---|---|---|---|---|---|---|---|
   | 78 | `MOT_POLES` | I32 | 14 | 2..64 | Live | ESC (12) | magnets per motor, for rpm |
+  | 79 | `LED_BRIGHT` | I32 | 1 | 0..3 | Live | 0 (system) | status LED brightness: 0 off, 1 dim, 2 medium, 3 bright |
 
   The group `MOT` is under "ESC" in the station's tree. Saved only on command 245 param1 = 1, like every parameter.
 - Amendments by the lead after review (2026-11-12). (1) Withdrawn 2026-11-15: a different echo used to be

@@ -20,7 +20,7 @@ pub struct ParamInfo {
 }
 
 /// The number of parameters of the firmware (`fw_settings::COUNT`).
-pub const COUNT: usize = 79;
+pub const COUNT: usize = 80;
 
 const fn p(
     name: &'static str,
@@ -45,7 +45,7 @@ const OSR_RANGE: &str = "1, 2, 4, 8, 16, 32, 64 or 128";
 const IIR_RANGE: &str = "0 (off), 1, 3, 7, 15, 31, 63 or 127";
 
 /// Every parameter except the RC channels' (see [`RC`]), in the firmware's order.
-pub static GENERAL: [ParamInfo; 39] = [
+pub static GENERAL: [ParamInfo; 40] = [
     p(
         "BARO_ODR_HZ",
         "Barometer output rate; the chip runs at its nearest rate (50 is 50.056 Hz).",
@@ -264,6 +264,12 @@ pub static GENERAL: [ParamInfo; 39] = [
         "Magnets per motor, used to turn the ESC's electrical speed into rpm.",
         "",
         "2 to 64",
+    ),
+    p(
+        "LED_BRIGHT",
+        "Status LED brightness: 0 off, 1 dim, 2 medium, 3 bright.",
+        "",
+        "0 to 3",
     ),
 ];
 

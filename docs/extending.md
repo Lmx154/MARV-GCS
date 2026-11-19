@@ -8,7 +8,7 @@ Most additions need no change here at all; the rest are one file plus one or two
 
 | The firmware adds | What happens |
 |---|---|
-| A parameter or setting | It shows up in the Parameters tab: the list is whatever the vehicle reports. Grouping comes from the name's prefix before the first `_`. The link carries no metadata: the units, descriptions and ranges of the firmware's 79 parameters are a table in `gcs_mavlink::param_info`, and a parameter not in it still shows up, without them. |
+| A parameter or setting | It shows up in the Parameters tab: the list is whatever the vehicle reports. Grouping comes from the name's prefix before the first `_`. The link carries no metadata: the units, descriptions and ranges of the firmware's 80 parameters are a table in `gcs_mavlink::param_info`, and a parameter not in it still shows up, without them. |
 | A message from the standard `common` set | It shows up in the Messages tab with its rate and every field, and any numeric field can be plotted. It is also recorded in the telemetry log. |
 | A text message (STATUSTEXT) | It shows up in the Log tab. |
 
