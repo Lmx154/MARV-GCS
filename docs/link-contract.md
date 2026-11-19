@@ -511,6 +511,7 @@ The commands of the first build (`COMMAND_LONG`, `confirmation` as below, parame
 | 245 `MAV_CMD_PREFLIGHT_STORAGE` | param1: 0 reload from flash (the vehicle sends no `PARAM_VALUE` afterwards), 1 save, 2 all parameters to defaults, 3 sensor calibration parameters to defaults (not the RC end points) |
 | 246 `MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN` | param1 = 1: reboot |
 | 42430 `MAV_CMD_MARV_DEVICE` | param1 = device id (`MARV_DEVICE`), param2 = 1 restart, 2 self-test; restart for IMU1, IMU2, BARO, MAG, GNSS, BATT, self-test for IMU1, IMU2, MAG |
+| 209 `MAV_CMD_DO_MOTOR_TEST` | see section 15; answered ACCEPTED at once (no IN_PROGRESS) |
 
 What the station does (`gcs-mavlink`, service `commands`; state in `VehicleState.command`)
 - One outstanding command at a time. A second `SendCommand` while one is outstanding is refused: nothing is
@@ -798,9 +799,9 @@ The simulator (`gcs-sim`) has the 44 parameters with these defaults and ranges, 
 worked-example tables).
 
 ### 14. ESC telemetry (amendment 2026-11-18, `_plan/decision-esc-telemetry-20261118.md`)
-The firmware streams DShot300 at 1 kHz to the four ESCs from boot (Stop frames only in this version; no arming) and reads their bidirectional replies (eRPM, and extended telemetry after command 13).
+The firmware streams DShot300 at 1 kHz to the four ESCs from boot (Stop frames, and throttle on one motor during a motor test, section 15; no arming) and reads their bidirectional replies (eRPM, and extended telemetry after command 13).
 **ESC_STATUS (291)**, USB, default 10 Hz (100 ms), fastest 50 Hz (20 ms). `index` 0. `time_usec` = board time of the latest exchange (since boot). Motor order: element 0 = M1 (GPIO39), 1 = M2 (GPIO38), 2 = M3 (GPIO37), 3 = M4 (GPIO36).
-- `rpm[i]`: mechanical rpm = eRPM / (`MOT_POLES` / 2), rounded down; 0 when the motor reports stopped, and 0 when the ESC is not answering (see `ESC_INFO.info`).
+- `rpm[i]`: mechanical rpm = eRPM / (`MOT_POLES` / 2), rounded down, from the latest eRPM reply if it is younger than 100 ms; else 0. 0 when the motor reports stopped, and 0 when the ESC is not answering (see `ESC_INFO.info`).
 - `voltage[i]`: the ESC's own extended-telemetry voltage (0.25 V steps) when received within the last 1 s, else NaN.
 - `current[i]`: always NaN in this version (the AM32 ESCs on the bench report 153-160 A at rest: not a current).
 
@@ -818,7 +819,23 @@ Device row 12 (ESC), report-only: STARTING / ABSENT (no ESC has answered this bo
 
 The arming-tune silence shows as about 30 % errors for one second after each ESC start (expected).
 
-The station's Motors tab (read-only) shows this; the simulator (`gcs-sim`) sends both messages at these rates, with row 12, as a test double.
+The station's Motors tab shows this (and has the motor test controls, section 15); the simulator (`gcs-sim`) sends both messages at these rates, with row 12, as a test double.
+
+### 15. Motor test (amendment 2026-11-18, `_plan/decision-motor-test-20261118.md`, amendment A)
+Propellers off only. One motor at a time, no mixer, no arming. `COMMAND_LONG` 209 `MAV_CMD_DO_MOTOR_TEST`:
+param1 motor 1-4 (M1-M4, the ESC_STATUS order of section 14); param2 0 (percent); param3 throttle 0 to 5.0 %
+(0 = stop now); param4 duration above 0 up to 3.0 s (ignored for a stop); param5 0 or 1; param6 0 or 2 (board
+order); param7 0. The level sent to the ESC is round(param3 x 20) of 2000, at least 1.
+Answers: ACCEPTED at once, and the spin runs for param4 (never more than 3 s from its first frame). A spin
+command while one runs replaces it (the earlier motor gets Stop). A stop is always ACCEPTED and ends the spin
+within one exchange (1 ms). DENIED (with a STATUSTEXT): a parameter outside the above. TEMPORARILY_REJECTED:
+another action running. While a spin runs, every other command that starts an action is TEMPORARILY_REJECTED.
+The firmware does not check the ESCs or the battery before a spin and does not end a spin on telemetry: its
+limits are the 5 % ceiling and the duration, as in Betaflight and ArduPilot. There is no repeat-to-hold: if the
+link drops, the spin runs to its end. The other three motors get Stop throughout. The firmware answers 209 on
+every link (section 9); the station sends it only on a Configure session, only from the Motors tab with the
+"propellers are removed" switch on; Stop needs no switch. The simulator answers 209 by this table and shows rpm
+on the tested motor for the spin.
 
 ## 13. Sensor presets
 
