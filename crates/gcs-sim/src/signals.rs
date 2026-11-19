@@ -305,9 +305,9 @@ pub const ESC_ERRORS_PER_THOUSAND: [u64; 4] = [1, 10, 0, 2];
 pub fn esc_status(now_ms: u64) -> ESC_STATUS_DATA {
     let rpm = [0i32; 4];
     let mut voltage = [0f32; 4];
-    for i in 0..4 {
+    for (i, volts) in voltage.iter_mut().enumerate() {
         let n = i as f64;
-        voltage[i] = (15.5 + sine(now_ms, 0.4, 0.03 + 0.01 * n, n)) as f32;
+        *volts = (15.5 + sine(now_ms, 0.4, 0.03 + 0.01 * n, n)) as f32;
     }
     ESC_STATUS_DATA {
         time_usec: now_ms * 1000,
