@@ -112,6 +112,14 @@ Parameters
   |---|---|---|---|---|---|---|---|
   | 76 | `AHRS_ORIENTATION` | I32 | 0 | 0..15 | Reboot | 0 (system) | the board's rotation in the vehicle (both IMUs) |
   | 77 | `MAG_ORIENT` | I32 | 10 | 0..15 | Live | MAG | the external compass's rotation in the vehicle |
+- The ESC parameter (amendment 2026-11-18, section 14): 1 parameter appended after the orientation ones, so the count
+  goes from 78 to 79.
+
+  | Index | Name | Type | Default | Range | Class | Device | Meaning |
+  |---|---|---|---|---|---|---|---|
+  | 78 | `MOT_POLES` | I32 | 14 | 2..64 | Live | ESC (12) | magnets per motor, for rpm |
+
+  The group `MOT` is under "ESC" in the station's tree. Saved only on command 245 param1 = 1, like every parameter.
 - Amendments by the lead after review (2026-11-12). (1) Withdrawn 2026-11-15: a different echo used to be
   retried (a stale copy of the old value in flight would read as a refusal); the vehicle answers every PARAM_SET
   with exactly one PARAM_VALUE, so a differing one after the send is the refusal. (2) A write waits
@@ -133,6 +141,7 @@ What the real firmware sends on its USB port (the simulator's default streams ar
   and at rest the accelerometer's z reads about -9.81 m/s^2 (SCALED_IMU2 about -1000 mG). Firmware before this
   amendment sent the chips' own axes.
 - SYS_STATUS and GPS_RAW_INT at 1 Hz. RC_CHANNELS at 5 Hz.
+- ESC_STATUS (291) at 10 Hz and ESC_INFO (290) at 1 Hz, USB only, for four ESCs (amendment 2026-11-18: section 14).
 - MANUAL_CONTROL (69) at 5 Hz (fastest 50 Hz), USB only, sent only while a CRSF stick report is younger than
   1 s. Its fields and scaling are in section 12.
 
@@ -787,6 +796,29 @@ Mapping (Configure sessions only; staged edits, then Apply, then Save to flash)
 The simulator (`gcs-sim`) has the 44 parameters with these defaults and ranges, and a MANUAL_CONTROL stream at
 5 Hz computed from its own RC_CHANNELS and parameters with the formulas above (a test double: it reproduces the
 worked-example tables).
+
+### 14. ESC telemetry (amendment 2026-11-18, `_plan/decision-esc-telemetry-20261118.md`)
+The firmware streams DShot300 at 1 kHz to the four ESCs from boot (Stop frames only in this version; no arming) and reads their bidirectional replies (eRPM, and extended telemetry after command 13).
+**ESC_STATUS (291)**, USB, default 10 Hz (100 ms), fastest 50 Hz (20 ms). `index` 0. `time_usec` = board time of the latest exchange (since boot). Motor order: element 0 = M1 (GPIO39), 1 = M2 (GPIO38), 2 = M3 (GPIO37), 3 = M4 (GPIO36).
+- `rpm[i]`: mechanical rpm = eRPM / (`MOT_POLES` / 2), rounded down; 0 when the motor reports stopped, and 0 when the ESC is not answering (see `ESC_INFO.info`).
+- `voltage[i]`: the ESC's own extended-telemetry voltage (0.25 V steps) when received within the last 1 s, else NaN.
+- `current[i]`: always NaN in this version (the AM32 ESCs on the bench report 153-160 A at rest: not a current).
+
+**ESC_INFO (290)**, USB, default 1 Hz, fastest 10 Hz. `index` 0, `count` 4, `connection_type` 5 (DSHOT), `time_usec` as above.
+- `counter`: DShot exchanges since boot, modulo 65536. Every exchange carries one frame to each of the four ESCs.
+- `error_count[i]`: exchanges since boot in which ESC i gave no valid reply (silent, undecodable, or foreign signal), wrapping.
+- Error percentage, computed by the station from two consecutive ESC_INFO: 100 x Δerror_count[i] / Δcounter (modulo 65536); blank when the two are more than 60 s apart, or when `time_usec` went back.
+- `info`: bit i set when ESC i gave a valid reply within the last 100 ms (online).
+- `failure_flags[i]`: 0 (AM32 reports no failure states).
+- `temperature[i]`: extended-telemetry temperature x 100 (cdegC) when received within the last 1 s, else INT16_MAX.
+
+Neither message is sent when the flight core's ESC data is older than 1 s. Not on the radio link in this version (trigger: the owner wants motor data in flight; budget about 270 B/s today).
+
+Device row 12 (ESC), report-only: STARTING / ABSENT (no ESC has answered this boot: no battery) / OK (all four online) / DEGRADED (1-3 online, error TIMEOUT) / FAILED (none online after answering, error TIMEOUT; or the ESC task stopped, error STUCK). samples = valid replies, errors = invalid or missing replies, timeouts = drop-outs, attempts = stream starts.
+
+The arming-tune silence shows as about 30 % errors for one second after each ESC start (expected).
+
+The station's Motors tab (read-only) shows this; the simulator (`gcs-sim`) sends both messages at these rates, with row 12, as a test double.
 
 ## 13. Sensor presets
 
