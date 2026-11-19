@@ -69,15 +69,15 @@ impl Default for Motors {
     }
 }
 
-/// The value of a text field: its number rounded to hundredths and kept within `min..=max`; `default`
-/// when the text is not a finite number.
-pub fn clamp_field(text: &str, min: f64, max: f64, default: f64) -> f64 {
+/// The value of a text field: its number rounded to hundredths and kept within `min..=max`; `min`
+/// when the text is not a finite number (a garbled entry fails low, to `min`).
+pub fn clamp_field(text: &str, min: f64, max: f64) -> f64 {
     let value = text
         .trim()
         .parse::<f64>()
         .ok()
         .filter(|v| v.is_finite())
-        .unwrap_or(default);
+        .unwrap_or(min);
     ((value * 100.0).round() / 100.0).clamp(min, max)
 }
 
@@ -306,18 +306,8 @@ impl View for Motors {
             }
         });
         if let Some(motor) = spin {
-            let percent = clamp_field(
-                &self.percent_text,
-                PERCENT_MIN,
-                PERCENT_MAX,
-                PERCENT_DEFAULT,
-            );
-            let seconds = clamp_field(
-                &self.seconds_text,
-                SECONDS_MIN,
-                SECONDS_MAX,
-                SECONDS_DEFAULT,
-            );
+            let percent = clamp_field(&self.percent_text, PERCENT_MIN, PERCENT_MAX);
+            let seconds = clamp_field(&self.seconds_text, SECONDS_MIN, SECONDS_MAX);
             self.last_motor = Some(motor);
             cx.commands
                 .push(motor_test(spin_params(motor, percent, seconds)));
@@ -354,20 +344,18 @@ impl Motors {
             "Propellers are removed and I accept the risk",
         );
         ui.horizontal(|ui| {
-            for (name, text, min, max, default) in [
+            for (name, text, min, max) in [
                 (
                     "Throttle (%)",
                     &mut self.percent_text,
                     PERCENT_MIN,
                     PERCENT_MAX,
-                    PERCENT_DEFAULT,
                 ),
                 (
                     "Duration (s)",
                     &mut self.seconds_text,
                     SECONDS_MIN,
                     SECONDS_MAX,
-                    SECONDS_DEFAULT,
                 ),
             ] {
                 let label = ui.label(name);
@@ -375,7 +363,7 @@ impl Motors {
                     .add(egui::TextEdit::singleline(text).desired_width(50.0))
                     .labelled_by(label.id);
                 if edit.lost_focus() {
-                    *text = format!("{:.2}", clamp_field(text, min, max, default));
+                    *text = format!("{:.2}", clamp_field(text, min, max));
                 }
             }
             if actions::button(ui, "Stop", gate) {
@@ -617,21 +605,24 @@ mod tests {
 
     #[test]
     fn a_field_is_kept_within_its_range() {
-        let percent = |t: &str| clamp_field(t, PERCENT_MIN, PERCENT_MAX, PERCENT_DEFAULT);
+        let percent = |t: &str| clamp_field(t, PERCENT_MIN, PERCENT_MAX);
         assert_eq!(percent("2.5"), 2.5);
         assert_eq!(percent(" 0.05 "), 0.05);
         assert_eq!(percent("9"), 5.0);
         assert_eq!(percent("0"), 0.05);
         assert_eq!(percent("-3"), 0.05);
         assert_eq!(percent("5.004"), 5.0);
-        assert_eq!(percent("abc"), 5.0);
-        assert_eq!(percent(""), 5.0);
-        assert_eq!(percent("NaN"), 5.0);
-        assert_eq!(percent("inf"), 5.0);
-        let seconds = |t: &str| clamp_field(t, SECONDS_MIN, SECONDS_MAX, SECONDS_DEFAULT);
+        assert_eq!(percent("abc"), 0.05);
+        assert_eq!(percent(""), 0.05);
+        assert_eq!(percent("NaN"), 0.05);
+        assert_eq!(percent("inf"), 0.05);
+        assert_eq!(percent("2,5"), 0.05);
+        let seconds = |t: &str| clamp_field(t, SECONDS_MIN, SECONDS_MAX);
         assert_eq!(seconds("3.5"), 3.0);
         assert_eq!(seconds("0.01"), 0.1);
-        assert_eq!(seconds("x"), 2.0);
+        assert_eq!(seconds("x"), 0.1);
+        assert_eq!(seconds("2,5"), 0.1);
+        assert_eq!(seconds(""), 0.1);
     }
 
     #[test]
