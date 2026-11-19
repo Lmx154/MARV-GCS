@@ -65,16 +65,16 @@ fn the_default_configuration_sends_no_device_status() {
 }
 
 #[test]
-fn eight_devices_once_a_second_with_advancing_counters() {
+fn nine_devices_once_a_second_with_advancing_counters() {
     let frames = run(SimConfig::default().with_device_status(1.0), 3);
     let rows: Vec<_> = frames.iter().filter(|f| f.id == ID).collect();
-    // Seconds 0, 1, 2 and 3: eight devices each (the SD card is id 9).
-    assert_eq!(rows.len(), 32);
+    // Seconds 0, 1, 2 and 3: nine devices each (the SD card is id 9, the ESCs id 12).
+    assert_eq!(rows.len(), 36);
     assert!(rows.iter().all(|f| f.crc_ok));
     let device = |f: &Frame| f.payload[26];
     assert_eq!(
-        rows[..8].iter().map(|f| device(f)).collect::<Vec<_>>(),
-        [1, 2, 3, 4, 5, 6, 7, 9]
+        rows[..9].iter().map(|f| device(f)).collect::<Vec<_>>(),
+        [1, 2, 3, 4, 5, 6, 7, 9, 12]
     );
     for f in &rows {
         assert_eq!(f.payload[27], 2, "state OK");
@@ -109,4 +109,54 @@ fn a_silent_vehicle_sends_no_device_status() {
         bytes.extend(vehicle.step(t, &[]));
     }
     assert!(bytes.is_empty());
+}
+
+const ESC_STATUS: u32 = 291;
+const ESC_INFO: u32 = 290;
+
+fn payload_of(frame: &Frame) -> &[u8] {
+    &frame.payload
+}
+
+#[test]
+fn the_default_streams_carry_esc_status_at_10_hz_and_esc_info_at_1_hz() {
+    let frames = run(SimConfig::default(), 3);
+    let status: Vec<_> = frames.iter().filter(|f| f.id == ESC_STATUS).collect();
+    let info: Vec<_> = frames.iter().filter(|f| f.id == ESC_INFO).collect();
+    // 0 to 3 s inclusive.
+    assert_eq!(status.len(), 31);
+    assert_eq!(info.len(), 4);
+    // ESC_INFO, wire order: time_usec u64, error_count u32 x4, counter u16, failure_flags u16 x4,
+    // temperature i16 x4, index, count, connection_type, info.
+    let last = payload_of(info[3]);
+    assert_eq!(last.len(), 8 + 16 + 2 + 8 + 8 + 4);
+    assert_eq!(
+        u64::from_le_bytes(last[0..8].try_into().unwrap()),
+        3_000_000
+    );
+    let counter = u16::from_le_bytes(last[24..26].try_into().unwrap());
+    assert_eq!(counter, 3000);
+    let errors: Vec<u32> = (0..4)
+        .map(|i| u32::from_le_bytes(last[8 + 4 * i..12 + 4 * i].try_into().unwrap()))
+        .collect();
+    assert_eq!(
+        errors,
+        [3, 30, 0, 6],
+        "about 1 % on motor 2, the others near 0"
+    );
+    assert_eq!(
+        &last[42..46],
+        &[0, 4, 5, 0b1111],
+        "index, count, DShot, all online"
+    );
+    // ESC_STATUS, wire order: time_usec u64, rpm i32 x4, voltage f32 x4, current f32 x4, index.
+    let status = payload_of(status[30]);
+    for i in 0..4 {
+        let rpm = i32::from_le_bytes(status[8 + 4 * i..12 + 4 * i].try_into().unwrap());
+        assert!((2000..=5000).contains(&rpm), "motor {i}: {rpm}");
+        let volts = f32::from_le_bytes(status[24 + 4 * i..28 + 4 * i].try_into().unwrap());
+        assert!((15.0..=16.0).contains(&volts), "motor {i}: {volts}");
+        let amps = f32::from_le_bytes(status[40 + 4 * i..44 + 4 * i].try_into().unwrap());
+        assert!(amps.is_nan());
+    }
 }

@@ -8,14 +8,15 @@
 //! and mrad/s) and SCALED_PRESSURE (25 Hz), and RC_CHANNELS (5 Hz). [`scaled_imu`] is not a default stream
 //! (the link contract rejects SCALED_IMU: it stops at 32.7 g) but a custom [`SimConfig`](crate::SimConfig)
 //! can still stream it. ATTITUDE (10 Hz) is a test double: the real firmware does not send it yet (an
-//! estimator is being designed); [`attitude`] lets the station's HUD be tested and seen.
+//! estimator is being designed); [`attitude`] lets the station's HUD be tested and seen. ESC_STATUS (10 Hz) and
+//! ESC_INFO (1 Hz) are the four ESCs of `docs/link-contract.md` section 14.
 
 use mavlink::MessageData;
 use mavlink::dialects::common::{
-    ATTITUDE_DATA, GPS_RAW_INT_DATA, GpsFixType, HEARTBEAT_DATA, HIGHRES_IMU_DATA,
-    HighresImuUpdatedFlags, MavAutopilot, MavMessage, MavModeFlag, MavState, MavSysStatusSensor,
-    MavSysStatusSensorExtended, MavType, RC_CHANNELS_DATA, SCALED_IMU_DATA, SCALED_IMU2_DATA,
-    SCALED_PRESSURE_DATA, SYS_STATUS_DATA,
+    ATTITUDE_DATA, ESC_INFO_DATA, ESC_STATUS_DATA, EscConnectionType, GPS_RAW_INT_DATA, GpsFixType,
+    HEARTBEAT_DATA, HIGHRES_IMU_DATA, HighresImuUpdatedFlags, MavAutopilot, MavMessage,
+    MavModeFlag, MavState, MavSysStatusSensor, MavSysStatusSensorExtended, MavType,
+    RC_CHANNELS_DATA, SCALED_IMU_DATA, SCALED_IMU2_DATA, SCALED_PRESSURE_DATA, SYS_STATUS_DATA,
 };
 
 /// Mean barometric pressure in hPa.
@@ -294,6 +295,53 @@ pub fn rc_channels(now_ms: u64) -> RC_CHANNELS_DATA {
     }
 }
 
+/// DShot exchanges per second of the simulated ESC link.
+pub const ESC_EXCHANGES_PER_SECOND: u64 = 1000;
+/// Invalid exchanges per 1000 for each motor: motor 2 shows 1 %, the others about 0.
+pub const ESC_ERRORS_PER_THOUSAND: [u64; 4] = [1, 10, 0, 2];
+
+/// ESC_STATUS: a slow wave of a few thousand rpm per motor (a different one each), about 15.5 V, no current.
+pub fn esc_status(now_ms: u64) -> ESC_STATUS_DATA {
+    let mut rpm = [0i32; 4];
+    let mut voltage = [0f32; 4];
+    for i in 0..4 {
+        let n = i as f64;
+        rpm[i] = (3500.0 + sine(now_ms, 1500.0, 0.05 + 0.02 * n, n)).round() as i32;
+        voltage[i] = (15.5 + sine(now_ms, 0.4, 0.03 + 0.01 * n, n)) as f32;
+    }
+    ESC_STATUS_DATA {
+        time_usec: now_ms * 1000,
+        rpm,
+        voltage,
+        current: [f32::NAN; 4],
+        index: 0,
+    }
+}
+
+/// ESC_INFO: all four online, DShot, `counter` advancing 1000 a second modulo 65536, `error_count` rising at
+/// [`ESC_ERRORS_PER_THOUSAND`], temperatures 30 to 45 degC in cdegC.
+pub fn esc_info(now_ms: u64) -> ESC_INFO_DATA {
+    let exchanges = now_ms * ESC_EXCHANGES_PER_SECOND / 1000;
+    let mut error_count = [0u32; 4];
+    let mut temperature = [0i16; 4];
+    for i in 0..4 {
+        error_count[i] = (exchanges * ESC_ERRORS_PER_THOUSAND[i] / 1000) as u32;
+        temperature[i] =
+            (3750.0 + sine(now_ms, 700.0, 0.02 + 0.005 * i as f64, i as f64)).round() as i16;
+    }
+    ESC_INFO_DATA {
+        time_usec: now_ms * 1000,
+        counter: (exchanges % 65_536) as u16,
+        error_count,
+        failure_flags: [0; 4],
+        temperature,
+        index: 0,
+        count: 4,
+        connection_type: EscConnectionType::ESC_CONNECTION_TYPE_DSHOT,
+        info: 0b1111,
+    }
+}
+
 /// The messages with this id at this time: one (HIGHRES_IMU has one instance, `id` 0). Empty when the
 /// simulator does not produce the message.
 pub fn messages(message_id: u32, now_ms: u64) -> Vec<MavMessage> {
@@ -310,6 +358,8 @@ pub fn messages(message_id: u32, now_ms: u64) -> Vec<MavMessage> {
         RC_CHANNELS_DATA::ID => vec![MavMessage::RC_CHANNELS(rc_channels(now_ms))],
         GPS_RAW_INT_DATA::ID => vec![MavMessage::GPS_RAW_INT(gps_raw_int(now_ms))],
         ATTITUDE_DATA::ID => vec![MavMessage::ATTITUDE(attitude(now_ms))],
+        ESC_STATUS_DATA::ID => vec![MavMessage::ESC_STATUS(esc_status(now_ms))],
+        ESC_INFO_DATA::ID => vec![MavMessage::ESC_INFO(esc_info(now_ms))],
         _ => Vec::new(),
     }
 }

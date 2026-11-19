@@ -121,10 +121,7 @@ const UNITS: &[(&str, &[(&str, &str)])] = &[
             ("current", "A"),
         ],
     ),
-    (
-        "ESC_INFO",
-        &[("time_usec", "us"), ("temperature", "cdegC")],
-    ),
+    ("ESC_INFO", &[("time_usec", "us"), ("temperature", "cdegC")]),
     (
         "MARV_DEVICE_STATUS",
         &[("time_boot_ms", "ms"), ("last_sample_age_ms", "ms")],

@@ -131,6 +131,7 @@ pub fn default_params() -> Vec<SimParam> {
     ];
     params.extend(crate::rcmap::rc_params());
     params.extend(crate::presets::preset_params());
+    params.push(p("MOT_POLES", ParamValue::Int32(14), false));
     params
 }
 
