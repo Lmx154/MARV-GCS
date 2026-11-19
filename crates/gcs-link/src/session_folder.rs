@@ -113,6 +113,19 @@ const UNITS: &[(&str, &[(&str, &str)])] = &[
     ),
     ("RC_CHANNELS", &[("time_boot_ms", "ms")]),
     (
+        "ESC_STATUS",
+        &[
+            ("time_usec", "us"),
+            ("rpm", "rpm"),
+            ("voltage", "V"),
+            ("current", "A"),
+        ],
+    ),
+    (
+        "ESC_INFO",
+        &[("time_usec", "us"), ("temperature", "cdegC")],
+    ),
+    (
         "MARV_DEVICE_STATUS",
         &[("time_boot_ms", "ms"), ("last_sample_age_ms", "ms")],
     ),
