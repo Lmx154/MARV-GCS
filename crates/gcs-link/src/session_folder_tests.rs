@@ -263,6 +263,50 @@ fn csv_headers_and_times_start_at_zero_with_the_message_time_second() {
 }
 
 #[test]
+fn a_motor_test_mark_names_the_motor_and_its_settings() {
+    let mut rec = Recording::new();
+    rec.vehicle(0.0, heartbeat());
+    let ack = |result| {
+        Message::COMMAND_ACK(COMMAND_ACK_DATA {
+            command: MavCmd::MAV_CMD_DO_MOTOR_TEST,
+            result,
+            ..COMMAND_ACK_DATA::default()
+        })
+    };
+    let test = |motor, percent, seconds| {
+        Message::COMMAND_LONG(COMMAND_LONG_DATA {
+            command: MavCmd::MAV_CMD_DO_MOTOR_TEST,
+            param1: motor,
+            param3: percent,
+            param4: seconds,
+            param5: 1.0,
+            param6: 2.0,
+            ..COMMAND_LONG_DATA::default()
+        })
+    };
+    rec.station(1.0, test(3.0, 5.0, 2.0));
+    rec.vehicle(1.1, ack(MavResult::MAV_RESULT_ACCEPTED));
+    rec.station(2.0, test(3.0, 0.0, 0.0));
+    rec.vehicle(2.1, ack(MavResult::MAV_RESULT_ACCEPTED));
+    let (_dir, exported) = export(&rec, &options());
+    let json = read_json(&exported.folder);
+    let texts: Vec<&str> = json["marks"]
+        .as_array()
+        .expect("marks")
+        .iter()
+        .filter(|m| m["kind"] == "command")
+        .map(|m| m["text"].as_str().expect("text"))
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "MAV_CMD_DO_MOTOR_TEST (motor 3, 5.00 %, 2.0 s): ACCEPTED",
+            "MAV_CMD_DO_MOTOR_TEST (motor 3, stop): ACCEPTED",
+        ]
+    );
+}
+
+#[test]
 fn the_json_has_the_vehicle_the_marks_and_the_units() {
     let rec = calibration_recording();
     let (_dir, exported) = export(&rec, &options());

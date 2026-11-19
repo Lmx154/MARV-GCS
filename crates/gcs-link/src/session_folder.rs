@@ -579,6 +579,16 @@ struct Pass<'a> {
     last_t_s: f64,
 }
 
+/// The motor test the station sent (link contract section 15): param1 the motor, param3 the throttle in
+/// percent (0 is a stop), param4 the duration in seconds.
+fn describe_motor_test(p: &[f32; 7]) -> String {
+    if p[2] == 0.0 {
+        format!("motor {}, stop", p[0])
+    } else {
+        format!("motor {}, {:.2} %, {:.1} s", p[0], p[2], p[3])
+    }
+}
+
 fn describe_calibration(p: &[f32; 7]) -> &'static str {
     if p.iter().all(|v| *v == 0.0) {
         "cancel"
@@ -844,6 +854,11 @@ impl<'a> Pass<'a> {
                     && let Some(p) = self.sent.get(&command)
                 {
                     text = format!("{command} ({})", describe_calibration(p));
+                }
+                if ack.command == MavCmd::MAV_CMD_DO_MOTOR_TEST
+                    && let Some(p) = self.sent.get(&command)
+                {
+                    text = format!("{command} ({})", describe_motor_test(p));
                 }
                 text = format!("{text}: {}", result_words(&result));
                 if result.ends_with("IN_PROGRESS") && ack.progress <= 100 {
