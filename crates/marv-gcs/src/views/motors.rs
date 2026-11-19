@@ -294,6 +294,7 @@ fn motor_box(
     let percent = info_samples(store, index).and_then(|(a, b)| error_percent(a, b));
     let normal = ui.visuals().text_color();
     let status_colour = value_colour(status_age, normal);
+    let headline_colour = value_colour(status_age, ui.visuals().strong_text_color());
     let info_colour = value_colour(info_age, normal);
     egui::Frame::group(ui.style())
         .stroke(egui::Stroke::new(2.0, frame_colour(online, info_age)))
@@ -309,7 +310,7 @@ fn motor_box(
                     RichText::new(rpm_text(number(status, "rpm")))
                         .size(32.0)
                         .strong()
-                        .color(status_colour),
+                        .color(headline_colour),
                 );
                 ui.label(RichText::new("rpm").color(status_colour));
             });
