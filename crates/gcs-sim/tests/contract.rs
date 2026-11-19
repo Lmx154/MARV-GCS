@@ -106,7 +106,8 @@ fn the_default_streams_are_the_real_firmwares_at_its_rates() {
         *count.entry(m.message_id()).or_default() += 1;
     }
     // HEARTBEAT, SYS_STATUS and GPS_RAW_INT 1 Hz (both ends of the second included), the three sensor
-    // values 25 Hz, RC_CHANNELS and MANUAL_CONTROL 5 Hz, ATTITUDE 10 Hz and the boot STATUSTEXT.
+    // values 25 Hz, RC_CHANNELS and MANUAL_CONTROL 5 Hz, ATTITUDE 10 Hz, ESC_STATUS 10 Hz, ESC_INFO 1 Hz and the
+    // boot STATUSTEXT.
     assert_eq!(
         count,
         BTreeMap::from([
@@ -119,7 +120,9 @@ fn the_default_streams_are_the_real_firmwares_at_its_rates() {
             (69, 6),
             (105, 26),
             (116, 26),
-            (253, 1)
+            (253, 1),
+            (290, 2),
+            (291, 11)
         ])
     );
     let imu = imu_frames(&bytes);

@@ -753,9 +753,9 @@ fn silent_vehicle_sends_nothing_but_still_acts() {
     vehicle.set_silent(false);
     let after = run(&mut vehicle, 2201, 3200, &[]);
     let frames = decode(&after);
-    // About one second of the default streams (1 + 1 + 3 * 25 + 1 + 5 + 5 + 10), with no replay of what
+    // About one second of the default streams (1 + 1 + 3 * 25 + 1 + 5 + 5 + 10 + 10 + 1), with no replay of what
     // was missed.
-    assert!(frames.len().abs_diff(98) <= 6, "{}", frames.len());
+    assert!(frames.len().abs_diff(109) <= 6, "{}", frames.len());
     assert!(values(&after).is_empty());
 }
 

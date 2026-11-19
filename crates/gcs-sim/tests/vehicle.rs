@@ -78,6 +78,8 @@ fn default_config() {
             (24, 1.0),
             (65, 5.0),
             (69, 5.0),
+            (291, 10.0),
+            (290, 1.0),
             (30, 10.0)
         ]
     );
@@ -85,7 +87,7 @@ fn default_config() {
 
 #[test]
 fn rates_over_ten_seconds_1ms_and_20ms_steps() {
-    // The firmware's rates: 25 Hz for the sensor values, 1 Hz heartbeat, SYS_STATUS and GPS, 5 Hz RC_CHANNELS and MANUAL_CONTROL, 10 Hz ATTITUDE (a test double).
+    // The firmware's rates: 25 Hz for the sensor values, 1 Hz heartbeat, SYS_STATUS and GPS, 5 Hz RC_CHANNELS and MANUAL_CONTROL, 10 Hz ESC_STATUS, 1 Hz ESC_INFO, 10 Hz ATTITUDE (a test double).
     let expected = [
         (0, 10),
         (1, 10),
@@ -95,6 +97,8 @@ fn rates_over_ten_seconds_1ms_and_20ms_steps() {
         (24, 10),
         (65, 50),
         (69, 50),
+        (291, 100),
+        (290, 10),
         (30, 100),
     ];
     for step_ms in [1, 20] {
@@ -135,13 +139,13 @@ fn a_jump_in_time_is_not_made_up() {
         vehicle.step(t, &[]);
     }
     let jump = decode(&vehicle.step(61_000, &[]));
-    // One message of each of the nine streams.
-    assert!(jump.len() <= 9, "burst of {} messages", jump.len());
+    // One message of each of the eleven streams.
+    assert!(jump.len() <= 11, "burst of {} messages", jump.len());
     let after: usize = (61_001..=62_000)
         .map(|t| decode(&vehicle.step(t, &[])).len())
         .sum();
-    // One second of the default streams: 1 + 1 + 3 * 25 + 1 + 5 + 5 + 10.
-    assert!(after.abs_diff(98) <= 4, "{after}");
+    // One second of the default streams: 1 + 1 + 3 * 25 + 1 + 5 + 5 + 10 + 10 + 1.
+    assert!(after.abs_diff(109) <= 4, "{after}");
 }
 
 #[test]

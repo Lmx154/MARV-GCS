@@ -28,7 +28,7 @@ fn status_shows_the_vehicle() {
     );
     assert!(lines.contains(&"role\tConfigure"), "{r:?}");
     assert!(lines.iter().any(|l| l.starts_with("health\t")), "{r:?}");
-    assert!(lines.contains(&"devices\t8"), "{r:?}");
+    assert!(lines.contains(&"devices\t9"), "{r:?}");
     assert!(
         lines
             .iter()
@@ -38,16 +38,18 @@ fn status_shows_the_vehicle() {
 }
 
 #[test]
-fn devices_prints_eight_rows() {
+fn devices_prints_nine_rows() {
     let rig = Rig::start();
     let r = rig.cli("devices --for 1.5");
     assert_eq!(r.code, 0, "{r:?}");
     let rows: Vec<Vec<&str>> = r.lines().iter().map(|l| l.split('\t').collect()).collect();
-    assert_eq!(rows.len(), 8, "{r:?}");
+    assert_eq!(rows.len(), 9, "{r:?}");
     let names: Vec<&str> = rows.iter().map(|c| c[0]).collect();
     assert_eq!(
         names,
-        ["IMU1", "IMU2", "BARO", "MAG", "GNSS", "BATT", "RC", "SD"]
+        [
+            "IMU1", "IMU2", "BARO", "MAG", "GNSS", "BATT", "RC", "SD", "ESC"
+        ]
     );
     for cells in &rows {
         assert_eq!(cells.len(), 9, "{cells:?}");
@@ -125,7 +127,7 @@ fn texts_and_watch_show_what_the_vehicle_says() {
     let lines = r.lines();
     let devices = lines.iter().filter(|l| l.starts_with("device\t")).count();
     assert_eq!(
-        devices, 8,
+        devices, 9,
         "one line per device while nothing changes: {r:?}"
     );
     assert!(

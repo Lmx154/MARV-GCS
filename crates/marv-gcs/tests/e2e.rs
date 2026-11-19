@@ -427,9 +427,9 @@ fn device_status_gives_one_row_per_device_against_the_simulator() {
         .iter()
         .filter(|(_, entry)| entry.name == "MARV_DEVICE_STATUS")
         .collect();
-    assert_eq!(rows.len(), 8, "{rows:?}");
+    assert_eq!(rows.len(), 9, "{rows:?}");
     let instances: Vec<u8> = rows.iter().map(|(key, _)| key.instance).collect();
-    assert_eq!(instances, [1, 2, 3, 4, 5, 6, 7, 9]);
+    assert_eq!(instances, [1, 2, 3, 4, 5, 6, 7, 9, 12]);
     for (_, entry) in &rows {
         assert!(entry.count >= 3, "{entry:?}");
         assert_eq!(entry.text("state"), Some("MARV_DEVICE_STATE_OK"));
