@@ -369,3 +369,41 @@ fn a_refused_test_shows_the_result_and_the_vehicles_text_in_the_strip() {
     harness.get_by_label("Motor 2 spin: denied");
     harness.get_by_label("Vehicle: motor test: throttle must be 0 to 5 percent");
 }
+
+#[test]
+fn the_switch_is_off_again_after_the_session_changes() {
+    let state = state(15.0, 10, 10);
+    let mut view = view();
+    let mut harness = Harness::builder()
+        .with_size(eframe::egui::vec2(1000.0, 800.0))
+        .build_ui(|ui| {
+            let mut commands = Vec::new();
+            let mut cx = ViewCtx {
+                state: &state,
+                commands: &mut commands,
+                now: Some(Duration::from_secs(10)),
+                access: Access::Configure,
+            };
+            view.ui(ui, &mut cx);
+        });
+    harness.run();
+    harness.get_by_label(SWITCH).click();
+    harness.run();
+    assert_eq!(spin_buttons_disabled(&harness), [false; 4]);
+    drop(harness);
+    view.session_changed();
+    let harness = Harness::builder()
+        .with_size(eframe::egui::vec2(1000.0, 800.0))
+        .build_ui(|ui| {
+            let mut commands = Vec::new();
+            let mut cx = ViewCtx {
+                state: &state,
+                commands: &mut commands,
+                now: Some(Duration::from_secs(10)),
+                access: Access::Configure,
+            };
+            view.ui(ui, &mut cx);
+        });
+    assert_eq!(spin_buttons_disabled(&harness), [true; 4]);
+    harness.get_by_label_contains("Spin disabled: switch on");
+}
