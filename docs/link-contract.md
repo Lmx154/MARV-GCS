@@ -521,7 +521,9 @@ What the station does (`gcs-mavlink`, service `commands`; state in `VehicleState
 - Send: `COMMAND_LONG` to the vehicle's system and component, `confirmation` 0. Without any ACK for that
   command it is sent again after 1.5 s with `confirmation` 1, and after another 1.5 s with 2: three sends
   in all, at 0, 1.5 s and 3.0 s. 1.5 s after the third send, with still no ACK, the result is "no answer"
-  (at 4.5 s) and nothing more is sent.
+  (at 4.5 s) and nothing more is sent. The one exception is a motor test spin (209 with param3 above 0): it
+  is sent once, never again, and with no ACK the result is "no answer" 1.5 s after the send; a stop (209 with
+  param3 0) is re-sent like any command.
 - An ACK counts when its `command` is the outstanding command's number and it is addressed to the station
   (`target_system` 0 or the station's id, `target_component` 0 or the station's), from the vehicle's
   system. Any other ACK is ignored: it changes nothing.
@@ -836,6 +838,7 @@ link drops, the spin runs to its end. The other three motors get Stop throughout
 every link (section 9); the station sends it only on a Configure session, only from the Motors tab with the
 "propellers are removed" switch on; Stop needs no switch. The simulator answers 209 by this table and shows rpm
 on the tested motor for the spin.
+The station sends a spin once and does not re-send it when no answer comes; a stop is re-sent like any command.
 
 ## 13. Sensor presets
 

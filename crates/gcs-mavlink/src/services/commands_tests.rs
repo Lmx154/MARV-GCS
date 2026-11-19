@@ -145,6 +145,28 @@ fn an_ack_at_once_ends_it_accepted_and_nothing_is_resent() {
     assert_eq!(rig.sends().len(), 1);
 }
 
+const MOTOR_TEST: MavCmd = MavCmd::MAV_CMD_DO_MOTOR_TEST;
+
+#[test]
+fn an_unanswered_motor_spin_is_sent_once_then_no_answer() {
+    let mut rig = Rig::new();
+    rig.send(MOTOR_TEST, [2.0, 0.0, 5.0, 2.0, 1.0, 2.0, 0.0], 0);
+    rig.tick_range(50, 10_000);
+    assert_eq!(rig.sends().len(), 1, "a spin is never re-sent");
+    assert_eq!(rig.status(), CommandStatus::NoAnswer);
+    assert_eq!(rig.record().ended, Some(Duration::from_millis(1_500)));
+}
+
+#[test]
+fn an_unanswered_motor_stop_is_sent_three_times_like_any_command() {
+    let mut rig = Rig::new();
+    rig.send(MOTOR_TEST, [2.0, 0.0, 0.0, 0.0, 1.0, 2.0, 0.0], 0);
+    rig.tick_range(50, 10_000);
+    assert_eq!(rig.sends().len(), 3);
+    assert_eq!(rig.status(), CommandStatus::NoAnswer);
+    assert_eq!(rig.record().ended, Some(Duration::from_millis(4_500)));
+}
+
 #[test]
 fn the_command_is_addressed_to_the_vehicle_with_its_parameters_and_the_record_names_it() {
     let mut rig = Rig::new();

@@ -15,6 +15,16 @@ use crate::{Body, Command, Frame, LinkStatus, Message};
 pub const RESEND: Duration = Duration::from_millis(1500);
 /// Sends in all, the first included.
 pub const SENDS: u8 = 3;
+/// Sends in all for this command: a motor test spin (209 with param3 above 0) is sent once, because a
+/// second copy would replace the running spin on the vehicle and restart its time limit.
+fn max_sends(command: MavCmd, params: &[f32; 7]) -> u8 {
+    if command == MavCmd::MAV_CMD_DO_MOTOR_TEST && params[2] > 0.0 {
+        1
+    } else {
+        SENDS
+    }
+}
+
 /// After IN_PROGRESS, this long without a further ACK ends the command as "no result".
 pub const SILENCE: Duration = Duration::from_secs(20);
 
@@ -403,7 +413,7 @@ impl Service for Commands {
                 if cx.now.saturating_sub(track.sending.last_send) < RESEND {
                     return;
                 }
-                if track.sending.sends < SENDS {
+                if track.sending.sends < max_sends(track.command, &track.params) {
                     cx.out.push(Self::long(
                         track.target,
                         track.command,
