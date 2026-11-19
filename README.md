@@ -95,7 +95,7 @@ SYS_STATUS 1 Hz, `MARV_DEVICE_STATUS` (every row at least once a second), GPS_RA
 SCALED_PRESSURE 25 Hz each, RC_CHANNELS 5 Hz while the receiver delivers sticks, MANUAL_CONTROL 5 Hz while a stick report is
 younger than 1 s (the sticks as the vehicle maps them; the simulator always sends it, from its own RC_CHANNELS and its 44 RC
 parameters; as decided in the link contract, not yet seen from the real board), STATUSTEXT. (An older demonstration program
-sent four HIGHRES_IMU instances at 50 Hz; the window no longer looks for them.) The simulator's default streams are these plus ATTITUDE at 10 Hz, which the real firmware does not send yet (a test double for the HUD).
+sent four HIGHRES_IMU instances at 50 Hz; the window no longer looks for them.) The simulator's default streams are these plus ESC_STATUS at 10 Hz and ESC_INFO at 1 Hz (the Motors tab) and ATTITUDE at 10 Hz, which the real firmware does not send yet (a test double for the HUD).
 
 The simulator's parameters (`gcs-sim`, a test double of the vehicle): 13 of its own, the 44 RC parameters, then the 13 of the sensor block of `docs/link-contract.md` section 2: the six IMU parameters `IMU1_ACC_FS`, `IMU1_GYR_FS`, `IMU1_ODR_HZ`, `IMU2_ACC_FS`, `IMU2_GYR_FS` and `IMU2_ODR_HZ` (INT32, the Flight values by default, Reboot-class) and the seven BARO and MAG fields (`BARO_ODR_HZ`, `BARO_OSR_P`, `BARO_OSR_T`, `BARO_IIR_P`, `BARO_IIR_T`, `MAG_ODR_HZ` as a REAL32, `MAG_AVG`, the Balanced values by default). The simulator knows no preset and does not use the table: a write is checked against the parameter's range only, and an IMU parameter that changes is answered with an INFO text `<NAME>: applies after reboot` (the simulator does not reboot, and shapes none of its sensors from these values).
 
