@@ -53,7 +53,7 @@ fn state(info_bits: f64, status_seen: u64, info_seen: u64) -> VehicleState {
     ]);
     for i in 0..4 {
         status.extend(numbers(&[
-            (&format!("voltage[{i}]"), 15.5),
+            (&format!("voltage[{i}]"), 15.0 + 0.5 * i as f64),
             (&format!("current[{i}]"), f64::NAN),
         ]));
     }
@@ -64,7 +64,7 @@ fn state(info_bits: f64, status_seen: u64, info_seen: u64) -> VehicleState {
     let mut info = numbers(&[("count", 4.0), ("info", info_bits), ("counter", 2000.0)]);
     for i in 0..4 {
         info.extend(numbers(&[
-            (&format!("temperature[{i}]"), 3750.0),
+            (&format!("temperature[{i}]"), 3000.0 + 500.0 * i as f64),
             (&format!("error_count[{i}]"), 20.0),
         ]));
     }
@@ -76,7 +76,7 @@ fn state(info_bits: f64, status_seen: u64, info_seen: u64) -> VehicleState {
         .messages
         .entries
         .insert(key(290), entry("ESC_INFO", info_seen, info));
-    // Motor 2: 1 % errors between the two ESC_INFO (10 of 1000 exchanges), the others none.
+    // Errors between the two ESC_INFO (1000 exchanges): 0, 10, 20 and 30, i.e. 0 to 3 %.
     let series = |field: &str, a: f64, b: f64| {
         (
             SeriesKey {
@@ -96,8 +96,8 @@ fn state(info_bits: f64, status_seen: u64, info_seen: u64) -> VehicleState {
         ("counter", 1000.0, 2000.0),
         ("error_count[0]", 0.0, 0.0),
         ("error_count[1]", 5.0, 15.0),
-        ("error_count[2]", 0.0, 0.0),
-        ("error_count[3]", 0.0, 0.0),
+        ("error_count[2]", 0.0, 20.0),
+        ("error_count[3]", 7.0, 37.0),
     ] {
         let (k, s) = series(field, a, b);
         state.messages.series.insert(k, s);
@@ -145,16 +145,55 @@ fn four_online_motors_show_their_values() {
     let harness = harness(&state, 10);
     harness.get_by_label("ESCs online 4/4");
     harness.get_by_label("Link DShot");
-    for (i, rpm) in ["3100", "3200", "3300", "3400"].iter().enumerate() {
-        harness.get_by_label(&format!("Motor {}", i + 1));
+    // Document order is box order: every field must come in element order.
+    let in_order = |prefix: &str| -> Vec<String> {
+        harness
+            .query_all_by_label_contains(prefix)
+            .filter_map(|n| n.value())
+            .map(|l| l.to_string())
+            .collect()
+    };
+    assert_eq!(
+        in_order("Motor ")[..4].to_vec(),
+        ["Motor 1", "Motor 2", "Motor 3", "Motor 4"]
+    );
+    assert_eq!(
+        in_order("Voltage"),
+        [
+            "Voltage 15.00 V",
+            "Voltage 15.50 V",
+            "Voltage 16.00 V",
+            "Voltage 16.50 V"
+        ]
+    );
+    assert_eq!(
+        in_order("Temperature"),
+        [
+            "Temperature 30.0 °C",
+            "Temperature 35.0 °C",
+            "Temperature 40.0 °C",
+            "Temperature 45.0 °C"
+        ]
+    );
+    assert_eq!(
+        in_order("Errors"),
+        [
+            "Errors 0.0 %",
+            "Errors 1.0 %",
+            "Errors 2.0 %",
+            "Errors 3.0 %"
+        ]
+    );
+    assert_eq!(in_order("Current"), ["Current n/a"; 4]);
+    for rpm in ["3100", "3200", "3300", "3400"] {
         harness.get_by_label(rpm);
     }
+    let rpms: Vec<String> = in_order("")
+        .into_iter()
+        .filter(|l| l.len() == 4 && l.chars().all(|c| c.is_ascii_digit()))
+        .collect();
+    assert_eq!(rpms, ["3100", "3200", "3300", "3400"]);
     assert!(harness.query_by_label_contains("OFFLINE").is_none());
-    assert_eq!(harness.query_all_by_label("Voltage 15.50 V").count(), 4);
-    assert_eq!(harness.query_all_by_label("Temperature 37.5 °C").count(), 4);
-    assert_eq!(harness.query_all_by_label("Current n/a").count(), 4);
-    harness.get_by_label("Errors 1.0 %");
-    assert_eq!(harness.query_all_by_label("Errors 0.0 %").count(), 3);
     assert!(harness.query_by_label_contains("(stale)").is_none());
 }
 
