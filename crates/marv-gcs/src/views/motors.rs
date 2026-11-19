@@ -1,16 +1,20 @@
 //! Motors view: the four ESCs from `ESC_STATUS` (rpm, voltage, current) and `ESC_INFO` (online,
-//! temperature, error counters), `docs/link-contract.md` section 14. Read only: it sends no command.
+//! temperature, error counters), `docs/link-contract.md` section 14, and the motor test controls of
+//! section 15: a strip above the four boxes and a Spin button in each box. Nothing is sent without a click.
 
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
+use gcs_mavlink::dialect::MavCmd;
 use gcs_mavlink::services::messages::{MessageEntry, MessageStore, Series};
+use gcs_mavlink::{Command, CommandStatus, VehicleState};
 
+use super::actions;
 use super::devices;
 use super::plot;
 use super::sensors::{self, Preset};
 use super::{View, ViewCtx};
-use crate::status::{GREEN, GREY, RED};
+use crate::status::{self, GREEN, GREY, RED, YELLOW};
 
 const STATUS: &str = "ESC_STATUS";
 const INFO: &str = "ESC_INFO";
@@ -34,8 +38,96 @@ const RPM: Preset = Preset {
     unavailable: &[],
 };
 
-#[derive(Default)]
-pub struct Motors;
+/// The motor test limits of `docs/link-contract.md` section 15: throttle in percent, duration in seconds.
+const PERCENT_MIN: f64 = 0.05;
+const PERCENT_MAX: f64 = 5.0;
+const SECONDS_MIN: f64 = 0.1;
+const SECONDS_MAX: f64 = 3.0;
+const PERCENT_DEFAULT: f64 = 5.0;
+const SECONDS_DEFAULT: f64 = 2.0;
+/// Why Spin is disabled while the switch is off.
+const SWITCH_OFF: &str =
+    "switch on \"Propellers are removed and I accept the risk\" to spin a motor";
+
+pub struct Motors {
+    /// "Propellers are removed and I accept the risk": off at every session.
+    confirmed: bool,
+    percent_text: String,
+    seconds_text: String,
+    /// The motor (1 to 4) last spun, which Stop addresses.
+    last_motor: Option<u8>,
+}
+
+impl Default for Motors {
+    fn default() -> Self {
+        Self {
+            confirmed: false,
+            percent_text: format!("{PERCENT_DEFAULT:.2}"),
+            seconds_text: format!("{SECONDS_DEFAULT:.1}"),
+            last_motor: None,
+        }
+    }
+}
+
+/// The value of a text field: its number rounded to hundredths and kept within `min..=max`; `default`
+/// when the text is not a finite number.
+pub fn clamp_field(text: &str, min: f64, max: f64, default: f64) -> f64 {
+    let value = text
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite())
+        .unwrap_or(default);
+    ((value * 100.0).round() / 100.0).clamp(min, max)
+}
+
+/// The seven parameters of `MAV_CMD_DO_MOTOR_TEST` for a spin of `motor` (1 to 4) at `percent` for
+/// `seconds`: percent throttle type, one motor, board order.
+pub fn spin_params(motor: u8, percent: f64, seconds: f64) -> [f32; 7] {
+    [
+        f32::from(motor),
+        0.0,
+        percent as f32,
+        seconds as f32,
+        1.0,
+        2.0,
+        0.0,
+    ]
+}
+
+/// The parameters of the stop of `motor`: throttle 0, the duration is ignored.
+pub fn stop_params(motor: u8) -> [f32; 7] {
+    spin_params(motor, 0.0, 0.0)
+}
+
+fn motor_test(params: [f32; 7]) -> Command {
+    Command::SendCommand {
+        command: MavCmd::MAV_CMD_DO_MOTOR_TEST,
+        params,
+    }
+}
+
+/// After a refused or failed motor test command: the vehicle's latest STATUSTEXT since it started.
+fn refusal_text(state: &VehicleState) -> Option<&str> {
+    let record = state.command.as_ref()?;
+    let refused = matches!(
+        record.status,
+        CommandStatus::Finished {
+            accepted: false,
+            ..
+        }
+    );
+    if record.command != 209 || !refused {
+        return None;
+    }
+    state
+        .texts
+        .entries
+        .iter()
+        .rev()
+        .find(|t| t.time >= record.started)
+        .map(|t| t.text.as_str())
+}
 
 /// What one `ESC_INFO` says about the error counters of one ESC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,6 +268,10 @@ impl View for Motors {
         "Motors"
     }
 
+    fn session_changed(&mut self) {
+        *self = Self::default();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx) {
         let store = &cx.state.messages;
         let status = store.entry(STATUS, 0);
@@ -188,11 +284,44 @@ impl View for Motors {
         }
         summary(ui, store, info, info_age, status_age, status, cx.now);
         ui.separator();
+        let gate = status::command_gate(cx.access, cx.state, cx.now.is_some());
+        let spin_reason = gate.or((!self.confirmed).then_some(SWITCH_OFF));
+        self.test_strip(ui, cx, gate, spin_reason);
+        ui.separator();
+        let mut spin = None;
         ui.columns(4, |columns| {
             for (index, ui) in columns.iter_mut().enumerate() {
-                motor_box(ui, store, index, status, info, status_age, info_age);
+                if motor_box(
+                    ui,
+                    store,
+                    index,
+                    status,
+                    info,
+                    status_age,
+                    info_age,
+                    spin_reason,
+                ) {
+                    spin = Some(index as u8 + 1);
+                }
             }
         });
+        if let Some(motor) = spin {
+            let percent = clamp_field(
+                &self.percent_text,
+                PERCENT_MIN,
+                PERCENT_MAX,
+                PERCENT_DEFAULT,
+            );
+            let seconds = clamp_field(
+                &self.seconds_text,
+                SECONDS_MIN,
+                SECONDS_MAX,
+                SECONDS_DEFAULT,
+            );
+            self.last_motor = Some(motor);
+            cx.commands
+                .push(motor_test(spin_params(motor, percent, seconds)));
+        }
         ui.separator();
         let window = plot::window_selector(ui, "motors");
         ui.strong(RPM.title);
@@ -205,6 +334,65 @@ impl View for Motors {
             ui.label("no data");
         } else {
             plot::draw_with_readout(ui, "motors_plot", PLOT_HEIGHT, window, &traces, "rpm");
+        }
+    }
+}
+
+impl Motors {
+    /// "Motor test (propellers off)": the switch, the two fields, Stop and what the last test command
+    /// came to. Spin itself is in each box.
+    fn test_strip(
+        &mut self,
+        ui: &mut egui::Ui,
+        cx: &mut ViewCtx,
+        gate: Option<&'static str>,
+        spin_reason: Option<&'static str>,
+    ) {
+        ui.strong("Motor test (propellers off)");
+        ui.checkbox(
+            &mut self.confirmed,
+            "Propellers are removed and I accept the risk",
+        );
+        ui.horizontal(|ui| {
+            for (name, text, min, max, default) in [
+                (
+                    "Throttle (%)",
+                    &mut self.percent_text,
+                    PERCENT_MIN,
+                    PERCENT_MAX,
+                    PERCENT_DEFAULT,
+                ),
+                (
+                    "Duration (s)",
+                    &mut self.seconds_text,
+                    SECONDS_MIN,
+                    SECONDS_MAX,
+                    SECONDS_DEFAULT,
+                ),
+            ] {
+                let label = ui.label(name);
+                let edit = ui
+                    .add(egui::TextEdit::singleline(text).desired_width(50.0))
+                    .labelled_by(label.id);
+                if edit.lost_focus() {
+                    *text = format!("{:.2}", clamp_field(text, min, max, default));
+                }
+            }
+            if actions::button(ui, "Stop", gate) {
+                let motor = self.last_motor.unwrap_or(1);
+                cx.commands.push(motor_test(stop_params(motor)));
+            }
+        });
+        if let Some(reason) = spin_reason {
+            ui.colored_label(YELLOW, format!("Spin disabled: {reason}"));
+        }
+        if cx.state.command.as_ref().is_some_and(|r| r.command == 209) {
+            ui.horizontal_wrapped(|ui| {
+                actions::status_line(ui, cx.state);
+                if let Some(text) = refusal_text(cx.state) {
+                    ui.colored_label(RED, format!("Vehicle: {text}"));
+                }
+            });
         }
     }
 }
@@ -273,6 +461,8 @@ fn summary(
     });
 }
 
+/// True when this box's Spin button was clicked.
+#[allow(clippy::too_many_arguments)]
 fn motor_box(
     ui: &mut egui::Ui,
     store: &MessageStore,
@@ -281,7 +471,8 @@ fn motor_box(
     info: Option<&MessageEntry>,
     status_age: Age,
     info_age: Age,
-) {
+    spin_reason: Option<&str>,
+) -> bool {
     let online = online(info, index);
     let title = if online == Some(false) {
         format!("Motor {} OFFLINE", index + 1)
@@ -296,6 +487,7 @@ fn motor_box(
     let status_colour = value_colour(status_age, normal);
     let headline_colour = value_colour(status_age, ui.visuals().strong_text_color());
     let info_colour = value_colour(info_age, normal);
+    let mut spin = false;
     egui::Frame::group(ui.style())
         .stroke(egui::Stroke::new(2.0, frame_colour(online, info_age)))
         .show(ui, |ui| {
@@ -336,7 +528,9 @@ fn motor_box(
                 status_colour,
             );
             line(ui, "Errors", error_text(percent), info_colour);
+            spin = actions::button(ui, "Spin", spin_reason);
         });
+    spin
 }
 
 #[cfg(test)]
@@ -406,6 +600,38 @@ mod tests {
         assert_eq!(temperature_text(Some(3_750.0)), "37.5 °C");
         assert_eq!(error_text(None), "—");
         assert_eq!(error_text(Some(1.04)), "1.0 %");
+    }
+
+    #[test]
+    fn the_command_has_the_seven_parameters_of_the_table() {
+        assert_eq!(
+            spin_params(3, 5.0, 2.0),
+            [3.0, 0.0, 5.0, 2.0, 1.0, 2.0, 0.0]
+        );
+        assert_eq!(
+            spin_params(1, 0.05, 0.1),
+            [1.0, 0.0, 0.05, 0.1, 1.0, 2.0, 0.0]
+        );
+        assert_eq!(stop_params(4), [4.0, 0.0, 0.0, 0.0, 1.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn a_field_is_kept_within_its_range() {
+        let percent = |t: &str| clamp_field(t, PERCENT_MIN, PERCENT_MAX, PERCENT_DEFAULT);
+        assert_eq!(percent("2.5"), 2.5);
+        assert_eq!(percent(" 0.05 "), 0.05);
+        assert_eq!(percent("9"), 5.0);
+        assert_eq!(percent("0"), 0.05);
+        assert_eq!(percent("-3"), 0.05);
+        assert_eq!(percent("5.004"), 5.0);
+        assert_eq!(percent("abc"), 5.0);
+        assert_eq!(percent(""), 5.0);
+        assert_eq!(percent("NaN"), 5.0);
+        assert_eq!(percent("inf"), 5.0);
+        let seconds = |t: &str| clamp_field(t, SECONDS_MIN, SECONDS_MAX, SECONDS_DEFAULT);
+        assert_eq!(seconds("3.5"), 3.0);
+        assert_eq!(seconds("0.01"), 0.1);
+        assert_eq!(seconds("x"), 2.0);
     }
 
     #[test]

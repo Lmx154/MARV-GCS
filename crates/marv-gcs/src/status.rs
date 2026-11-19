@@ -136,6 +136,8 @@ pub fn command_label(record: &CommandRecord) -> String {
             _ => "Storage".into(),
         },
         246 => "Reboot".into(),
+        209 if p[2] == 0.0 => format!("Motor {} stop", p[0]),
+        209 => format!("Motor {} spin", p[0]),
         42_430 => {
             let device =
                 device_name(p[0] as u32).map_or_else(|| format!("device {}", p[0]), str::to_string);

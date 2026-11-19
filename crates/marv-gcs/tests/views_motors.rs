@@ -1,14 +1,16 @@
 //! Headless test of the Motors view with a hand-built message store.
 
+use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 use std::time::Duration;
 
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
-use gcs_mavlink::VehicleState;
+use egui_kittest::kittest::{NodeT, Queryable};
 use gcs_mavlink::services::messages::{
     Field, FieldValue, MessageEntry, MessageKey, Series, SeriesKey,
 };
+use gcs_mavlink::{Access, Command, VehicleState};
 use marv_gcs::views::{self, ViewCtx};
 
 fn key(id: u32) -> MessageKey {
@@ -125,7 +127,10 @@ fn harness<'a>(state: &'a VehicleState, now: u64) -> Harness<'a> {
                 access: gcs_mavlink::Access::Configure,
             };
             view.ui(ui, &mut cx);
-            assert!(commands.is_empty(), "the Motors view sends nothing");
+            assert!(
+                commands.is_empty(),
+                "the Motors view sends none without a click"
+            );
         });
     harness.run();
     harness
@@ -145,7 +150,8 @@ fn four_online_motors_show_their_values() {
     let harness = harness(&state, 10);
     harness.get_by_label("ESCs online 4/4");
     harness.get_by_label("Link DShot");
-    // Document order is box order: every field must come in element order.
+    // Document order is box order: every field must come in element order (the first "Motor " is the
+    // motor test heading).
     let in_order = |prefix: &str| -> Vec<String> {
         harness
             .query_all_by_label_contains(prefix)
@@ -154,7 +160,7 @@ fn four_online_motors_show_their_values() {
             .collect()
     };
     assert_eq!(
-        in_order("Motor ")[..4].to_vec(),
+        in_order("Motor ")[1..5].to_vec(),
         ["Motor 1", "Motor 2", "Motor 3", "Motor 4"]
     );
     assert_eq!(
@@ -212,4 +218,154 @@ fn a_message_older_than_two_seconds_is_not_shown_as_fresh() {
     let state = state(15.0, 10, 10);
     let harness = harness(&state, 13);
     harness.get_by_label_contains("(stale)");
+}
+
+const SWITCH: &str = "Propellers are removed and I accept the risk";
+
+type Sent = Rc<RefCell<Vec<Command>>>;
+
+/// The view kept across frames, with every command it pushes collected in `sent`.
+fn harness_sending<'a>(state: &'a VehicleState, access: Access, sent: &Sent) -> Harness<'a> {
+    let mut view = view();
+    let sent = Rc::clone(sent);
+    let mut harness = Harness::builder()
+        .with_size(eframe::egui::vec2(1000.0, 800.0))
+        .build_ui(move |ui| {
+            let mut commands = Vec::new();
+            let mut cx = ViewCtx {
+                state,
+                commands: &mut commands,
+                now: Some(Duration::from_secs(10)),
+                access,
+            };
+            view.ui(ui, &mut cx);
+            sent.borrow_mut().append(&mut commands);
+        });
+    harness.run();
+    harness
+}
+
+fn params_of(command: &Command) -> (u32, [f32; 7]) {
+    match command {
+        Command::SendCommand { command, params } => (*command as u32, *params),
+        other => panic!("not a SendCommand: {other:?}"),
+    }
+}
+
+fn spin_buttons_disabled(harness: &Harness<'_>) -> Vec<bool> {
+    harness
+        .get_all_by_label("Spin")
+        .map(|n| n.accesskit_node().is_disabled())
+        .collect()
+}
+
+#[test]
+fn spin_needs_the_switch_and_a_configure_session() {
+    let state = state(15.0, 10, 10);
+    let sent = Sent::default();
+    let mut harness = harness_sending(&state, Access::Configure, &sent);
+    harness.get_by_label("Motor test (propellers off)");
+    assert_eq!(spin_buttons_disabled(&harness), [true; 4]);
+    harness.get_by_label_contains("Spin disabled: switch on");
+    assert!(!harness.get_by_label("Stop").accesskit_node().is_disabled());
+    harness.get_by_label(SWITCH).click();
+    harness.run();
+    assert_eq!(spin_buttons_disabled(&harness), [false; 4]);
+    assert!(harness.query_by_label_contains("Spin disabled").is_none());
+    assert!(sent.borrow().is_empty());
+}
+
+#[test]
+fn on_an_operate_session_every_test_control_is_disabled_with_the_reason() {
+    let state = state(15.0, 10, 10);
+    let sent = Sent::default();
+    let mut harness = harness_sending(&state, Access::Operate, &sent);
+    harness.get_by_label(SWITCH).click();
+    harness.run();
+    assert_eq!(spin_buttons_disabled(&harness), [true; 4]);
+    assert!(harness.get_by_label("Stop").accesskit_node().is_disabled());
+    harness.get_by_label_contains("Configure needs a serial or TCP link");
+    assert!(sent.borrow().is_empty());
+}
+
+#[test]
+fn a_click_on_motor_3s_spin_sends_exactly_one_command_with_the_two_fields() {
+    let state = state(15.0, 10, 10);
+    let sent = Sent::default();
+    let mut harness = harness_sending(&state, Access::Configure, &sent);
+    harness.get_by_label(SWITCH).click();
+    harness.run();
+    harness
+        .get_all_by_label("Spin")
+        .nth(2)
+        .expect("a third Spin button")
+        .click();
+    harness.run();
+    harness.run();
+    let sent = sent.borrow();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(
+        params_of(&sent[0]),
+        (209, [3.0, 0.0, 5.0, 2.0, 1.0, 2.0, 0.0])
+    );
+}
+
+#[test]
+fn stop_needs_no_switch_and_addresses_the_motor_last_spun() {
+    let state = state(15.0, 10, 10);
+    let sent = Sent::default();
+    let mut harness = harness_sending(&state, Access::Configure, &sent);
+    harness.get_by_label("Stop").click();
+    harness.run();
+    assert_eq!(sent.borrow().len(), 1);
+    assert_eq!(
+        params_of(&sent.borrow()[0]),
+        (209, [1.0, 0.0, 0.0, 0.0, 1.0, 2.0, 0.0])
+    );
+    harness.get_by_label(SWITCH).click();
+    harness.run();
+    harness
+        .get_all_by_label("Spin")
+        .nth(1)
+        .expect("a second Spin button")
+        .click();
+    harness.run();
+    harness.get_by_label("Stop").click();
+    harness.run();
+    let sent = sent.borrow();
+    assert_eq!(sent.len(), 3, "{sent:?}");
+    let (command, params) = params_of(&sent[2]);
+    assert_eq!((command, params[0], params[2]), (209, 2.0, 0.0));
+}
+
+#[test]
+fn a_refused_test_shows_the_result_and_the_vehicles_text_in_the_strip() {
+    use gcs_mavlink::services::texts::{Severity, TextEntry};
+    use gcs_mavlink::{CommandRecord, CommandStatus};
+    let mut state = state(15.0, 10, 10);
+    state.command = Some(CommandRecord {
+        command: 209,
+        name: None,
+        params: [2.0, 0.0, 5.0, 2.0, 1.0, 2.0, 0.0],
+        status: CommandStatus::Finished {
+            text: "denied",
+            accepted: false,
+        },
+        sends: 1,
+        started: Duration::from_secs(8),
+        ended: Some(Duration::from_secs(9)),
+        refused: None,
+        cancel: None,
+    });
+    state.texts.entries.push_back(TextEntry {
+        time: Duration::from_secs(9),
+        severity: Severity::Warning,
+        text: "motor test: throttle must be 0 to 5 percent".into(),
+        system_id: 1,
+        component_id: 1,
+    });
+    let sent = Sent::default();
+    let harness = harness_sending(&state, Access::Configure, &sent);
+    harness.get_by_label("Motor 2 spin: denied");
+    harness.get_by_label("Vehicle: motor test: throttle must be 0 to 5 percent");
 }
