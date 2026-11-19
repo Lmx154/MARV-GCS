@@ -13,6 +13,7 @@ mod log;
 mod log_review;
 mod map;
 mod messages;
+mod motors;
 mod params;
 mod plot;
 pub mod presets;
@@ -63,6 +64,7 @@ fn registry(tiles: bool) -> Vec<Box<dyn View>> {
         Box::<log::Log>::default(),
         Box::<link::Link>::default(),
         Box::new(map::MapView::new(tiles)),
+        Box::<motors::Motors>::default(),
         // Box::new(<module>::<View>),
     ]
 }
