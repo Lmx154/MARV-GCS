@@ -300,13 +300,13 @@ pub const ESC_EXCHANGES_PER_SECOND: u64 = 1000;
 /// Invalid exchanges per 1000 for each motor: motor 2 shows 1 %, the others about 0.
 pub const ESC_ERRORS_PER_THOUSAND: [u64; 4] = [1, 10, 0, 2];
 
-/// ESC_STATUS: a slow wave of a few thousand rpm per motor (a different one each), about 15.5 V, no current.
+/// ESC_STATUS: the motors stopped (rpm 0, as on the real board; a motor test shows rpm, see `vehicle`),
+/// about 15.5 V on a slow wave, no current.
 pub fn esc_status(now_ms: u64) -> ESC_STATUS_DATA {
-    let mut rpm = [0i32; 4];
+    let rpm = [0i32; 4];
     let mut voltage = [0f32; 4];
     for i in 0..4 {
         let n = i as f64;
-        rpm[i] = (3500.0 + sine(now_ms, 1500.0, 0.05 + 0.02 * n, n)).round() as i32;
         voltage[i] = (15.5 + sine(now_ms, 0.4, 0.03 + 0.01 * n, n)) as f32;
     }
     ESC_STATUS_DATA {

@@ -241,6 +241,8 @@ pub struct SimVehicle {
     list_due_ms: u64,
     /// The one action that runs, if any.
     action: Option<Action>,
+    /// The motor test spin that runs: motor 0 to 3, level, when it ends (ms).
+    spin: Option<(usize, u32, u64)>,
     /// COMMAND_LONGs dropped so far for `drop_first_commands`.
     commands_dropped: u32,
     /// PARAM_VALUE echoes dropped so far for `drop_first_param_echoes`.
@@ -325,6 +327,7 @@ impl SimVehicle {
             list_next: None,
             list_due_ms: 0,
             action: None,
+            spin: None,
             commands_dropped: 0,
             echoes_dropped: 0,
             held_echo: None,
@@ -427,6 +430,20 @@ impl SimVehicle {
     /// The messages of a stream at `now_ms`. MANUAL_CONTROL follows the RC parameters now in effect
     /// (`docs/link-contract.md` section 12); it is empty for a vehicle that has none.
     fn stream_messages(&self, message_id: u32, now_ms: u64) -> Vec<MavMessage> {
+        if message_id == ESC_STATUS_DATA::ID {
+            let mut messages = signals::messages(message_id, now_ms);
+            if let Some((motor, level, until_ms)) = self.spin
+                && now_ms < until_ms
+            {
+                for message in &mut messages {
+                    if let MavMessage::ESC_STATUS(status) = message {
+                        status.rpm[motor] =
+                            (f64::from(level) * actions::RPM_PER_LEVEL).round() as i32;
+                    }
+                }
+            }
+            return messages;
+        }
         if message_id != MANUAL_CONTROL_DATA::ID {
             return signals::messages(message_id, now_ms);
         }
@@ -856,6 +873,29 @@ impl SimVehicle {
                 self.push_text(reason, out);
                 self.push_ack(d.command, MavResult::MAV_RESULT_DENIED, 0, from, out);
             }
+            Admission::Stop => {
+                self.spin = None;
+                self.push_ack(d.command, MavResult::MAV_RESULT_ACCEPTED, 0, from, out);
+            }
+            Admission::Spin {
+                motor,
+                level,
+                duration_ms,
+            } => {
+                if self.action.is_some() {
+                    self.push_text("another action is running", out);
+                    self.push_ack(
+                        d.command,
+                        MavResult::MAV_RESULT_TEMPORARILY_REJECTED,
+                        0,
+                        from,
+                        out,
+                    );
+                    return;
+                }
+                self.spin = Some((motor, level, self.now_ms + duration_ms));
+                self.push_ack(d.command, MavResult::MAV_RESULT_ACCEPTED, 0, from, out);
+            }
             Admission::Cancel => {
                 let running = self.action.as_ref().filter(|a| a.is_calibration());
                 let Some(running) = running.cloned() else {
@@ -876,6 +916,20 @@ impl SimVehicle {
                 }
             }
             Admission::Run { duration_ms } => {
+                if self
+                    .spin
+                    .is_some_and(|(_, _, until_ms)| self.now_ms < until_ms)
+                {
+                    self.push_text("a motor test is running", out);
+                    self.push_ack(
+                        d.command,
+                        MavResult::MAV_RESULT_TEMPORARILY_REJECTED,
+                        0,
+                        from,
+                        out,
+                    );
+                    return;
+                }
                 if let Some(running) = &self.action {
                     if running.command == d.command && running.params == d.params {
                         let percent = running.percent(self.now_ms);

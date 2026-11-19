@@ -11,6 +11,14 @@ pub const PREFLIGHT_REBOOT_SHUTDOWN: u16 = 246;
 /// The project's MAV_CMD_MARV_DEVICE.
 pub const MARV_DEVICE: u16 = 42_430;
 
+/// MAV_CMD_DO_MOTOR_TEST (`docs/link-contract.md` section 15).
+pub const DO_MOTOR_TEST: u16 = 209;
+/// The highest throttle of a motor test, in percent, and the longest spin, in seconds.
+pub const TEST_MAX_PERCENT: f32 = 5.0;
+pub const TEST_MAX_SECONDS: f32 = 3.0;
+/// rpm shown on the tested motor per level (the 2026-11-13 bench median: about 1 860 rpm at level 100).
+pub const RPM_PER_LEVEL: f64 = 18.6;
+
 /// A progress ACK is sent this often.
 pub const PROGRESS_EVERY_MS: u64 = 500;
 /// How long an action runs: a calibration, and every other action.
@@ -31,6 +39,14 @@ pub enum Admission {
     Denied(&'static str),
     /// All seven parameters of a calibration are zero.
     Cancel,
+    /// A motor test spin: motor 0 to 3, level of 2000 (at least 1), how long.
+    Spin {
+        motor: usize,
+        level: u32,
+        duration_ms: u64,
+    },
+    /// A motor test stop (always accepted).
+    Stop,
     Run {
         duration_ms: u64,
     },
@@ -41,6 +57,41 @@ fn only(params: &[f32; 7], index: usize, value: f32) -> bool {
         .iter()
         .enumerate()
         .all(|(i, p)| if i == index { *p == value } else { *p == 0.0 })
+}
+
+/// 209 by the table of section 15; a NaN or an infinity fails every range.
+fn admit_motor_test(params: &[f32; 7]) -> Admission {
+    let whole = |v: f32, lo: f32, hi: f32| v.fract() == 0.0 && (lo..=hi).contains(&v);
+    if !whole(params[0], 1.0, 4.0) {
+        return Admission::Denied("motor test: motor must be 1 to 4");
+    }
+    if params[1] != 0.0 {
+        return Admission::Denied("motor test: throttle type must be 0 (percent)");
+    }
+    if !(0.0..=TEST_MAX_PERCENT).contains(&params[2]) {
+        return Admission::Denied("motor test: throttle must be 0 to 5 percent");
+    }
+    if !whole(params[4], 0.0, 1.0) {
+        return Admission::Denied("motor test: motor count must be 0 or 1");
+    }
+    if params[5] != 0.0 && params[5] != 2.0 {
+        return Admission::Denied("motor test: order must be 0 or 2");
+    }
+    if params[6] != 0.0 {
+        return Admission::Denied("motor test: param7 must be 0");
+    }
+    let motor = params[0] as usize - 1;
+    if params[2] == 0.0 {
+        return Admission::Stop;
+    }
+    if !(params[3] > 0.0 && params[3] <= TEST_MAX_SECONDS) {
+        return Admission::Denied("motor test: duration must be above 0 and at most 3 s");
+    }
+    Admission::Spin {
+        motor,
+        level: ((f64::from(params[2]) * 20.0).round() as u32).max(1),
+        duration_ms: (f64::from(params[3]) * 1000.0).round() as u64,
+    }
 }
 
 /// The admission of `command` with `params`.
@@ -83,6 +134,7 @@ pub fn admit(command: u16, params: &[f32; 7]) -> Admission {
                 Admission::Denied("device action not supported for this device")
             }
         }
+        DO_MOTOR_TEST => admit_motor_test(params),
         _ => Admission::Unsupported,
     }
 }
@@ -272,5 +324,51 @@ mod tests {
             Admission::Denied(_)
         ));
         assert_eq!(admit(400, &[0.0; 7]), Admission::Unsupported);
+    }
+
+    #[test]
+    fn motor_test_admission_follows_the_table() {
+        let spin =
+            |motor: f32, percent: f32, seconds: f32| [motor, 0.0, percent, seconds, 1.0, 2.0, 0.0];
+        assert_eq!(
+            admit(209, &spin(2.0, 5.0, 1.0)),
+            Admission::Spin {
+                motor: 1,
+                level: 100,
+                duration_ms: 1_000
+            }
+        );
+        assert_eq!(
+            admit(209, &spin(4.0, 0.05, 0.1)),
+            Admission::Spin {
+                motor: 3,
+                level: 1,
+                duration_ms: 100
+            }
+        );
+        assert_eq!(admit(209, &spin(3.0, 0.0, 0.0)), Admission::Stop);
+        assert_eq!(
+            admit(209, &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            Admission::Stop
+        );
+        for bad in [
+            spin(0.0, 5.0, 1.0),
+            spin(5.0, 5.0, 1.0),
+            spin(1.5, 5.0, 1.0),
+            spin(f32::NAN, 5.0, 1.0),
+            spin(1.0, 5.01, 1.0),
+            spin(1.0, -1.0, 1.0),
+            spin(1.0, f32::NAN, 1.0),
+            spin(1.0, 5.0, 0.0),
+            spin(1.0, 5.0, 3.01),
+            [1.0, 1.0, 5.0, 1.0, 1.0, 2.0, 0.0],
+            [1.0, 0.0, 5.0, 1.0, 2.0, 2.0, 0.0],
+            [1.0, 0.0, 5.0, 1.0, 1.0, 1.0, 0.0],
+            [1.0, 0.0, 5.0, 1.0, 1.0, 2.0, 1.0],
+            // A stop is checked on the other parameters too.
+            [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        ] {
+            assert!(matches!(admit(209, &bad), Admission::Denied(_)), "{bad:?}");
+        }
     }
 }

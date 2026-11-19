@@ -153,7 +153,7 @@ fn the_default_streams_carry_esc_status_at_10_hz_and_esc_info_at_1_hz() {
     let status = payload_of(status[30]);
     for i in 0..4 {
         let rpm = i32::from_le_bytes(status[8 + 4 * i..12 + 4 * i].try_into().unwrap());
-        assert!((2000..=5000).contains(&rpm), "motor {i}: {rpm}");
+        assert_eq!(rpm, 0, "motor {i}: stopped by default");
         let volts = f32::from_le_bytes(status[24 + 4 * i..28 + 4 * i].try_into().unwrap());
         assert!((15.0..=16.0).contains(&volts), "motor {i}: {volts}");
         let amps = f32::from_le_bytes(status[40 + 4 * i..44 + 4 * i].try_into().unwrap());

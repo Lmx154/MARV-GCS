@@ -410,3 +410,70 @@ fn frames_with_the_vehicles_own_system_id_are_ignored() {
     );
     assert_eq!(acks(&vehicle.step(t + 1, &from_other)).len(), 1);
 }
+
+fn motor_test(params: [f32; 7]) -> Vec<u8> {
+    encode_from(
+        255,
+        190,
+        &MavMessage::COMMAND_LONG(COMMAND_LONG_DATA {
+            param1: params[0],
+            param2: params[1],
+            param3: params[2],
+            param4: params[3],
+            param5: params[4],
+            param6: params[5],
+            param7: params[6],
+            command: MavCmd::MAV_CMD_DO_MOTOR_TEST,
+            target_system: 1,
+            target_component: 1,
+            ..COMMAND_LONG_DATA::default()
+        }),
+    )
+}
+
+/// The rpm of the latest ESC_STATUS in `bytes`.
+fn latest_rpm(bytes: &[u8]) -> Option<[i32; 4]> {
+    decode(bytes)
+        .into_iter()
+        .filter_map(|(_, m)| match m {
+            MavMessage::ESC_STATUS(d) => Some(d.rpm),
+            _ => None,
+        })
+        .next_back()
+}
+
+#[test]
+fn a_motor_test_spin_shows_rpm_on_that_motor_for_its_duration() {
+    let mut vehicle = booted(SimConfig::default());
+    let ack_of = |bytes: &[u8]| {
+        let got = acks(bytes);
+        assert_eq!(got.len(), 1, "{got:?}");
+        got[0].result
+    };
+    // Motors are stopped by default.
+    assert_eq!(latest_rpm(&vehicle.step(1_000, &[])), Some([0; 4]));
+    // Motor 2 at 5 % for 1 s: ACCEPTED at once.
+    let bytes = vehicle.step(1_010, &motor_test([2.0, 0.0, 5.0, 1.0, 1.0, 2.0, 0.0]));
+    assert_eq!(ack_of(&bytes), MavResult::MAV_RESULT_ACCEPTED);
+    let during = latest_rpm(&vehicle.step(1_500, &[])).expect("ESC_STATUS");
+    assert_eq!(during, [0, 1860, 0, 0]);
+    let after = latest_rpm(&vehicle.step(2_200, &[])).expect("ESC_STATUS");
+    assert_eq!(after, [0; 4]);
+    // A new spin replaces a running one; a stop zeroes it and is always ACCEPTED.
+    vehicle.step(3_000, &motor_test([2.0, 0.0, 5.0, 3.0, 1.0, 2.0, 0.0]));
+    let bytes = vehicle.step(3_010, &motor_test([4.0, 0.0, 1.0, 3.0, 1.0, 2.0, 0.0]));
+    assert_eq!(ack_of(&bytes), MavResult::MAV_RESULT_ACCEPTED);
+    assert_eq!(latest_rpm(&vehicle.step(3_200, &[])), Some([0, 0, 0, 372]));
+    let bytes = vehicle.step(3_210, &motor_test([4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]));
+    assert_eq!(ack_of(&bytes), MavResult::MAV_RESULT_ACCEPTED);
+    assert_eq!(latest_rpm(&vehicle.step(3_400, &[])), Some([0; 4]));
+    // 5.01 % is DENIED, with a STATUSTEXT.
+    let bytes = vehicle.step(4_000, &motor_test([2.0, 0.0, 5.01, 1.0, 1.0, 2.0, 0.0]));
+    assert_eq!(ack_of(&bytes), MavResult::MAV_RESULT_DENIED);
+    assert!(
+        decode(&bytes)
+            .iter()
+            .any(|(_, m)| matches!(m, MavMessage::STATUSTEXT(_)))
+    );
+    assert_eq!(latest_rpm(&vehicle.step(4_200, &[])), Some([0; 4]));
+}
