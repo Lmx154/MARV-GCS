@@ -162,7 +162,7 @@ stderr (a command whose own stdout shows texts does not echo them). A text belon
 | `record FILE [--for s]` | records the link to a `.tlog` (the session's own recording) for `--for` (default 60 s), then prints `recorded<TAB>FILE<TAB>N frames<TAB>N bytes`; an existing file is never overwritten (exit 1) |
 | `session export FILE.tlog [--name N] [--out DIR]` | no `--connect`, no vehicle: converts a recording into a session folder (see "Sessions"). `--name` defaults to the file's name without `.tlog`; `--out` defaults to `sessions/` next to the file. Prints `session<TAB>FOLDER`, then `FILE.csv<TAB>N rows` for each CSV, `skipped<TAB>MESSAGE<TAB>WHY` for messages not written, and `marks<TAB>N`. An existing folder is never overwritten (exit 1); a file with no frames or one that cannot be read is exit 1 |
 | `session list [DIR]` | no `--connect`: the sessions in DIR (default `logs/sessions`, where the window puts them), one line each: `FOLDER<TAB>NAME<TAB>START<TAB>D s<TAB>N marks`; none (or no such folder) is exit 0 with a line on stderr |
-| `log report FILE.BIN --mass-kg KG --kf K [--poles N] [--json FILE]` | no `--connect`, no vehicle: the flight report of a DataFlash log the firmware wrote (see "Flight report" below); text on stdout, and with `--json` the same content in FILE (an existing file is never overwritten, exit 1). `--mass-kg` (kg) and `--kf` (N/(rad/s)^2, one motor) are required: the tool has no airframe of its own. `--poles` defaults to the log's `MOT_POLES` parameter, else 14, and the report says which. A missing or bad argument is exit 2 with the reason; an unreadable file is exit 1 |
+| `log report FILE.BIN --mass-kg KG --kf K [--poles N] [--accel-lpf-hz HZ]... [--json FILE]` | no `--connect`, no vehicle: the flight report of a DataFlash log the firmware wrote (see "Flight report" below); text on stdout, and with `--json` the same content in FILE (an existing file is never overwritten, exit 1). `--mass-kg` (kg) and `--kf` (N/(rad/s)^2, one motor) are required: the tool has no airframe of its own. `--poles` defaults to the log's `MOT_POLES` parameter; with neither, every section that needs the rotor speed says "give --poles: the motor's magnet count" and the rest of the report is still made. `--accel-lpf-hz` (repeatable, Hz above 0) adds a low-passed share to the vibration section's 1 g window. A missing or bad argument is exit 2 with the reason; an unreadable file is exit 1 |
 
 Output is one record per line; fields are separated by a TAB, so `cut -f`, `awk -F'\t'` and `grep` do. A
 command that sends a MAVLink command follows the commands service's record to its end and prints a line each
@@ -341,40 +341,97 @@ Seven crates; the dependency graph enforces the layers (`docs/architecture.md`).
 ### Flight report (`gcs-dflog`, `marv-cli log report`)
 
 ```
-marv-cli log report flight.BIN --mass-kg 1.2 --kf 2.8e-5 [--poles 14] [--json report.json]
+marv-cli log report flight.BIN --mass-kg 1.2 --kf 2.8e-5 [--poles 14] [--accel-lpf-hz 20 ...] [--json report.json]
 ```
 
 `flight_report_with` (also `flight_report(path, &ReportInputs)` and `flight_report_of`) reads one log of the MARV
-firmware in one pass, with progress and cancellation, and returns a plain `FlightReport`; `marv-cli` only parses the
+firmware, with progress and cancellation, and returns a plain `FlightReport`; `marv-cli` only parses the
 arguments and prints it (the text is the report, `--json` the same content as JSON, written with `serde_json`, which
 the workspace already uses; `gcs-dflog` itself still has no dependency). Record names and columns come from the
 log's own FMT records, never from offsets; a record type the log does not define makes the sections that need it say
-"not in this log" and the report goes on. Memory is one small accumulator per half-second bin of armed time, not the
-records (a 100 MB log is never held decoded).
+"not in this log" and the report goes on. Memory is one small accumulator per half-second bin of armed time, plus
+(vibration) one 1024-sample buffer and the accumulators of the interval being read, never the records (a 100 MB log
+is never held decoded). The vibration section needs the flights, which are known only when the first pass is done,
+so the stream is read a second time, `IMU` records only: the stream must be seekable (`Read + Seek`; a file or a
+`Cursor`), and progress runs from 0 again for it.
 
 Inputs: `--mass-kg` and `--kf` are required (no vehicle number is built in); rotor speed is
-`eRPM / (poles / 2) x 2 pi / 60` rad/s, with `--poles`, else the log's `MOT_POLES`, else 14 (said in the header).
+`eRPM / (poles / 2) x 2 pi / 60` rad/s, with `--poles`, else the log's `MOT_POLES`. With neither there is no default:
+every section that needs the rotor speed (flights, the saturation count, the motor identification, the thrust
+constant, the vibration section) says "give --poles: the motor's magnet count", and the rest is still produced.
+`--accel-lpf-hz <Hz>` may be given several times; with none, the 1 g window of the vibration section has only its raw
+share (the tool does not know the firmware's filter setting, so there is no default).
 
 | Section | What it holds |
 |---|---|
 | Header | file name, bytes, bad and tail bytes, duration (first to last `TimeUS`), the inputs and where the pole count came from |
-| Health | dropped records (the last `FDS.Dp` and `DSF.Dp`, and their sum), the least `FMn` of each ring, the largest `TimeUS` spacing of consecutive `NAV` records inside an armed window (us), the `DMD` records with `Sat` != 0 inside the airborne segments, the highest `ESC` temperature per motor, the lowest `BAT.Volt` (the first battery instance seen) |
+| Health | dropped records (the last `FDS.Dp` and `DSF.Dp`, and their sum), the least `FMn` of each ring, the largest `TimeUS` spacing of consecutive `NAV` records inside one armed window (us), the `DMD` records with `Sat` != 0 inside the flights, the highest `ESC` temperature per motor, the lowest `BAT.Volt` (the first battery instance seen) |
 | Armed windows | from `MOT.Arm`: start, end and duration of each stretch with `Arm` = 1 (a log that ends armed ends the window at its last `MOT` record and says so) |
-| Airborne segments | see below; a window with none is "armed, not airborne" |
-| Per segment | duration; mean throttle stick `RCS.T`; mean `SETP.Thr` in N and as a fraction of mass x g; mean rpm per motor; mean of kf x sum of speed^2 over mass x g; battery volts (minimum) and amps (mean, maximum); mean `DMD` `TX`, `TY`, `TZ` |
-| Motor identification | over all armed time, per motor a least-squares line speed = a + b x level (rad/s, levels as sent in `MOT.A0..A3`) with its rms residual, the number of bins, the level range and the mean battery voltage of the bins; and the thrust constant k = mass x g over the time-mean of the sum of speed^2 over all airborne segments, with k of each segment and their spread |
+| Flights | see below; a window with none is "armed, not airborne" |
+| Per flight | duration; mean throttle stick `RCS.T`; mean `SETP.Thr` in N and as a fraction of mass x g; mean rpm per motor; mean of kf x sum of speed^2 over mass x g; battery volts (minimum) and amps (mean, maximum); mean `DMD` `TX`, `TY`, `TZ` |
+| Motor identification | over all armed time, per motor a least-squares line speed = a + b x level (rad/s, levels as sent in `MOT.A0..A3`) with its rms residual, the number of bins, the level range and the mean battery voltage of the bins; the same line fitted to the bins of all four motors together ("pooled"); and the thrust constant (below) |
+| Vibration | per flight and per ground run, from the `IMU` records with `I` = 0 (below) |
 
-**The airborne definition** (deliberate, fixed): within an armed window, time is cut in bins of 0.5 s from the window's
-start (a partial last bin is left out). A bin is airborne when the mean over its `ESC` records of kf x (the sum over
-the four motors of speed^2) is at least 0.95 x mass x 9.80665 N. A run of consecutive airborne bins is a segment when
-it has at least 6 bins, and its first and last bin are dropped. Every figure "per segment" and the saturation count
-use the remaining bins (a mean over them is a mean of per-bin means, so a busier record type does not weigh more).
+**The NAV spacing:** the firmware writes the records of one step in the order `IMU`, `NAV`, `SETP`, `DMD`, `MOT`, and
+logs every step while armed but only every 8th while disarmed. The armed state of a `NAV` is therefore that of the
+`MOT` record with the same `TimeUS`, and a spacing is counted only when both `NAV` records lie in the same armed
+window; the long spacing across an arm or disarm edge is not a logging gap.
 
-**Identification:** per motor, a bin counts when it has at least two `MOT` records and one `ESC` record, the standard
+**The flight definition** (deliberate, fixed): within an armed window, time is cut in bins of 0.5 s from the window's
+start (a partial last bin is left out). For a bin, r = kf x (the mean over its `ESC` records of the sum over the four
+motors of speed^2) / (mass x 9.80665 N); a bin with no `ESC` record has r = 0. A flight starts at the first bin with
+r >= 1.0 and ends before the first later bin with r < 0.5, or at the end of the armed window; its last bin is dropped;
+it needs at least 6 bins (after dropping). Every figure "per flight" and the saturation count use its bins (means of
+per-bin means, so a busier record type does not weigh more). Why not "r >= 0.95 for a run": a single bin just under
+the line used to split one flight into two, and keeping only the high-thrust bins biased the thrust constant upward;
+the hysteresis (start at 1.0, stay above 0.5) keeps the whole of a flight, including its slow bins. Between the
+bounds nothing about the thrust is assumed except the one physical fact below.
+
+**The thrust constant:** from lift-off to touchdown the mean thrust equals the weight, so for a flight
+k = mass x g / (the time-mean of the sum of speed^2 over the whole flight); pooled over all flights, the time-mean is
+taken over all their bins (a weighting by duration). The bounds of a flight depend on the given kf, so it is done twice:
+bounds with the given kf give k1; bounds again with k1 give k2. The flights reported are those of the second round, and
+the report prints both constants. When a flight bound moved by more than one bin between the rounds (or the number of
+flights changed) it says so: the constant then depends on the kf given, and the bounds deserve a look. A steady
+hover whose bins all have the same speed has r = 1.0 exactly in round 2, so its start is decided by rounding; real
+flights vary.
+
+**Identification:** per motor, a bin counts when it has at least two `MOT` and one `ESC` record, the standard
 deviation (population) of that motor's level in it is below 12 levels, and its mean level is above the idle plateau,
 the lowest level that motor was sent while armed, plus 4. The fit uses the bin means and needs three such bins at two
-or more levels, else "not enough". The line and k are **valid only for the level range and the battery voltage seen**
-in those bins (the report says so next to them); k compares with the given kf, the report prints the ratio.
+or more levels, else "not enough". The pooled fit uses the points of the four motors (its "bins" are points). A fit
+whose level range (max minus min of the bin means) is under 25 % of its mean level is printed with "ill-conditioned:
+narrow level range" (text and JSON): the slope is then poorly determined. The line and k are **valid only for the
+level range and the battery voltage seen** in those bins (the report says so next to them); k compares with the
+given kf, the report prints the ratio.
+
+**Vibration:** the intervals are each flight and each ground run: armed, not in a flight (the dropped last bin of a
+flight counts as in it), consecutive bins whose mean level of the four motors is at least 20 levels above the mean of
+the motors' idle plateaus, at least 4 bins. For each, from the `IMU` records of instance 0 (`GyrX..Z` in rad/s,
+`AccX..Z` in m/s^2) inside the interval:
+
+- the sample rate, the median of the `TimeUS` spacing; below 400 Hz the report prints the rate and "too slow for
+  spectra" and gives no spectra (the other figures are still given);
+- the standard deviation per axis of gyro and accelerometer, and of the accelerometer magnitude;
+- the Welch spectrum per axis: segments of 1024 samples, Hann window, 50 % overlap, mean removed per segment,
+  averaged over the segments (a radix-2 FFT in `gcs-dflog`, `fft_in_place`). The spectrum is scaled so that its
+  sum is the variance. For each of the six axes the three largest peaks (local maxima of the averaged spectrum): the
+  frequency, and the amplitude as the rms of the signal within +-2 bins of the peak (a sine of amplitude A reads
+  A / sqrt 2);
+- the rotor band of the interval: the lowest and highest, over the four motors, of the mean rotor frequency
+  (rpm / 60, over the interval's bins), and per axis the share of the total variance within that band widened by 10 %
+  on each side, and within twice the band (widened the same way). A band reaching above half the sample rate is
+  seen folded: the report says "folded" and prints the ends as `|f - fs x round(f / fs)|`; the share then counts
+  every spectrum bin at which some frequency of the band shows;
+- the 1 g window: the share of the raw accelerometer samples with 0.9 g <= |a| <= 1.1 g, and the same after a
+  first-order low-pass `y += (x - y) x dt / (dt + 1/(2 pi fc))` (seeded with the interval's first sample, `dt` the
+  spacing of the samples) for each `--accel-lpf-hz` given. It mirrors what the firmware's estimator does; the
+  firmware's setting is not known to the tool.
+
+How to read it: a rotor-band share near 1 on an axis says the vibration of that axis is the rotors' (their speed or
+twice it, when the blades or the motors are unbalanced); a large peak elsewhere is a structural resonance or a
+neighbouring source; a ground run next to a flight shows what is the motors and what is the air. A raw 1 g share
+well below 1 with a filtered share near 1 means the vibration is fast enough for the filter at that cut-off to remove.
 
 **Privacy:** the report reads no position. The analysis never opens the fields of `GPS`, `GPS2`, `GPA`, `POS` or
 `ORGN` records (not even their time), and the report has no field that could hold one. A test puts a GPS record with a

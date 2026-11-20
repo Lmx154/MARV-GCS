@@ -1,7 +1,7 @@
 //! The streaming reader: resynchronisation, truncated tail, progress and cancellation.
 
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::format::{Format, Value};
@@ -265,6 +265,22 @@ impl<R: Read> Reader<R> {
                 "record type without a format",
             )),
         }
+    }
+}
+
+impl<R: Read + Seek> Reader<R> {
+    /// Goes back to the start of the stream for a second pass: the counters restart from 0, the record types
+    /// already defined stay.
+    pub fn rewind(&mut self) -> io::Result<()> {
+        self.inner.seek(SeekFrom::Start(0))?;
+        self.pos = 0;
+        self.end = 0;
+        self.eof = false;
+        self.consumed = 0;
+        self.records = 0;
+        self.bad_bytes = 0;
+        self.tail_bytes = 0;
+        Ok(())
     }
 }
 

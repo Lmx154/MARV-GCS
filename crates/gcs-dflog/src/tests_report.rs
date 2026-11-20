@@ -5,7 +5,8 @@ use std::io::Cursor;
 use crate::flight_report::{GRAVITY, flight_report_of};
 use crate::tests::{V, fmt_record, int, record};
 use crate::{
-    Control, FlightReport, MotorFitResult, PolesSource, Reader, ReportInputs, flight_report_with,
+    Control, FlightReport, IntervalKind, MotorFitResult, PolesSource, Reader, ReportInputs,
+    VibrationState, flight_report_with,
 };
 
 const MOT: &str = "QBBHHHHHHHH";
@@ -19,11 +20,29 @@ const FDS: &str = "QII";
 const DSF: &str = "QIHIIII";
 const PARM: &str = "QNff";
 const GPS: &str = "QBBIHBcLLeff";
+const IMU: &str = "QBffffff";
 
 const STEP: i64 = 10_000;
 const BIN: i64 = 500_000;
 const T0: i64 = 2_000_000;
 const END1: i64 = T0 + 16 * BIN + 250_000;
+/// The first window's bins by target r (kf x sum of speed^2 over mass x g): the ground, a run-up to r = 0.8,
+/// the flight (bins 4..=14, with bins just under 1.0 inside it), the ground.
+const R_PROFILE: [(usize, f64); 11] = [
+    (4, 1.6),
+    (5, 1.5),
+    (6, 1.8),
+    (7, 1.4),
+    (8, 1.1),
+    (9, 0.95),
+    (10, 0.92),
+    (11, 1.2),
+    (12, 1.5),
+    (13, 1.0),
+    (14, 0.97),
+];
+const FLIGHT_FIRST_BIN: usize = 4;
+const FLIGHT_LAST_BIN: usize = 14;
 const T2: i64 = 11_250_000;
 const END2: i64 = 13_250_000;
 const LOG_END: i64 = 14_000_000;
@@ -40,24 +59,37 @@ fn line(m: usize) -> (f64, f64) {
     (-40.0 + 5.0 * m as f64, 0.7 + 0.02 * m as f64)
 }
 
-/// The level of every motor at `t` (armed); the bins of the first window:
-/// 0..2 ground, 3 half ground half hover, 4..13 hover (520, 540, ... 700), 14..16 ground.
+/// The level of every motor that gives `r` with the given kf.
+fn level_for_r(r: f64) -> i64 {
+    let (mut lo, mut hi) = (100.0, 3000.0);
+    for _ in 0..60 {
+        let mid = (lo + hi) / 2.0;
+        if KF * sum_sq(mid) / (MASS * GRAVITY) < r {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    lo.round() as i64
+}
+
+/// The level of bin `idx` of the first window: 0 and 1 ground, 2 a run-up to r = 0.4, 3 to r = 0.8, then the
+/// flight, then the ground.
+fn bin_level(idx: usize) -> i64 {
+    match idx {
+        2 => level_for_r(0.4),
+        3 => level_for_r(0.8),
+        FLIGHT_FIRST_BIN..=FLIGHT_LAST_BIN => level_for_r(R_PROFILE[idx - FLIGHT_FIRST_BIN].1),
+        _ => 100,
+    }
+}
+
+/// The level of every motor at `t` (armed).
 fn level_at(t: i64) -> i64 {
     if !(T0..END1).contains(&t) {
         return 100;
     }
-    let idx = (t - T0) / BIN;
-    match idx {
-        3 => {
-            if (t - T0) % BIN < BIN / 2 {
-                100
-            } else {
-                520
-            }
-        }
-        4..=13 => 520 + 20 * (idx - 4),
-        _ => 100,
-    }
+    bin_level(((t - T0) / BIN) as usize)
 }
 
 fn armed(t: i64) -> bool {
@@ -114,6 +146,12 @@ fn header(o: &Opts) -> Vec<u8> {
     ));
     f.extend(fmt_record(139, "PARM", PARM, "TimeUS,Name,Value,Default"));
     f.extend(fmt_record(
+        142,
+        "IMU",
+        IMU,
+        "TimeUS,I,GyrX,GyrY,GyrZ,AccX,AccY,AccZ",
+    ));
+    f.extend(fmt_record(
         140,
         "GPS",
         GPS,
@@ -168,6 +206,23 @@ fn synth(o: &Opts) -> Vec<u8> {
         let on = armed(t);
         let level = if on { level_at(t) } else { 0 };
         let l = level as u16 as i64;
+        // 100 Hz, one IMU that counts and a second that must be ignored.
+        for (inst, az) in [(0, GRAVITY), (1, 50.0)] {
+            f.extend(record(
+                142,
+                IMU,
+                &[
+                    int(t),
+                    int(inst),
+                    V::Float(0.0),
+                    V::Float(0.0),
+                    V::Float(0.0),
+                    V::Float(0.0),
+                    V::Float(0.0),
+                    V::Float(az),
+                ],
+            ));
+        }
         f.extend(record(
             130,
             MOT,
@@ -201,12 +256,13 @@ fn synth(o: &Opts) -> Vec<u8> {
                 v.push(int(0));
                 f.extend(record(131, ESC, &v));
             }
-            let hover = on && (T0 + 4 * BIN..T0 + 14 * BIN).contains(&t);
-            // Saturation: 3 records in the first hover bin (dropped from the segment), 5 in the
-            // eighth (kept), 2 on the ground.
+            let hover = on && (T0 + 4 * BIN..T0 + 15 * BIN).contains(&t);
+            // Saturation: 3 records in the first flight bin, 5 in the fifth, 4 in the last (dropped from
+            // the flight), 2 on the ground.
             let rel = t - T0;
             let sat = (hover && (0..60_000).contains(&(rel - 4 * BIN)))
                 || (hover && (0..100_000).contains(&(rel - 8 * BIN)))
+                || (hover && (0..80_000).contains(&(rel - 14 * BIN)))
                 || (on && (0..40_000).contains(&(rel - BIN)));
             f.extend(record(
                 132,
@@ -308,6 +364,7 @@ fn inputs() -> ReportInputs {
         mass_kg: MASS,
         kf: KF,
         poles: Some(POLES),
+        accel_lpf_hz: Vec::new(),
     }
 }
 
@@ -340,8 +397,15 @@ fn sum_sq(level: f64) -> f64 {
         .sum()
 }
 
+/// The levels of the flight's bins that count (the last of the run is dropped).
+fn flight_levels() -> Vec<f64> {
+    (FLIGHT_FIRST_BIN..FLIGHT_LAST_BIN)
+        .map(|i| bin_level(i) as f64)
+        .collect()
+}
+
 #[test]
-fn windows_segment_fit_and_constant() {
+fn windows_flight_fit_and_constant() {
     let r = report(&full(), &inputs());
     assert_eq!(r.bad_bytes, 0);
     assert_eq!(r.first_time_us, Some(0));
@@ -351,20 +415,20 @@ fn windows_segment_fit_and_constant() {
         (w.start_us, w.end_us, w.open_at_end),
         (T0 as u64, END1 as u64, false)
     );
-    assert_eq!(w.segments.len(), 1);
-    // Hover bins 4..=13 are airborne; the first and last of the run go: 5..=12.
-    let s = &w.segments[0];
-    assert_eq!(s.start_us, (T0 + 5 * BIN) as u64);
-    assert_eq!(s.end_us, (T0 + 13 * BIN) as u64);
-    assert_eq!(s.bins, 8);
+    // One flight: the bins just under r = 1 do not split it, the run-up to r = 0.8 is not in it.
+    assert_eq!(w.flights.len(), 1);
+    let s = &w.flights[0];
+    assert_eq!(s.start_us, (T0 + 4 * BIN) as u64);
+    assert_eq!(s.end_us, (T0 + 14 * BIN) as u64);
+    assert_eq!(s.bins, 10);
     // The second window is armed and never airborne.
     let w2 = &r.windows[1];
     assert_eq!((w2.start_us, w2.end_us), (T2 as u64, END2 as u64));
-    assert!(w2.segments.is_empty());
+    assert!(w2.flights.is_empty());
 
     let mg = MASS * GRAVITY;
-    let levels: Vec<f64> = (5..=12).map(|i| (520 + 20 * (i - 4)) as f64).collect();
-    let mean_ssq = levels.iter().map(|l| sum_sq(*l)).sum::<f64>() / 8.0;
+    let levels = flight_levels();
+    let mean_ssq = levels.iter().map(|l| sum_sq(*l)).sum::<f64>() / 10.0;
     within(s.speed_sq_sum, mean_ssq, 0.01);
     within(s.thrust_ratio, KF * mean_ssq / mg, 0.01);
     within(s.stick_mean.unwrap(), 0.55, 1e-6);
@@ -373,7 +437,7 @@ fn windows_segment_fit_and_constant() {
     for m in 0..4 {
         let (a, b) = line(m);
         let rpm =
-            levels.iter().map(|l| a + b * l).sum::<f64>() / 8.0 * 60.0 / std::f64::consts::TAU;
+            levels.iter().map(|l| a + b * l).sum::<f64>() / 10.0 * 60.0 / std::f64::consts::TAU;
         within(s.rpm[m], rpm, 0.001);
     }
     assert_eq!(s.volts_min, Some(14.5));
@@ -384,7 +448,12 @@ fn windows_segment_fit_and_constant() {
     within(s.torque[1].unwrap(), -0.2, 1e-5);
     within(s.torque[2].unwrap(), 0.05, 1e-5);
 
-    // The motor identification: 10 hover bins, the idle and the mixed bin out.
+    // The motor identification: the run-up, the flight and its last bin, 13 bins; the idle out.
+    let all_levels: Vec<f64> = (2..=FLIGHT_LAST_BIN).map(|i| bin_level(i) as f64).collect();
+    let (lo, hi) = (
+        all_levels.iter().copied().fold(f64::INFINITY, f64::min),
+        all_levels.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+    );
     let fits = r.identification.motors.as_ref().unwrap();
     for (m, fit) in fits.iter().enumerate() {
         let MotorFitResult::Fit(f) = fit else {
@@ -393,20 +462,32 @@ fn windows_segment_fit_and_constant() {
         let (a, b) = line(m);
         within(f.a, a, 0.01);
         within(f.b, b, 0.01);
-        assert_eq!(f.bins, 10);
-        assert_eq!((f.level_min, f.level_max), (520.0, 700.0));
+        assert_eq!(f.bins, 13);
+        assert_eq!((f.level_min, f.level_max), (lo, hi));
         assert_eq!(f.idle_level, 100.0);
+        assert!(!f.ill_conditioned);
         assert!(f.rms_residual < 0.05, "{}", f.rms_residual);
         let v = f.mean_volts.unwrap();
-        assert!(v > 14.9 && v <= 15.0, "{v}");
+        assert!(v > 14.9 && v <= 16.0, "{v}");
     }
+    // The pooled fit has the points of the four motors; their lines differ, so it fits worse.
+    let MotorFitResult::Fit(p) = r.identification.pooled.as_ref().unwrap() else {
+        panic!("no pooled fit")
+    };
+    assert_eq!(p.bins, 52);
+    assert!(!p.ill_conditioned && p.rms_residual > 1.0, "{p:?}");
+
     let k = r.identification.thrust.as_ref().unwrap();
-    within(k.k, mg / mean_ssq, 0.01);
-    assert_eq!(k.per_segment.len(), 1);
-    within(k.per_segment[0], k.k, 1e-9);
-    assert_eq!(k.segments_min, k.segments_max);
+    within(k.k1, mg / mean_ssq, 0.01);
+    within(k.k2.unwrap(), mg / mean_ssq, 0.01);
+    assert_eq!(k.k2, Some(k.k1));
+    assert_eq!((k.flights_round1, k.bounds_moved), (1, false));
+    assert_eq!(k.per_flight.len(), 1);
+    within(k.per_flight[0], k.k2.unwrap(), 1e-9);
+    assert_eq!(k.flights_min, k.flights_max);
     // The constant of the log is not the one the report was told.
-    assert!((k.k - KF).abs() / KF > 0.001);
+    assert!((k.k1 - KF).abs() / KF > 0.001);
+    assert_eq!(r.vibration.state, VibrationState::Done);
 }
 
 #[test]
@@ -418,8 +499,8 @@ fn health_counts() {
     assert_eq!(h.least_free_dsf, Some(100));
     // Spacing of NAV inside an armed window only: the long gaps are disarmed.
     assert_eq!(h.max_nav_gap_us, Some(60_000));
-    // 5 in a kept bin; 3 in the dropped first bin and 2 on the ground do not count.
-    assert_eq!(h.saturated_airborne, 5);
+    // 3 in the first flight bin and 5 in the fifth; 4 in the dropped last bin and 2 on the ground do not count.
+    assert_eq!(h.saturated_airborne, 8);
     for m in 0..4 {
         assert_eq!(h.esc_temp_max[m], Some(50.0 + m as f64));
     }
@@ -428,26 +509,75 @@ fn health_counts() {
 }
 
 #[test]
-fn poles_from_argument_parameter_or_default() {
+fn poles_from_argument_parameter_or_nothing() {
     let mut i = inputs();
-    let r = report(&full(), &i);
-    assert_eq!((r.poles, r.poles_source), (POLES, PolesSource::Argument));
-    i.poles = None;
     let r = report(&full(), &i);
     assert_eq!(
         (r.poles, r.poles_source),
-        (crate::DEFAULT_POLES, PolesSource::Default)
+        (Some(POLES), PolesSource::Argument)
     );
+    i.poles = None;
+    // No pole count anywhere: no default; what needs the rotor speed is not computed, the rest is.
+    let r = report(&full(), &i);
+    assert_eq!((r.poles, r.poles_source), (None, PolesSource::Missing));
+    assert_eq!(r.windows.len(), 2);
+    assert!(r.windows.iter().all(|w| w.flights.is_empty()));
+    assert!(r.identification.motors.is_none() && r.identification.pooled.is_none());
+    assert!(r.identification.thrust.is_none());
+    assert_eq!(r.vibration.state, VibrationState::NeedsPoles);
+    assert!(r.vibration.intervals.is_empty());
+    assert_eq!(r.health.max_nav_gap_us, Some(60_000));
+    assert_eq!(r.health.battery_min_v, Some(14.5));
     let o = Opts {
         parm_poles: true,
         ..full()
     };
     let r = report(&o, &i);
-    assert_eq!((r.poles, r.poles_source), (POLES, PolesSource::Parameter));
-    assert_eq!(r.windows[0].segments.len(), 1);
+    assert_eq!(
+        (r.poles, r.poles_source),
+        (Some(POLES), PolesSource::Parameter)
+    );
+    assert_eq!(r.windows[0].flights.len(), 1);
     // An argument wins over the parameter.
     i.poles = Some(POLES + 2.0);
     assert_eq!(report(&o, &i).poles_source, PolesSource::Argument);
+}
+
+/// A NAV and then the MOT of the same step, as the firmware writes them (the other records of a step are
+/// left out).
+fn step(f: &mut Vec<u8>, t: i64, armed: bool) {
+    let mut nav = vec![int(t)];
+    nav.extend((0..7).map(|_| V::Float(0.0)));
+    nav.push(int(1));
+    f.extend(record(136, NAV, &nav));
+    let mut mot = vec![int(t), int(i64::from(armed)), int(0)];
+    mot.extend((0..4).map(|_| int(100)));
+    mot.extend((0..4).map(|_| int(0)));
+    f.extend(record(130, MOT, &mot));
+}
+
+#[test]
+fn the_nav_spacing_across_an_arm_or_disarm_edge_is_not_counted() {
+    let mut f = header(&full());
+    // Disarmed: every 8th step, 10 ms; armed: every step, 1.25 ms; two windows.
+    let mut t = 0;
+    while t < 90_000 {
+        step(&mut f, t, false);
+        t += 10_000;
+    }
+    for window in [100_000, 400_000] {
+        let mut t = window;
+        while t <= window + 20_000 {
+            step(&mut f, t, true);
+            t += 1_250;
+        }
+        for k in 1..=5 {
+            step(&mut f, window + 20_000 + 10_000 * k, false);
+        }
+    }
+    let r = flight_report_of(Cursor::new(f), None, &inputs()).unwrap();
+    assert_eq!(r.windows.len(), 2);
+    assert_eq!(r.health.max_nav_gap_us, Some(1_250));
 }
 
 #[test]
@@ -486,7 +616,7 @@ fn a_log_without_esc_reports_what_it_can() {
     );
     assert!(!r.present.esc && r.present.mot && r.present.bat);
     assert_eq!(r.windows.len(), 2);
-    assert!(r.windows.iter().all(|w| w.segments.is_empty()));
+    assert!(r.windows.iter().all(|w| w.flights.is_empty()));
     assert!(r.identification.motors.is_none() && r.identification.thrust.is_none());
     assert_eq!(r.health.esc_temp_max, [None; 4]);
     assert_eq!(r.health.battery_min_v, Some(14.5));
@@ -519,7 +649,7 @@ fn a_log_that_ends_armed_ends_at_its_last_mot_record() {
     assert_eq!(r.windows.len(), 1);
     assert_eq!((r.windows[0].start_us, r.windows[0].end_us), (0, 20_000));
     assert!(r.windows[0].open_at_end);
-    assert!(r.windows[0].segments.is_empty());
+    assert!(r.windows[0].flights.is_empty());
 }
 
 #[test]
@@ -573,4 +703,239 @@ fn a_pass_can_be_cancelled() {
     let mut reader = Reader::new(Cursor::new(file), None);
     let r = flight_report_with(&mut reader, &inputs(), |_| Control::Stop).unwrap();
     assert!(r.is_none());
+}
+
+/// A log armed from its first record whose bin `i` holds every motor at `levels[i]`, with the IMU every
+/// `imu_us`: `gyro_x` and `acc_z` (functions of the time in s) plus a little noise on every axis.
+fn plain_log(
+    levels: &[i64],
+    imu_us: i64,
+    gyro_x: impl Fn(f64) -> f64,
+    acc_z: impl Fn(f64) -> f64,
+) -> Vec<u8> {
+    let mut f = header(&full());
+    let mut seed = 12345u64;
+    let mut noise = || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((seed >> 33) as f64 / (1u64 << 31) as f64 - 0.5) * 0.04
+    };
+    let end = levels.len() as i64 * BIN;
+    for t in (0..=end).step_by(500) {
+        if t % imu_us == 0 {
+            let s = t as f64 / 1e6;
+            f.extend(record(
+                142,
+                IMU,
+                &[
+                    int(t),
+                    int(0),
+                    V::Float(gyro_x(s) + noise()),
+                    V::Float(noise()),
+                    V::Float(noise()),
+                    V::Float(noise()),
+                    V::Float(noise()),
+                    V::Float(acc_z(s) + noise()),
+                ],
+            ));
+        }
+        if t % 10_000 == 0 {
+            let level = levels[((t / BIN) as usize).min(levels.len() - 1)];
+            let mut mot = vec![int(t), int(1), int(0)];
+            mot.extend((0..4).map(|_| int(level)));
+            mot.extend((0..4).map(|_| int(0)));
+            f.extend(record(130, MOT, &mot));
+            let mut esc = vec![int(t)];
+            esc.extend((0..4).map(|m| {
+                let (a, b) = line(m);
+                int(erpm(a + b * level as f64))
+            }));
+            esc.extend((0..4).map(|_| int(0)));
+            esc.extend((0..4).map(|_| int(40)));
+            esc.push(int(0));
+            f.extend(record(131, ESC, &esc));
+        }
+    }
+    f
+}
+
+/// A tiny kf: no bin is ever a flight, so every interval is a ground run.
+fn ground_inputs(lpf: &[f64]) -> ReportInputs {
+    ReportInputs {
+        kf: 1e-9,
+        accel_lpf_hz: lpf.to_vec(),
+        ..inputs()
+    }
+}
+
+/// The lowest and highest rotor frequency (Hz) of the four motors at `level`.
+fn rotor_hz(level: f64) -> (f64, f64) {
+    let hz: Vec<f64> = (0..4)
+        .map(|m| {
+            let (a, b) = line(m);
+            (a + b * level) / std::f64::consts::TAU
+        })
+        .collect();
+    (
+        hz.iter().copied().fold(f64::INFINITY, f64::min),
+        hz.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+    )
+}
+
+/// Two idle bins, then 22 bins at `level`.
+fn run_levels(level: i64) -> Vec<i64> {
+    let mut v = vec![100, 100];
+    v.extend(std::iter::repeat_n(level, 22));
+    v
+}
+
+fn ground_run(f: Vec<u8>, i: &ReportInputs) -> crate::IntervalVibration {
+    let r = flight_report_of(Cursor::new(f), None, i).unwrap();
+    assert_eq!(r.vibration.state, VibrationState::Done);
+    assert_eq!(r.vibration.intervals.len(), 1, "{:?}", r.vibration);
+    let v = r.vibration.intervals[0].clone();
+    assert_eq!(v.kind, IntervalKind::GroundRun);
+    assert_eq!((v.start_us, v.end_us), (1_000_000, 12_000_000));
+    v
+}
+
+#[test]
+fn a_sine_on_gyro_x_is_the_top_peak_with_its_frequency_and_amplitude() {
+    let (f0, amp) = (87.3, 2.0);
+    let log = plain_log(
+        &run_levels(300),
+        1000,
+        |t| amp * (std::f64::consts::TAU * f0 * t).sin(),
+        |_| GRAVITY,
+    );
+    let v = ground_run(log, &ground_inputs(&[]));
+    let rate = v.rate_hz.unwrap();
+    within(rate, 1000.0, 1e-9);
+    assert!(!v.too_slow);
+    within(v.gyro_std[0], amp / 2f64.sqrt(), 0.02);
+    assert!(v.gyro_std[1] < 0.05 && v.accel_std[2] < 0.05 && v.accel_mag_std < 0.05);
+    let sp = v.spectra.as_ref().expect("spectra");
+    assert!(sp.segments > 15);
+    let peak = &sp.axes[0].peaks[0];
+    assert!((peak.hz - f0).abs() <= rate / 1024.0, "{}", peak.hz);
+    within(peak.rms, amp / 2f64.sqrt(), 0.05);
+    assert_eq!(sp.axes[0].peaks.len(), 3);
+    // The rotor band is far from the sine: little of the variance of gyro X is in it.
+    let (lo, hi) = v.rotor_hz.unwrap();
+    let (elo, ehi) = rotor_hz(300.0);
+    within(lo, elo, 1e-3);
+    within(hi, ehi, 1e-3);
+    let band = sp.bands.as_ref().unwrap();
+    assert!(!band[0].folded && !band[1].folded);
+    assert!(sp.axes[0].band_share.unwrap()[0] < 0.1);
+}
+
+#[test]
+fn a_sine_at_the_rotor_frequency_is_in_the_rotor_band() {
+    let (elo, ehi) = rotor_hz(300.0);
+    let f0 = (elo + ehi) / 2.0;
+    let log = plain_log(
+        &run_levels(300),
+        1000,
+        |t| 1.5 * (std::f64::consts::TAU * f0 * t).sin(),
+        |_| GRAVITY,
+    );
+    let v = ground_run(log, &ground_inputs(&[]));
+    let sp = v.spectra.unwrap();
+    let share = sp.axes[0].band_share.unwrap();
+    assert!(share[0] > 0.9, "{share:?}");
+    assert!(share[1] < 0.1, "{share:?}");
+    // Gyro Y is noise: not concentrated in the band.
+    assert!(sp.axes[1].band_share.unwrap()[0] < 0.5);
+}
+
+#[test]
+fn a_doubled_band_above_half_the_rate_is_folded() {
+    // Rotors near 130 Hz sampled at 400 Hz: twice the band is above 200 Hz and is seen folded.
+    let level = 1180.0;
+    let (elo, ehi) = rotor_hz(level);
+    let f_true = elo + ehi; // twice the middle of the band
+    let log = plain_log(
+        &run_levels(level as i64),
+        2500,
+        |t| 1.5 * (std::f64::consts::TAU * f_true * t).sin(),
+        |_| GRAVITY,
+    );
+    let v = ground_run(log, &ground_inputs(&[]));
+    within(v.rate_hz.unwrap(), 400.0, 1e-9);
+    assert!(!v.too_slow);
+    let sp = v.spectra.unwrap();
+    let bands = sp.bands.as_ref().unwrap();
+    assert!(bands[1].folded && bands[1].hi_hz > 200.0);
+    // |f - fs x round(f / fs)| of the ends of the doubled band.
+    let fold = |f: f64| (f - 400.0 * (f / 400.0).round()).abs();
+    within(bands[1].shown_lo_hz, fold(bands[1].lo_hz), 1e-9);
+    within(bands[1].shown_hi_hz, fold(bands[1].hi_hz), 1e-9);
+    assert!(sp.axes[0].band_share.unwrap()[1] > 0.9);
+    // The sine shows at its alias.
+    let alias = fold(f_true);
+    assert!((sp.axes[0].peaks[0].hz - alias).abs() <= 400.0 / 1024.0);
+}
+
+#[test]
+fn the_one_g_window_before_and_after_a_low_pass() {
+    let tau = std::f64::consts::TAU;
+    // 1 g plus a sine of half a g at 30 Hz: the magnitude leaves 0.9..1.1 g most of the time.
+    let log = plain_log(
+        &run_levels(300),
+        1000,
+        |_| 0.0,
+        |t| GRAVITY * (1.0 + 0.5 * (tau * 30.0 * t).sin()),
+    );
+    let v = ground_run(log.clone(), &ground_inputs(&[1.0, 200.0]));
+    let g = v.one_g.unwrap();
+    assert!(g.raw > 0.05 && g.raw < 0.3, "{}", g.raw);
+    assert_eq!(g.filtered.len(), 2);
+    assert_eq!(g.filtered[0], (1.0, 1.0));
+    // A cut-off far above the sine lets it through: nearly the raw share.
+    assert!((g.filtered[1].1 - g.raw).abs() < 0.1, "{g:?}");
+    // No cut-off given: only the raw share.
+    let none = ground_run(log, &ground_inputs(&[])).one_g.unwrap();
+    assert!(none.filtered.is_empty());
+    assert_eq!(none.raw, g.raw);
+}
+
+#[test]
+fn an_imu_at_100_hz_is_too_slow_for_spectra_and_the_rest_is_reported() {
+    let r = report(&full(), &inputs());
+    let v = &r.vibration.intervals;
+    assert_eq!(v.len(), 1);
+    assert_eq!(v[0].kind, IntervalKind::Flight);
+    assert_eq!((v[0].window, v[0].number), (0, 1));
+    within(v[0].rate_hz.unwrap(), 100.0, 1e-9);
+    assert!(v[0].too_slow && v[0].spectra.is_none());
+    // The second IMU (50 m/s^2) is ignored; the first is a constant 1 g.
+    assert_eq!(v[0].one_g.as_ref().unwrap().raw, 1.0);
+    assert!(v[0].accel_mag_std < 1e-6);
+    assert_eq!(v[0].samples, 500);
+}
+
+#[test]
+fn a_narrow_level_range_is_marked_ill_conditioned() {
+    let levels = [100, 100, 500, 502, 504, 506, 508, 510, 512, 514];
+    let r = flight_report_of(
+        Cursor::new(plain_log(&levels, 10_000, |_| 0.0, |_| GRAVITY)),
+        None,
+        &ground_inputs(&[]),
+    )
+    .unwrap();
+    for fit in r
+        .identification
+        .motors
+        .as_ref()
+        .unwrap()
+        .iter()
+        .chain(r.identification.pooled.as_ref())
+    {
+        let MotorFitResult::Fit(f) = fit else {
+            panic!("{fit:?}")
+        };
+        assert!(f.ill_conditioned, "{f:?}");
+    }
 }

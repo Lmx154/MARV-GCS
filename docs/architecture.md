@@ -154,7 +154,7 @@ pub fn Condition::parse(text) -> Result<Condition, ConditionError>;       // syn
 pub fn Condition::bind(&self, formats: &[Format]) -> Result<BoundCondition, ConditionError>;
 pub fn find_with(reader, &BoundCondition, on_progress) -> io::Result<Option<Found>>; // the intervals
 pub fn export_with(reader, &ExportRequest, on_progress) -> Result<Export, ExportError>; // CSV files, one per type
-pub fn flight_report_with(reader, &ReportInputs, on_progress) -> io::Result<Option<FlightReport>>; // health, flights, motor fit
+pub fn flight_report_with(reader /* Read + Seek */, &ReportInputs, on_progress) -> io::Result<Option<FlightReport>>; // health, flights, motor fit, vibration (second pass over the IMU)
 ```
 
 ### `gcs-sim`

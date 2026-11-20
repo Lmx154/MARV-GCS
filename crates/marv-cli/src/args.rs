@@ -12,7 +12,7 @@ marv-cli: the MARV ground station on the command line
 Usage: marv-cli --connect <endpoint> [--timeout <s>] <command> [args]
        marv-cli session export <file.tlog> [--name <name>] [--out <dir>]
        marv-cli session list [<dir>]
-       marv-cli log report <file.BIN> --mass-kg <kg> --kf <N/(rad/s)^2> [--poles <n>] [--json <file>]
+       marv-cli log report <file.BIN> --mass-kg <kg> --kf <N/(rad/s)^2> [--poles <n>] [--accel-lpf-hz <Hz>]... [--json <file>]
 
 Endpoint: serial:PATH[:BAUD], tcp:HOST:PORT or udp:ADDR:PORT. serial and tcp are
 configure links; udp is operate-only (every command that writes is refused).
@@ -39,10 +39,12 @@ Commands:
                                    <the file's directory>/sessions); an existing folder is never overwritten
   session list [<dir>]             the sessions in <dir> (default logs/sessions): FOLDER NAME START DURATION MARKS
   log report <file.BIN>            the flight report of a DataFlash log written by the firmware: health, armed windows,
-                                   airborne segments, hover figures, motor identification; no --connect, no vehicle.
+                                   flights, hover figures, motor identification, vibration; no --connect, no vehicle.
                                    --mass-kg and --kf are required (any airframe); --poles (default: the log's
-                                   MOT_POLES, else 14, said in the report); --json also writes the report as JSON
-                                   (an existing file is never overwritten). No position is read or printed.
+                                   MOT_POLES; with neither, what needs the rotor speed says so); --accel-lpf-hz
+                                   (repeatable) adds a low-passed 1 g window share to the vibration section;
+                                   --json also writes the report as JSON (an existing file is never overwritten).
+                                   No position is read or printed.
 
 Options:
   --connect <endpoint>   where the vehicle is (required)
@@ -55,7 +57,8 @@ Options:
   --out <dir>            session export: where the session folder goes
   --mass-kg <kg>         log report: the vehicle's mass (required)
   --kf <k>               log report: the thrust constant of one motor, N/(rad/s)^2 (required)
-  --poles <n>            log report: the motor's pole count
+  --poles <n>            log report: the motor's pole count (the magnet count)
+  --accel-lpf-hz <Hz>    log report: a cut-off of the accelerometer low-pass of the 1 g window; repeat for more
   --json <file>          log report: also write the report as JSON
   --force                let logs get overwrite an existing file
   --help                 this text
@@ -142,6 +145,8 @@ pub enum LogCommand {
         mass_kg: f64,
         kf: f64,
         poles: Option<f64>,
+        /// The cut-offs given with `--accel-lpf-hz`, in order.
+        accel_lpf_hz: Vec<f64>,
         json: Option<PathBuf>,
     },
 }
@@ -288,9 +293,10 @@ fn positive(option: &str, text: &str) -> Result<f64, String> {
     }
 }
 
-/// `log report <file> --mass-kg M --kf K [--poles N] [--json FILE]`.
+/// `log report <file> --mass-kg M --kf K [--poles N] [--accel-lpf-hz F]... [--json FILE]`.
 fn log(args: &[String]) -> Result<Parsed, String> {
     let (mut mass, mut kf, mut poles, mut json) = (None, None, None, None);
+    let mut lpf = Vec::new();
     let mut words: Vec<&str> = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -304,6 +310,9 @@ fn log(args: &[String]) -> Result<Parsed, String> {
             "--mass-kg" => mass = Some(positive("--mass-kg", value("--mass-kg")?)?),
             "--kf" => kf = Some(positive("--kf", value("--kf")?)?),
             "--poles" => poles = Some(positive("--poles", value("--poles")?)?),
+            "--accel-lpf-hz" => {
+                lpf.push(positive("--accel-lpf-hz", value("--accel-lpf-hz")?)?);
+            }
             "--json" => json = Some(PathBuf::from(value("--json")?)),
             option if option.starts_with("--") => return Err(format!("unknown option {option}")),
             word => words.push(word),
@@ -316,6 +325,7 @@ fn log(args: &[String]) -> Result<Parsed, String> {
             kf: kf
                 .ok_or("log report needs --kf <N/(rad/s)^2>: the thrust constant of one motor")?,
             poles,
+            accel_lpf_hz: lpf,
             json,
         })),
         ["report"] => Err("log report needs a FILE.BIN".to_string()),

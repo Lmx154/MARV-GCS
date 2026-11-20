@@ -27,7 +27,7 @@
 //!   documentation.
 //!
 //! - [`flight_report_with`] (and [`flight_report`], [`flight_report_of`]): the report of a flight log of the MARV
-//!   firmware (health, armed windows, airborne segments, hover figures, motor identification), which
+//!   firmware (health, armed windows, flights, hover figures, motor identification, vibration), which
 //!   needs the airframe's mass and thrust constant; the rules are in the documentation of
 //!   [`flight_report_with`]. It never reads a position record.
 //!
@@ -41,6 +41,7 @@ mod flight_report;
 mod format;
 mod reader;
 mod summary;
+mod vibration;
 
 #[cfg(test)]
 mod tests;
@@ -60,11 +61,17 @@ pub use condition::{
 pub use events::{Event, EventSource, events, events_of, events_with};
 pub use export::{Export, ExportError, ExportRequest, TypeExport, export_with};
 pub use flight_report::{
-    AIRBORNE_FRACTION, ArmedWindow, BIN_US, DEFAULT_POLES, FlightReport, GRAVITY, Health,
-    IDLE_MARGIN, Identification, MIN_SEGMENT_BINS, MOTORS, MotorFit, MotorFitResult,
-    POLES_PARAMETER, PolesSource, ReportInputs, STEADY_LEVEL_STD, Segment, ThrustConstant,
-    TypesPresent, flight_report, flight_report_of, flight_report_with,
+    ArmedWindow, BIN_US, FLIGHT_END_R, FLIGHT_START_R, Flight, FlightReport, GRAVITY,
+    GROUND_RUN_MARGIN, Health, IDLE_MARGIN, Identification, MIN_FLIGHT_BINS, MIN_GROUND_RUN_BINS,
+    MOTORS, MotorFit, MotorFitResult, NARROW_LEVEL_RANGE, POLES_PARAMETER, PolesSource,
+    ReportInputs, STEADY_LEVEL_STD, ThrustConstant, TypesPresent, flight_report, flight_report_of,
+    flight_report_with,
 };
 pub use format::{Format, Value};
 pub use reader::{Control, Progress, Reader, Record, scan};
 pub use summary::{Summary, TypeCount, summary, summary_of, summary_with};
+pub use vibration::{
+    AxisSpectrum, BAND_MARGIN, IntervalKind, IntervalVibration, MIN_SPECTRUM_RATE_HZ, ONE_G_WINDOW,
+    OneGShares, PEAK_HALF_WIDTH, PEAKS, Peak, RotorBand, SEGMENT, Spectra, VibrationReport,
+    VibrationState, fft_in_place,
+};
