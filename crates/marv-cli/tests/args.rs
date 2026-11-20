@@ -350,3 +350,42 @@ fn the_session_errors() {
         error("--connect tcp:127.0.0.1:5760 session export a.tlog").contains("without --connect")
     );
 }
+
+#[test]
+fn the_log_report_parses_and_needs_its_inputs() {
+    use marv_cli::args::LogCommand;
+    match parse(&args(
+        "log report a.BIN --mass-kg 1.5 --kf 2e-5 --poles 12 --json out.json",
+    )) {
+        Ok(Parsed::Log(LogCommand::Report {
+            file,
+            mass_kg,
+            kf,
+            poles,
+            json,
+        })) => {
+            assert_eq!(file, PathBuf::from("a.BIN"));
+            assert_eq!((mass_kg, kf, poles), (1.5, 2e-5, Some(12.0)));
+            assert_eq!(json, Some(PathBuf::from("out.json")));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(
+        parse(&args("log report a.BIN --kf 2e-5 --mass-kg 1")),
+        Ok(Parsed::Log(LogCommand::Report {
+            poles: None,
+            json: None,
+            ..
+        }))
+    ));
+    assert!(error("log report a.BIN --kf 2e-5").contains("needs --mass-kg"));
+    assert!(error("log report a.BIN --mass-kg 1").contains("needs --kf"));
+    assert!(error("log report --mass-kg 1 --kf 1").contains("needs a FILE.BIN"));
+    assert!(error("log report a.BIN b.BIN --mass-kg 1 --kf 1").contains("unexpected argument"));
+    assert!(error("log report a.BIN --mass-kg x --kf 1").contains("--mass-kg needs a number"));
+    assert!(error("log report a.BIN --mass-kg 1 --kf -2").contains("--kf needs a number above 0"));
+    assert!(error("log report a.BIN --mass-kg 1 --kf 1 --poles").contains("--poles needs a value"));
+    assert!(error("log").contains("needs report"));
+    assert!(error("log erase").contains("unknown log command"));
+    assert!(USAGE.contains("log report"));
+}

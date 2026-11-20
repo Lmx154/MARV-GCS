@@ -8,6 +8,7 @@ use std::io::Write;
 
 pub mod args;
 pub mod commands;
+pub mod log_report;
 pub mod session;
 
 /// The exit statuses.
@@ -31,6 +32,7 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         }
         Ok(args::Parsed::Run(invocation)) => invocation,
         Ok(args::Parsed::Session(command)) => return session::run(&command, out, err),
+        Ok(args::Parsed::Log(command)) => return log_report::run(&command, out, err),
         Err(message) => {
             let _ = writeln!(err, "marv-cli: {message}\nTry: marv-cli --help");
             return exit::USAGE;

@@ -162,6 +162,7 @@ stderr (a command whose own stdout shows texts does not echo them). A text belon
 | `record FILE [--for s]` | records the link to a `.tlog` (the session's own recording) for `--for` (default 60 s), then prints `recorded<TAB>FILE<TAB>N frames<TAB>N bytes`; an existing file is never overwritten (exit 1) |
 | `session export FILE.tlog [--name N] [--out DIR]` | no `--connect`, no vehicle: converts a recording into a session folder (see "Sessions"). `--name` defaults to the file's name without `.tlog`; `--out` defaults to `sessions/` next to the file. Prints `session<TAB>FOLDER`, then `FILE.csv<TAB>N rows` for each CSV, `skipped<TAB>MESSAGE<TAB>WHY` for messages not written, and `marks<TAB>N`. An existing folder is never overwritten (exit 1); a file with no frames or one that cannot be read is exit 1 |
 | `session list [DIR]` | no `--connect`: the sessions in DIR (default `logs/sessions`, where the window puts them), one line each: `FOLDER<TAB>NAME<TAB>START<TAB>D s<TAB>N marks`; none (or no such folder) is exit 0 with a line on stderr |
+| `log report FILE.BIN --mass-kg KG --kf K [--poles N] [--json FILE]` | no `--connect`, no vehicle: the flight report of a DataFlash log the firmware wrote (see "Flight report" below); text on stdout, and with `--json` the same content in FILE (an existing file is never overwritten, exit 1). `--mass-kg` (kg) and `--kf` (N/(rad/s)^2, one motor) are required: the tool has no airframe of its own. `--poles` defaults to the log's `MOT_POLES` parameter, else 14, and the report says which. A missing or bad argument is exit 2 with the reason; an unreadable file is exit 1 |
 
 Output is one record per line; fields are separated by a TAB, so `cut -f`, `awk -F'\t'` and `grep` do. A
 command that sends a MAVLink command follows the commands service's record to its end and prints a line each
@@ -333,9 +334,52 @@ Seven crates; the dependency graph enforces the layers (`docs/architecture.md`).
 | `gcs-mavlink` | MAVLink 2 on any reader and writer: framing, one small state machine per sub-protocol (heartbeat, messages, parameters, commands, text, recorder, logs), the vehicle state, the log reader and replay. No transport, no window. |
 | `gcs-sim` | The simulated vehicle (`marv-sim`). Written from the specification and never using `gcs-mavlink`, so the two check each other. |
 | `gcs-link` | The join, with no GUI: the role an endpoint gives the station (`access_of`, the one mapping) and the start of a session on it, and `session_folder`, the converter of a `.tlog` into a session folder (file writing, so it is not in `gcs-mavlink`). Used by both applications. |
-| `gcs-dflog` | Reads ArduPilot DataFlash `.BIN` logs, generically, from the file's own FMT records (`A3 95 <type> <payload>`; every format character decoded and scaled as pymavlink does; resynchronisation over bad bytes and a truncated last record counted, not an error), one record at a time in constant memory, with progress and cancellation; and a one-pass summary (records per type, first and last `TimeUS`, bad and tail bytes, the FMT list, the wall-clock start from a `GPS` record with `GWk` > 0). The event timeline (device state changes, status texts, parameter changes, GPS fix changes, sticks present, dropped records) and the condition search (below), each one pass with progress and cancellation. The CSV export (below), one pass with progress and cancellation. No GUI, no dependency; the Log tab's "Review a log file" section of `marv-gcs` uses it. |
+| `gcs-dflog` | Reads ArduPilot DataFlash `.BIN` logs, generically, from the file's own FMT records (`A3 95 <type> <payload>`; every format character decoded and scaled as pymavlink does; resynchronisation over bad bytes and a truncated last record counted, not an error), one record at a time in constant memory, with progress and cancellation; and a one-pass summary (records per type, first and last `TimeUS`, bad and tail bytes, the FMT list, the wall-clock start from a `GPS` record with `GWk` > 0). The event timeline (device state changes, status texts, parameter changes, GPS fix changes, sticks present, dropped records) and the condition search (below), each one pass with progress and cancellation. The CSV export (below), one pass with progress and cancellation. The flight report (below), one pass with progress and cancellation. No GUI, no dependency; the Log tab's "Review a log file" section of `marv-gcs` uses it. |
 | `marv-cli` | The command line (`marv-cli`), for a computer with no display: see below. |
 | `marv-gcs` | The window: the connection bar and one file per tab; also the link test tool `marv-link-test` (`src/link_test.rs`, `src/bin/marv_link_test.rs`), which builds `MARV_TEST` with `marv-dialect`. |
+
+### Flight report (`gcs-dflog`, `marv-cli log report`)
+
+```
+marv-cli log report flight.BIN --mass-kg 1.2 --kf 2.8e-5 [--poles 14] [--json report.json]
+```
+
+`flight_report_with` (also `flight_report(path, &ReportInputs)` and `flight_report_of`) reads one log of the MARV
+firmware in one pass, with progress and cancellation, and returns a plain `FlightReport`; `marv-cli` only parses the
+arguments and prints it (the text is the report, `--json` the same content as JSON, written with `serde_json`, which
+the workspace already uses; `gcs-dflog` itself still has no dependency). Record names and columns come from the
+log's own FMT records, never from offsets; a record type the log does not define makes the sections that need it say
+"not in this log" and the report goes on. Memory is one small accumulator per half-second bin of armed time, not the
+records (a 100 MB log is never held decoded).
+
+Inputs: `--mass-kg` and `--kf` are required (no vehicle number is built in); rotor speed is
+`eRPM / (poles / 2) x 2 pi / 60` rad/s, with `--poles`, else the log's `MOT_POLES`, else 14 (said in the header).
+
+| Section | What it holds |
+|---|---|
+| Header | file name, bytes, bad and tail bytes, duration (first to last `TimeUS`), the inputs and where the pole count came from |
+| Health | dropped records (the last `FDS.Dp` and `DSF.Dp`, and their sum), the least `FMn` of each ring, the largest `TimeUS` spacing of consecutive `NAV` records inside an armed window (us), the `DMD` records with `Sat` != 0 inside the airborne segments, the highest `ESC` temperature per motor, the lowest `BAT.Volt` (the first battery instance seen) |
+| Armed windows | from `MOT.Arm`: start, end and duration of each stretch with `Arm` = 1 (a log that ends armed ends the window at its last `MOT` record and says so) |
+| Airborne segments | see below; a window with none is "armed, not airborne" |
+| Per segment | duration; mean throttle stick `RCS.T`; mean `SETP.Thr` in N and as a fraction of mass x g; mean rpm per motor; mean of kf x sum of speed^2 over mass x g; battery volts (minimum) and amps (mean, maximum); mean `DMD` `TX`, `TY`, `TZ` |
+| Motor identification | over all armed time, per motor a least-squares line speed = a + b x level (rad/s, levels as sent in `MOT.A0..A3`) with its rms residual, the number of bins, the level range and the mean battery voltage of the bins; and the thrust constant k = mass x g over the time-mean of the sum of speed^2 over all airborne segments, with k of each segment and their spread |
+
+**The airborne definition** (deliberate, fixed): within an armed window, time is cut in bins of 0.5 s from the window's
+start (a partial last bin is left out). A bin is airborne when the mean over its `ESC` records of kf x (the sum over
+the four motors of speed^2) is at least 0.95 x mass x 9.80665 N. A run of consecutive airborne bins is a segment when
+it has at least 6 bins, and its first and last bin are dropped. Every figure "per segment" and the saturation count
+use the remaining bins (a mean over them is a mean of per-bin means, so a busier record type does not weigh more).
+
+**Identification:** per motor, a bin counts when it has at least two `MOT` records and one `ESC` record, the standard
+deviation (population) of that motor's level in it is below 12 levels, and its mean level is above the idle plateau,
+the lowest level that motor was sent while armed, plus 4. The fit uses the bin means and needs three such bins at two
+or more levels, else "not enough". The line and k are **valid only for the level range and the battery voltage seen**
+in those bins (the report says so next to them); k compares with the given kf, the report prints the ratio.
+
+**Privacy:** the report reads no position. The analysis never opens the fields of `GPS`, `GPS2`, `GPA`, `POS` or
+`ORGN` records (not even their time), and the report has no field that could hold one. A test puts a GPS record with a
+known position in a synthetic log and checks that nothing of it, not even its late timestamp, reaches the report; the
+command-line test checks the text and the JSON for it too.
 
 ### Searching a log with a condition (`gcs-dflog`)
 
@@ -396,7 +440,7 @@ do better than the station (a spreadsheet, a plotting script).
 ## Tests
 
 ```
-cargo test --workspace          # 925 tests (11 more are ignored: they need a board or a recording, or only time a pass), about 60 s; needs /usr/bin/socat for the serial tests
+cargo test --workspace          # 962 tests (11 more are ignored: they need a board or a recording, or only time a pass), about 60 s; needs /usr/bin/socat for the serial tests
 cargo clippy --workspace --all-targets -- -D warnings
 tools/board_check.sh <dir>      # with the board on its debug probe and its USB port cabled: about 3 minutes
 ```
@@ -415,7 +459,7 @@ What the tests stand on:
   simulated vehicle over TCP and over a pseudo serial port (and, with a hand-played vehicle, over UDP): connect, loss of the vehicle and recovery,
   message rates and values, the full parameter list with 20 % of frames dropped in each direction, writes
   confirmed, refused and unanswered, both parameter encodings, recording and replay.
-- The command line (`crates/marv-cli/tests`, 54 tests): every command and option and every error of the arguments, `session export` and `session list` (a recording made against the simulator, converted, refused when the folder exists); every command against the simulator over TCP, the log download included (byte for byte, with lost frames, a stalled vehicle, an existing file); no vehicle (nothing listening, a silent peer); the negative control, where a counting writer on an Operate session sees no `PARAM_SET`, no log message and no `COMMAND_LONG` but the capability request while `devices`, `status` and `param list` work; and the dependency rule (no GUI crate in `cargo tree -p marv-cli`).
+- The command line (`crates/marv-cli/tests`, 58 tests): every command and option and every error of the arguments, `session export` and `session list` (a recording made against the simulator, converted, refused when the folder exists), `log report` (a synthetic log, the JSON file, the arguments); every command against the simulator over TCP, the log download included (byte for byte, with lost frames, a stalled vehicle, an existing file); no vehicle (nothing listening, a silent peer); the negative control, where a counting writer on an Operate session sees no `PARAM_SET`, no log message and no `COMMAND_LONG` but the capability request while `devices`, `status` and `param list` work; and the dependency rule (no GUI crate in `cargo tree -p marv-cli`).
 - The views are drawn and clicked without a window (`egui_kittest`). The HUD was looked at on 2026-11-17 in `--screenshot` pictures against the simulator (moving attitude) and the real board (no attitude: grey horizon and the text); one fault found and fixed (the text lines were drawn over the drawing). The Log, Sensors, Radio and Devices tabs were looked at on 2026-11-16 in pictures taken with `--screenshot` against the real board (one fault found and fixed: the Radio bars of channels 10 to 16 were shifted); the Radio tab's function bars, `MIN`/`TRIM`/`MAX` marks and the mapping section at rest were looked at the same way against the simulator and against the board running the firmware's RC-mapping build (one fault found and fixed: the mapping rows did not line up). Besides that they are checked by tests of the views' logic and by one ignored test that replays a recording of the real vehicle (`MARV_TLOG=file.tlog cargo test -p marv-gcs --test real_recording -- --ignored --nocapture`; 2026-11-16: every Sensors preset, RC_CHANNELS, and the SD and RC rows found their data in a 20 s recording; RADIO_STATUS is not sent on USB). The Devices tab's unsaved-calibration bar was used on 2026-11-18 by the owner against the real board (gyro, accelerometer and compass calibrated, Discard and Save to flash, offsets kept after a reboot). Seen by the owner on the real board, 2026-11-18: the Map tab (tiles, marker, track line, buttons, compass rose); in the Log tab the table of on-board logs, the download's progress bar, the keep-the-cable-connected line, the red "link lost" line of a failed download and the re-download after it, Browse… and its file dialog with the `.BIN` filter, and in the "Review a log file" section Find and Export, the progress bars and the scrolling of the tab; the two battery plots; the Radio tab's calibration screens and the mapping editor in use with a real transmitter; the Devices tab's Sensor presets in use (BARO Smooth and Balanced; IMU1 Smooth, then Flight, with Save and reboot). Not yet seen on a screen: the arrow turned by `ATTITUDE` yaw on the Map tab (the firmware sends no `ATTITUDE`; drawn headless and in a `--screenshot` against the simulator only), the Sensors tab's session bar (idle, running with marks, the saved and error lines, the reason next to a disabled Start) and the Log tab's Sessions list (checked headless only, against the simulator and a temporary log directory), the Sensors plots' hover readout (the popup, its placement near the pointer, the bold and outlined marks for lines under the pointer; checked headless only), and the Parameters tab's read-only rows with their note, its Unit column and the hover on a name.
 - Checked with independent implementations: framing against the `mavlink` crate's own reader and writer
   for all 234 message types; the simulator's output with a hand-written decoder; a recorded log read with

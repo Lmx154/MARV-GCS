@@ -12,6 +12,7 @@ marv-cli: the MARV ground station on the command line
 Usage: marv-cli --connect <endpoint> [--timeout <s>] <command> [args]
        marv-cli session export <file.tlog> [--name <name>] [--out <dir>]
        marv-cli session list [<dir>]
+       marv-cli log report <file.BIN> --mass-kg <kg> --kf <N/(rad/s)^2> [--poles <n>] [--json <file>]
 
 Endpoint: serial:PATH[:BAUD], tcp:HOST:PORT or udp:ADDR:PORT. serial and tcp are
 configure links; udp is operate-only (every command that writes is refused).
@@ -37,6 +38,11 @@ Commands:
                                    no vehicle and no --connect; --name (default the file's name), --out (default
                                    <the file's directory>/sessions); an existing folder is never overwritten
   session list [<dir>]             the sessions in <dir> (default logs/sessions): FOLDER NAME START DURATION MARKS
+  log report <file.BIN>            the flight report of a DataFlash log written by the firmware: health, armed windows,
+                                   airborne segments, hover figures, motor identification; no --connect, no vehicle.
+                                   --mass-kg and --kf are required (any airframe); --poles (default: the log's
+                                   MOT_POLES, else 14, said in the report); --json also writes the report as JSON
+                                   (an existing file is never overwritten). No position is read or printed.
 
 Options:
   --connect <endpoint>   where the vehicle is (required)
@@ -47,6 +53,10 @@ Options:
   -o, --output <file>    where logs get writes the log
   --name <name>          session export: the session's name
   --out <dir>            session export: where the session folder goes
+  --mass-kg <kg>         log report: the vehicle's mass (required)
+  --kf <k>               log report: the thrust constant of one motor, N/(rad/s)^2 (required)
+  --poles <n>            log report: the motor's pole count
+  --json <file>          log report: also write the report as JSON
   --force                let logs get overwrite an existing file
   --help                 this text
 
@@ -124,6 +134,18 @@ pub enum SessionCommand {
     },
 }
 
+/// The commands on a log file.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LogCommand {
+    Report {
+        file: PathBuf,
+        mass_kg: f64,
+        kf: f64,
+        poles: Option<f64>,
+        json: Option<PathBuf>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Invocation {
     pub endpoint: Endpoint,
@@ -139,6 +161,8 @@ pub enum Parsed {
     Run(Invocation),
     /// `session ...`: works on files, with no `--connect`.
     Session(SessionCommand),
+    /// `log ...`: works on a file, with no `--connect`.
+    Log(LogCommand),
 }
 
 /// The `MARV_DEVICE` ids by name (docs/link-contract.md, section 8).
@@ -172,6 +196,9 @@ fn seconds(option: &str, text: &str) -> Result<Duration, String> {
 pub fn parse(args: &[String]) -> Result<Parsed, String> {
     if args.first().map(String::as_str) == Some("session") {
         return session(&args[1..]);
+    }
+    if args.first().map(String::as_str) == Some("log") {
+        return log(&args[1..]);
     }
     let mut connect = None;
     let mut timeout = DEFAULT_TIMEOUT;
@@ -251,6 +278,51 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         duration,
         command,
     }))
+}
+
+/// A number above 0 for `option`.
+fn positive(option: &str, text: &str) -> Result<f64, String> {
+    match text.parse::<f64>() {
+        Ok(x) if x.is_finite() && x > 0.0 => Ok(x),
+        _ => Err(format!("{option} needs a number above 0, not {text:?}")),
+    }
+}
+
+/// `log report <file> --mass-kg M --kf K [--poles N] [--json FILE]`.
+fn log(args: &[String]) -> Result<Parsed, String> {
+    let (mut mass, mut kf, mut poles, mut json) = (None, None, None, None);
+    let mut words: Vec<&str> = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let mut value = |option: &str| {
+            iter.next()
+                .map(String::as_str)
+                .ok_or_else(|| format!("{option} needs a value"))
+        };
+        match arg.as_str() {
+            "--help" | "-h" => return Ok(Parsed::Help),
+            "--mass-kg" => mass = Some(positive("--mass-kg", value("--mass-kg")?)?),
+            "--kf" => kf = Some(positive("--kf", value("--kf")?)?),
+            "--poles" => poles = Some(positive("--poles", value("--poles")?)?),
+            "--json" => json = Some(PathBuf::from(value("--json")?)),
+            option if option.starts_with("--") => return Err(format!("unknown option {option}")),
+            word => words.push(word),
+        }
+    }
+    match words.as_slice() {
+        ["report", file] => Ok(Parsed::Log(LogCommand::Report {
+            file: PathBuf::from(file),
+            mass_kg: mass.ok_or("log report needs --mass-kg <kg>: the vehicle's mass")?,
+            kf: kf
+                .ok_or("log report needs --kf <N/(rad/s)^2>: the thrust constant of one motor")?,
+            poles,
+            json,
+        })),
+        ["report"] => Err("log report needs a FILE.BIN".to_string()),
+        ["report", _, extra, ..] => Err(format!("unexpected argument {extra:?}")),
+        [] => Err("log needs report".to_string()),
+        [other, ..] => Err(format!("unknown log command {other:?}: report")),
+    }
 }
 
 /// `session export <file> [--name N] [--out DIR]` and `session list [DIR]`.

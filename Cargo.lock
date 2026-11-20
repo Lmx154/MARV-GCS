@@ -1993,10 +1993,12 @@ dependencies = [
 name = "marv-cli"
 version = "0.1.0"
 dependencies = [
+ "gcs-dflog",
  "gcs-link",
  "gcs-mavlink",
  "gcs-sim",
  "gcs-transport",
+ "serde_json",
 ]
 
 [[package]]

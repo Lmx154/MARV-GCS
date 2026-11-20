@@ -99,6 +99,8 @@ This crate never names MAVLink.
    of one that waits for a service's result and writes a file) in `crates/marv-cli/src/commands.rs` and an arm in
    `run_command`. Every wait in it goes through `wait`, which has a deadline. Its output is tab-separated
    lines, errors on stderr, and an exit status from `exit` in `lib.rs`.
+   A command on a file, with no link (`session ...`, `log report`), is a branch at the top of `args::parse` returning its own
+   `Parsed` variant, run from `lib.rs` before any session starts (`session.rs`, `log_report.rs` are the examples).
 4. Test the parsing in `tests/args.rs` and the behaviour against the simulator in `tests/sim.rs` (or a file of its own, `tests/logs.rs`); if it writes,
    add it to the list in `tests/gate.rs` (the negative control: an Operate session must refuse it with 0 frames).
 

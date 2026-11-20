@@ -11,7 +11,7 @@
 //! buffer and decodes a field only when asked, so a 100 MB log is never held decoded. [`scan`] runs a
 //! pass with progress and cancellation; [`summary`] is one such pass.
 //!
-//! On top of [`scan`] there are three more one-pass operations, each with progress and cancellation:
+//! On top of [`scan`] there are four more one-pass operations, each with progress and cancellation:
 //!
 //! - [`events_with`] (and [`events`], [`events_of`]): the event timeline of a log of the MARV firmware (device
 //!   state changes, status texts, parameter changes, GPS fix changes, sticks present, dropped records); the rules
@@ -26,12 +26,18 @@
 //!   rate per type and instance and only where a condition holds; the file names and the format are in its
 //!   documentation.
 //!
+//! - [`flight_report_with`] (and [`flight_report`], [`flight_report_of`]): the report of a flight log of the MARV
+//!   firmware (health, armed windows, airborne segments, hover figures, motor identification), which
+//!   needs the airframe's mass and thrust constant; the rules are in the documentation of
+//!   [`flight_report_with`]. It never reads a position record.
+//!
 //! This crate has no GUI and no dependency; it is the station's own reader, not the firmware's `fw-core`
 //! (which only writes our fixed table).
 
 mod condition;
 mod events;
 mod export;
+mod flight_report;
 mod format;
 mod reader;
 mod summary;
@@ -44,6 +50,8 @@ mod tests_conditions;
 mod tests_events;
 #[cfg(test)]
 mod tests_export;
+#[cfg(test)]
+mod tests_report;
 
 pub use condition::{
     BoundCondition, Condition, ConditionError, FieldRange, Found, Interval, MAX_INTERVALS,
@@ -51,6 +59,12 @@ pub use condition::{
 };
 pub use events::{Event, EventSource, events, events_of, events_with};
 pub use export::{Export, ExportError, ExportRequest, TypeExport, export_with};
+pub use flight_report::{
+    AIRBORNE_FRACTION, ArmedWindow, BIN_US, DEFAULT_POLES, FlightReport, GRAVITY, Health,
+    IDLE_MARGIN, Identification, MIN_SEGMENT_BINS, MOTORS, MotorFit, MotorFitResult,
+    POLES_PARAMETER, PolesSource, ReportInputs, STEADY_LEVEL_STD, Segment, ThrustConstant,
+    TypesPresent, flight_report, flight_report_of, flight_report_with,
+};
 pub use format::{Format, Value};
 pub use reader::{Control, Progress, Reader, Record, scan};
 pub use summary::{Summary, TypeCount, summary, summary_of, summary_with};
