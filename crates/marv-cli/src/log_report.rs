@@ -5,6 +5,10 @@ use std::fmt::Write as _;
 use std::io::Write;
 
 use gcs_dflog::{
+    EXCURSION_SEPARATION_S, EXCURSION_WINDOW_S, Excursion, HOLD_MIN_DEG, HOLD_MIN_S, HOLD_SETTLE_S,
+    HOLD_TOL_DEG, Hold, TRACKING_AXES, TrackingState,
+};
+use gcs_dflog::{
     FLIGHT_END_R, FLIGHT_START_RATIO, Flight, FlightReport, GROUND_RUN_MARGIN, IntervalKind,
     IntervalVibration, MIN_FLIGHT_BINS, MIN_GROUND_RUN_BINS, MIN_SPECTRUM_RATE_HZ, MotorFit,
     MotorFitResult, NARROW_LEVEL_RANGE, ONE_G_WINDOW, PolesSource, ReportInputs, SEGMENT,
@@ -366,7 +370,147 @@ pub fn to_text(r: &FlightReport) -> String {
             }
         }
     }
+
+    let _ = writeln!(
+        s,
+        "\nTracking (NAV attitude against the SETP attitude setpoint, K = 1, inside each flight; degrees; \
+         error = setpoint minus estimate)"
+    );
+    match r.tracking.state {
+        TrackingState::NotInLog => {
+            let _ = writeln!(
+                s,
+                "  {}",
+                gap(
+                    false,
+                    match (p.nav, p.setp) {
+                        (false, false) => "NAV, SETP",
+                        (false, true) => "NAV",
+                        _ => "SETP",
+                    }
+                )
+            );
+        }
+        TrackingState::NeedsPoles => {
+            let _ = writeln!(s, "  {NEEDS_POLES}");
+        }
+        TrackingState::Done => tracking_text(&mut s, r),
+    }
     s
+}
+
+fn exc_text(e: &Option<Excursion>) -> String {
+    match e {
+        None => "none".to_string(),
+        Some(e) => format!(
+            "{:.2} deg at {} (estimate {:.2}, past the setpoint bound {:.2}; body rate {:.1} deg/s)",
+            e.value,
+            secs(e.at_us),
+            e.estimate,
+            e.bound,
+            e.rate_dps
+        ),
+    }
+}
+
+fn tracking_text(s: &mut String, r: &FlightReport) {
+    let t = &r.tracking;
+    if t.flights.is_empty() {
+        let _ = writeln!(s, "  no flight");
+    }
+    for f in &t.flights {
+        let _ = writeln!(
+            s,
+            "  window {} flight {}: {} to {}, {} records",
+            f.window + 1,
+            f.number,
+            secs(f.start_us),
+            secs(f.end_us),
+            f.records
+        );
+        let Some(axes) = &f.axes else {
+            let _ = writeln!(s, "    no SETP record with K = 1");
+            continue;
+        };
+        for (i, (name, a)) in TRACKING_AXES.iter().zip(axes).enumerate() {
+            let wrap = if i == 2 {
+                " (error wrapped to +-180)"
+            } else {
+                ""
+            };
+            let _ = writeln!(
+                s,
+                "    {name}{wrap}: setpoint {:.2} to {:.2}, error mean {:.2}, rms {:.2}, largest {:.2} at {}",
+                a.setpoint_min,
+                a.setpoint_max,
+                a.mean_error,
+                a.rms_error,
+                a.max_abs_error,
+                secs(a.max_abs_error_at_us)
+            );
+        }
+        for (name, e) in TRACKING_AXES.iter().zip(&f.excursions) {
+            let _ = writeln!(s, "    {name} excursion, largest: {}", exc_text(e));
+        }
+    }
+    let _ = writeln!(
+        s,
+        "  {} records with another setpoint kind, not analysed",
+        t.other_kind_records
+    );
+    let _ = writeln!(
+        s,
+        "  Excursion: how far the estimate lies outside the range of the setpoint over the preceding \
+         {EXCURSION_WINDOW_S} s. Largest events of the whole log (local maxima at least \
+         {EXCURSION_SEPARATION_S} s apart)"
+    );
+    for (name, events) in TRACKING_AXES.iter().zip(&t.events) {
+        if events.is_empty() {
+            let _ = writeln!(s, "    {name}: none");
+        }
+        for e in events {
+            let _ = writeln!(
+                s,
+                "    {name}: window {} flight {}: {}",
+                e.window + 1,
+                e.number,
+                exc_text(&Some(e.excursion.clone()))
+            );
+        }
+    }
+    let _ = writeln!(
+        s,
+        "  Holds (setpoint within {HOLD_TOL_DEG} deg of its first value for at least {HOLD_MIN_S} s, first value \
+         at least {HOLD_MIN_DEG} deg from 0; settled part from {HOLD_SETTLE_S} s after the start)"
+    );
+    for (i, name) in TRACKING_AXES.iter().take(2).enumerate() {
+        let st = &t.hold_stats[i];
+        let _ = writeln!(
+            s,
+            "    {name}: {} holds, settled error median {}, largest {} (magnitudes)",
+            st.count,
+            opt(st.median_abs_error, 2, " deg", "-"),
+            opt(st.max_abs_error, 2, " deg", "-")
+        );
+        let mut holds: Vec<&Hold> = t.holds[i].iter().collect();
+        holds.sort_by(|a, b| {
+            b.settled_error
+                .abs()
+                .total_cmp(&a.settled_error.abs())
+                .then(a.start_us.cmp(&b.start_us))
+        });
+        for h in holds.iter().take(10) {
+            let _ = writeln!(
+                s,
+                "      at {}, {} long: setpoint {:.2}, estimate {:.2}, settled error {:.2}",
+                secs(h.start_us),
+                secs(h.duration_us),
+                h.mean_setpoint,
+                h.mean_estimate,
+                h.settled_error
+            );
+        }
+    }
 }
 
 fn ill(f: &MotorFit) -> String {
@@ -768,6 +912,101 @@ pub fn to_json(r: &FlightReport) -> Value {
             },
             "needs_poles": needs_poles,
             "intervals": intervals,
+        },
+        "tracking": tracking_json(r),
+    })
+}
+
+fn excursion_json(e: &Excursion) -> Value {
+    json!({
+        "at_us": e.at_us,
+        "excursion_deg": e.value,
+        "estimate_deg": e.estimate,
+        "bound_deg": e.bound,
+        "body_rate_deg_s": e.rate_dps,
+    })
+}
+
+fn tracking_json(r: &FlightReport) -> Value {
+    let t = &r.tracking;
+    let flights: Vec<Value> = t
+        .flights
+        .iter()
+        .map(|f| {
+            let axes = f.axes.as_ref().map(|axes| {
+                TRACKING_AXES
+                    .iter()
+                    .zip(axes)
+                    .map(|(name, a)| {
+                        json!({
+                            "axis": name,
+                            "setpoint_min_deg": a.setpoint_min,
+                            "setpoint_max_deg": a.setpoint_max,
+                            "mean_error_deg": a.mean_error,
+                            "rms_error_deg": a.rms_error,
+                            "largest_error_deg": a.max_abs_error,
+                            "largest_error_at_us": a.max_abs_error_at_us,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            });
+            json!({
+                "window": f.window + 1,
+                "flight": f.number,
+                "start_us": f.start_us,
+                "end_us": f.end_us,
+                "records": f.records,
+                "axes": axes,
+                "excursion_roll": f.excursions[0].as_ref().map(excursion_json),
+                "excursion_pitch": f.excursions[1].as_ref().map(excursion_json),
+            })
+        })
+        .collect();
+    let events = |i: usize| -> Vec<Value> {
+        t.events[i]
+            .iter()
+            .map(|e| {
+                let mut v = excursion_json(&e.excursion);
+                v["window"] = json!(e.window + 1);
+                v["flight"] = json!(e.number);
+                v
+            })
+            .collect()
+    };
+    let holds = |i: usize| -> Value {
+        let st = &t.hold_stats[i];
+        json!({
+            "count": st.count,
+            "median_abs_settled_error_deg": jn(st.median_abs_error),
+            "largest_abs_settled_error_deg": jn(st.max_abs_error),
+            "holds": t.holds[i].iter().map(|h| json!({
+                "window": h.window + 1,
+                "flight": h.number,
+                "start_us": h.start_us,
+                "duration_us": h.duration_us,
+                "mean_setpoint_deg": h.mean_setpoint,
+                "mean_estimate_deg": h.mean_estimate,
+                "settled_error_deg": h.settled_error,
+            })).collect::<Vec<_>>(),
+        })
+    };
+    json!({
+        "state": match t.state {
+            TrackingState::Done => "done",
+            TrackingState::NeedsPoles => "needs_poles",
+            TrackingState::NotInLog => "not_in_this_log",
+        },
+        "other_setpoint_kind_records": t.other_kind_records,
+        "flights": flights,
+        "excursion_events": {"roll": events(0), "pitch": events(1)},
+        "holds": {"roll": holds(0), "pitch": holds(1)},
+        "definitions": {
+            "excursion_window_s": EXCURSION_WINDOW_S,
+            "excursion_separation_s": EXCURSION_SEPARATION_S,
+            "hold_tolerance_deg": HOLD_TOL_DEG,
+            "hold_min_s": HOLD_MIN_S,
+            "hold_min_deg": HOLD_MIN_DEG,
+            "hold_settle_s": HOLD_SETTLE_S,
         },
     })
 }

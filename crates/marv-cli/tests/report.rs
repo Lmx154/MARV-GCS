@@ -223,3 +223,105 @@ fn a_missing_file_is_exit_1() {
     assert_eq!(r.code, 1, "{r:?}");
     assert!(r.err.contains("log report of"), "{r:?}");
 }
+
+/// The synthetic log with `NAV` and `SETP` inside its flight (1 s to 5 s): the roll setpoint is 20 degrees
+/// and the estimate 18, pitch and yaw on target; five more `SETP` records of kind 2.
+fn tracking_log() -> Vec<u8> {
+    let quat = |roll_deg: f32| {
+        let h = roll_deg.to_radians() / 2.0;
+        [h.cos(), h.sin(), 0.0f32, 0.0f32]
+    };
+    let mut f = synthetic_log();
+    f.extend(fmt(
+        134,
+        "NAV",
+        "QfffffffB",
+        "TimeUS,Q1,Q2,Q3,Q4,GX,GY,GZ,Vld",
+        3 + 8 + 28 + 1,
+    ));
+    f.extend(fmt(
+        135,
+        "SETP",
+        "QBffffffff",
+        "TimeUS,K,Q1,Q2,Q3,Q4,RX,RY,RZ,Thr",
+        3 + 8 + 1 + 32,
+    ));
+    for i in 100..490u64 {
+        let t = i * 10_000;
+        let mut r = vec![0xA3, 0x95, 134];
+        r.extend(t.to_le_bytes());
+        for v in quat(18.0).into_iter().chain([0.0; 3]) {
+            r.extend(v.to_le_bytes());
+        }
+        r.push(1);
+        f.extend(r);
+        let mut r = vec![0xA3, 0x95, 135];
+        r.extend(t.to_le_bytes());
+        r.push(if (200..205).contains(&i) { 2 } else { 1 });
+        for v in quat(20.0).into_iter().chain([0.0; 4]) {
+            r.extend(v.to_le_bytes());
+        }
+        f.extend(r);
+    }
+    f
+}
+
+#[test]
+fn the_report_has_a_tracking_section_in_text_and_json() {
+    let dir = TempDir::new("tracking");
+    let log = dir.file("flight.BIN");
+    std::fs::write(&log, tracking_log()).expect("write the log");
+    let json = dir.file("report.json");
+    let r = run(&format!(
+        "log report {} --mass-kg 1 --kf 3e-5 --poles 14 --json {}",
+        log.display(),
+        json.display()
+    ));
+    assert_eq!(r.code, 0, "{r:?}");
+    for part in [
+        "Tracking (NAV attitude against the SETP attitude setpoint",
+        "5 records with another setpoint kind, not analysed",
+        "roll: setpoint 20.00 to 20.00, error mean 2.00, rms 2.00, largest 2.00",
+        "yaw (error wrapped to +-180)",
+        "roll excursion, largest: 2.00 deg at 1.000 s (estimate 18.00, past the setpoint bound 20.00; body rate 0.0 deg/s)",
+        "pitch excursion, largest: none",
+        "roll: 1 holds",
+        "settled error 2.00",
+    ] {
+        assert!(r.out.contains(part), "{part:?} missing in\n{}", r.out);
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&json).expect("the JSON file"))
+            .expect("JSON");
+    let t = &value["tracking"];
+    assert_eq!(t["state"], "done");
+    assert_eq!(t["other_setpoint_kind_records"], 5);
+    let roll = &t["flights"][0]["axes"][0];
+    assert_eq!(roll["axis"], "roll");
+    assert!((roll["mean_error_deg"].as_f64().expect("number") - 2.0).abs() < 1e-3);
+    assert!(
+        (t["flights"][0]["excursion_roll"]["excursion_deg"]
+            .as_f64()
+            .expect("number")
+            - 2.0)
+            .abs()
+            < 1e-3
+    );
+    assert!(t["flights"][0]["excursion_pitch"].is_null());
+    assert_eq!(t["holds"]["roll"]["count"], 1);
+    assert_eq!(t["holds"]["roll"]["holds"][0]["duration_us"], 3_890_000);
+    assert!(t["definitions"]["hold_min_s"].is_number());
+
+    // A log with neither NAV nor SETP says so.
+    let plain = dir.file("plain.BIN");
+    std::fs::write(&plain, synthetic_log()).expect("write the log");
+    let r = run(&format!(
+        "log report {} --mass-kg 1 --kf 3e-5 --poles 14",
+        plain.display()
+    ));
+    assert!(
+        r.out.contains("Tracking") && r.out.contains("not in this log (NAV, SETP)"),
+        "{}",
+        r.out
+    );
+}

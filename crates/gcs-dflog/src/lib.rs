@@ -41,6 +41,7 @@ mod flight_report;
 mod format;
 mod reader;
 mod summary;
+mod tracking;
 mod vibration;
 
 #[cfg(test)]
@@ -70,6 +71,11 @@ pub use flight_report::{
 pub use format::{Format, Value};
 pub use reader::{Control, Progress, Reader, Record, scan};
 pub use summary::{Summary, TypeCount, summary, summary_of, summary_with};
+pub use tracking::{
+    AXES as TRACKING_AXES, AxisError, EVENTS as EXCURSION_EVENTS, EXCURSION_SEPARATION_S,
+    EXCURSION_WINDOW_S, Excursion, ExcursionEvent, FlightTracking, HOLD_MIN_DEG, HOLD_MIN_S,
+    HOLD_SETTLE_S, HOLD_TOL_DEG, Hold, HoldStats, TrackingReport, TrackingState,
+};
 pub use vibration::{
     AxisSpectrum, BAND_MARGIN, IntervalKind, IntervalVibration, MIN_SPECTRUM_RATE_HZ, ONE_G_WINDOW,
     OneGShares, PEAK_HALF_WIDTH, PEAKS, Peak, RotorBand, SEGMENT, Spectra, VibrationReport,

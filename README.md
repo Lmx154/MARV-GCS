@@ -350,9 +350,11 @@ arguments and prints it (the text is the report, `--json` the same content as JS
 the workspace already uses; `gcs-dflog` itself still has no dependency). Record names and columns come from the
 log's own FMT records, never from offsets; a record type the log does not define makes the sections that need it say
 "not in this log" and the report goes on. Memory is one small accumulator per half-second bin of armed time, plus
-(vibration) one 1024-sample buffer and the accumulators of the interval being read, never the records (a 100 MB log
-is never held decoded). The vibration section needs the flights, which are known only when the first pass is done,
-so the stream is read a second time, `IMU` records only: the stream must be seekable (`Read + Seek`; a file or a
+(vibration) one 1024-sample buffer and the accumulators of the interval being read, (tracking) the setpoint of the
+last 0.5 s and the accumulators of the flight being read, plus one small entry per hold and per local maximum of the
+excursion, never the records (a 100 MB log is never held decoded). The vibration and tracking sections need the
+flights, which are known only when the first pass is done, so the stream is read a second time, `IMU`, `NAV` and
+`SETP` records only: the stream must be seekable (`Read + Seek`; a file or a
 `Cursor`), and progress runs from 0 again for it.
 
 Inputs: `--mass-kg` and `--kf` are required (no vehicle number is built in); rotor speed is
@@ -371,6 +373,7 @@ share (the tool does not know the firmware's filter setting, so there is no defa
 | Per flight | duration; mean throttle stick `RCS.T`; mean `SETP.Thr` in N and as a fraction of mass x g; mean rpm per motor; mean of kf x sum of speed^2 over mass x g; battery volts (minimum) and amps (mean, maximum); mean `DMD` `TX`, `TY`, `TZ` |
 | Motor identification | over all armed time, per motor a least-squares line speed = a + b x level (rad/s, levels as sent in `MOT.A0..A3`) with its rms residual, the number of bins, the level range and the mean battery voltage of the bins; the same line fitted to the bins of all four motors together ("pooled"); and the thrust constant (below) |
 | Vibration | per flight and per ground run, from the `IMU` records with `I` = 0 (below) |
+| Tracking | per flight, how well the `NAV` attitude followed the `SETP` attitude setpoint (below) |
 
 **The NAV spacing:** the firmware writes the records of one step in the order `IMU`, `NAV`, `SETP`, `DMD`, `MOT`, and
 logs every step while armed but only every 8th while disarmed. The armed state of a `NAV` is therefore that of the
@@ -436,6 +439,36 @@ How to read it: a rotor-band share near 1 on an axis says the vibration of that 
 twice it, when the blades or the motors are unbalanced); a large peak elsewhere is a structural resonance or a
 neighbouring source; a ground run next to a flight shows what is the motors and what is the air. A raw 1 g share
 well below 1 with a filtered share near 1 means the vibration is fast enough for the filter at that cut-off to remove.
+
+**Tracking:** from the `NAV` (`Q1..Q4`, the estimated attitude quaternion [w, x, y, z], body to NED; `GX`, `GY` body
+rates in rad/s) and `SETP` records inside each flight. Only a `SETP` with `K` = 1 (angle mode: `Q1..Q4` the attitude
+setpoint) is used, paired with the `NAV` of the same `TimeUS`; the `SETP` records inside a flight with another `K` are
+counted and printed ("N records with another setpoint kind, not analysed"), nothing else is read of them. The
+quaternions are turned into roll, pitch and yaw (ZYX) and printed in degrees. The error is always **setpoint minus
+estimate**, the yaw difference wrapped to +-180. Without `NAV` or `SETP` in the log the section says "not in this
+log"; without a pole count it says "give --poles", since the flights need the rotor speed. The analysis definitions
+below are `pub const` in `gcs-dflog` (`tracking.rs`); they are not vehicle numbers and the tool has none.
+
+- Per flight and axis (roll, pitch, yaw): the minimum and maximum of the setpoint (yaw as the raw angle in
+  (-180, 180]), the mean and the rms of the error, and the error of largest magnitude (signed) with its time.
+- Excursion (roll and pitch): at each record, the minimum and maximum of that axis's setpoint over the preceding
+  `EXCURSION_WINDOW_S` = 0.5 s (the current record included, kept in a ring buffer; at the first record of a flight
+  the window is that record alone). The excursion is how far the estimate lies outside [minimum, maximum] (0 when
+  inside), so with a constant setpoint any offset of the estimate is an excursion. Per flight and axis: the largest
+  excursion, its time, the estimate, the end of the range it passed, and the body rate of that axis (`GX` for roll,
+  `GY` for pitch) in deg/s at that record ("none" when the estimate never left the range). For the whole log: the 3
+  largest excursion events per axis, taken greedily from the largest: events are the local maxima above 0 of the
+  excursion within a flight (the first record of a plateau), and a local maximum less than
+  `EXCURSION_SEPARATION_S` = 1.0 s from a larger one already taken is skipped.
+- Holds (roll and pitch): the records of a flight are cut into runs: a run starts at a record and goes on while the
+  axis setpoint stays within `HOLD_TOL_DEG` = 1.0 deg of its value at the run's first record; the first record that
+  leaves starts the next run. A run is a hold when it lasts at least `HOLD_MIN_S` = 0.5 s (first to last record) and
+  the setpoint at its first record is at least `HOLD_MIN_DEG` = 10.0 deg away from 0 (either way). Its settled
+  figures are means over the records from `HOLD_SETTLE_S` = 0.3 s after its start to its end: mean setpoint, mean
+  estimate, and the settled error (setpoint minus estimate). Per axis for the whole log: the number of holds and the
+  median and the largest magnitude of the settled error (the median of an even count is the mean of the two middle
+  values); the text lists up to 10 holds per axis, largest magnitude first (start, duration, mean setpoint, mean
+  estimate, settled error), the JSON all of them in time order.
 
 **Privacy:** the report reads no position. The analysis never opens the fields of `GPS`, `GPS2`, `GPA`, `POS` or
 `ORGN` records (not even their time), and the report has no field that could hold one. A test puts a GPS record with a

@@ -6,6 +6,7 @@ use std::path::Path;
 
 use crate::format::Value;
 use crate::reader::{Control, Progress, Reader, Record, scan};
+use crate::tracking::{TrackSpec, Tracker, TrackingReport, TrackingState};
 use crate::vibration::{IntervalKind, Runner, Spec, VibrationReport, VibrationState};
 
 /// Standard gravity, m/s^2.
@@ -220,6 +221,7 @@ pub struct FlightReport {
     pub windows: Vec<ArmedWindow>,
     pub identification: Identification,
     pub vibration: VibrationReport,
+    pub tracking: TrackingReport,
     /// The largest r of any armed bin with the given kf; `None` without a pole count or `ESC` bins.
     pub largest_r: Option<f64>,
 }
@@ -676,6 +678,8 @@ fn rotor_range(w: &Window, start: u64, end: u64, poles: f64) -> Option<(f64, f64
 /// - The vibration section reads the `IMU` records with `I` = 0 inside each flight and each ground run, in a
 ///   second pass over the stream (hence `Seek`): the intervals are only known once the first pass is done.
 ///   See [`crate::IntervalVibration`].
+/// - The tracking section reads, in the same second pass, the `NAV` and `SETP` records inside each flight (the
+///   `SETP` with `K` = 1 paired with the `NAV` of the same `TimeUS`). See [`crate::TrackingReport`].
 pub fn flight_report_with<R: Read + Seek>(
     reader: &mut Reader<R>,
     inputs: &ReportInputs,
@@ -749,6 +753,7 @@ pub fn flight_report_with<R: Read + Seek>(
     let mut motors = None;
     let mut pooled = None;
     let mut specs: Vec<Spec> = Vec::new();
+    let mut track_specs: Vec<TrackSpec> = Vec::new();
     let mut largest_r = None;
     if let Some(poles) = poles {
         // rad/s per eRPM.
@@ -824,6 +829,12 @@ pub fn flight_report_with<R: Read + Seek>(
                 start_us: w.start + span.start * BIN_US,
                 end_us: w.start + span.end * BIN_US,
                 rotor_hz: rotor_range(w, span.start, span.end, poles),
+            });
+            track_specs.push(TrackSpec {
+                window: span.window,
+                number: windows[span.window].flights.len(),
+                start_us: w.start + span.start * BIN_US,
+                end_us: w.start + span.end * BIN_US,
             });
         }
         thrust = k1.map(|k1| ThrustConstant {
@@ -934,23 +945,47 @@ pub fn flight_report_with<R: Read + Seek>(
     } else {
         VibrationState::Done
     };
+    let tracking_state = if !(present.nav && present.setp) {
+        TrackingState::NotInLog
+    } else if poles.is_none() {
+        TrackingState::NeedsPoles
+    } else {
+        TrackingState::Done
+    };
     let mut intervals = Vec::new();
-    if state == VibrationState::Done && !specs.is_empty() {
-        let mut runner = Runner::new(specs, inputs.accel_lpf_hz.clone());
+    let mut tracking = TrackingReport::without_figures(tracking_state);
+    let mut runner = (state == VibrationState::Done && !specs.is_empty())
+        .then(|| Runner::new(specs, inputs.accel_lpf_hz.clone()));
+    let mut tracker = (tracking_state == TrackingState::Done && !track_specs.is_empty())
+        .then(|| Tracker::new(track_specs));
+    if runner.is_some() || tracker.is_some() {
         reader.rewind()?;
         let finished = scan(
             reader,
-            |r| {
-                if r.type_name() == "IMU" {
-                    runner.feed(r);
+            |r| match r.type_name() {
+                "IMU" => {
+                    if let Some(rn) = runner.as_mut() {
+                        rn.feed(r);
+                    }
                 }
+                "NAV" | "SETP" => {
+                    if let Some(tr) = tracker.as_mut() {
+                        tr.feed(r);
+                    }
+                }
+                _ => {}
             },
             &mut on_progress,
         )?;
         if !finished {
             return Ok(None);
         }
-        intervals = runner.finish();
+    }
+    if let Some(rn) = runner {
+        intervals = rn.finish();
+    }
+    if let Some(tr) = tracker {
+        tracking = tr.finish();
     }
 
     Ok(Some(FlightReport {
@@ -982,6 +1017,7 @@ pub fn flight_report_with<R: Read + Seek>(
             thrust,
         },
         vibration: VibrationReport { state, intervals },
+        tracking,
         largest_r,
     }))
 }

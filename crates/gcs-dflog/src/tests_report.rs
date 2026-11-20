@@ -996,3 +996,461 @@ fn a_run_up_that_peaks_at_80_per_cent_is_not_a_flight() {
     let largest = r.largest_r.unwrap();
     assert!((largest - 0.8).abs() < 0.01, "{largest}");
 }
+
+// ---- tracking ----
+
+/// The attitude quaternion [w, x, y, z] of roll, pitch, yaw in degrees (ZYX, body to NED).
+fn quat(roll: f64, pitch: f64, yaw: f64) -> [f64; 4] {
+    let [r, p, y] = [roll, pitch, yaw].map(|d| d.to_radians() / 2.0);
+    [
+        r.cos() * p.cos() * y.cos() + r.sin() * p.sin() * y.sin(),
+        r.sin() * p.cos() * y.cos() - r.cos() * p.sin() * y.sin(),
+        r.cos() * p.sin() * y.cos() + r.sin() * p.cos() * y.sin(),
+        r.cos() * p.cos() * y.sin() - r.sin() * p.sin() * y.cos(),
+    ]
+}
+
+/// What the log holds at one 10 ms step: the setpoint kind, setpoint and estimate (roll, pitch, yaw in degrees)
+/// and the body rates GX, GY (rad/s).
+#[derive(Clone, Copy)]
+struct Track {
+    kind: i64,
+    sp: [f64; 3],
+    est: [f64; 3],
+    rate: [f64; 2],
+}
+
+fn on_track(sp: [f64; 3], est: [f64; 3]) -> Track {
+    Track {
+        kind: 1,
+        sp,
+        est,
+        rate: [0.0; 2],
+    }
+}
+
+/// The flight of `track_levels`: from 1.5 s to 6.5 s.
+const FL_START: i64 = 3 * BIN;
+const FL_END: i64 = 13 * BIN;
+
+fn track_levels() -> Vec<i64> {
+    let mut levels = vec![100, 100, level_for_r(0.4)];
+    levels.extend(std::iter::repeat_n(level_for_r(0.95), 11));
+    levels.extend([100, 100]);
+    levels
+}
+
+/// The steps (every 10 ms) of a log with one flight, and what it holds at each, `None`: no NAV and SETP.
+fn track_steps(f: impl Fn(i64) -> Option<Track>) -> Vec<(i64, Track)> {
+    let end = track_levels().len() as i64 * BIN;
+    (0..=end)
+        .step_by(STEP as usize)
+        .filter_map(|t| f(t).map(|x| (t, x)))
+        .collect()
+}
+
+/// A log armed from its first record with the flight of `track_levels`; `NAV` and `SETP` at the given steps
+/// (every 10 ms), written in the firmware's order, `NAV`, `SETP`, `MOT`; without `SETP` when `setp` is false.
+fn track_log(steps: &[(i64, Track)], setp: bool) -> Vec<u8> {
+    let levels = track_levels();
+    let mut f = Vec::new();
+    f.extend(fmt_record(
+        130,
+        "MOT",
+        MOT,
+        "TimeUS,Arm,Mode,A0,A1,A2,A3,C0,C1,C2,C3",
+    ));
+    f.extend(fmt_record(
+        131,
+        "ESC",
+        ESC,
+        "TimeUS,E0,E1,E2,E3,V0,V1,V2,V3,T0,T1,T2,T3,Fl",
+    ));
+    if setp {
+        f.extend(fmt_record(
+            133,
+            "SETP",
+            SETP,
+            "TimeUS,K,Q1,Q2,Q3,Q4,RX,RY,RZ,Thr",
+        ));
+    }
+    f.extend(fmt_record(
+        136,
+        "NAV",
+        NAV,
+        "TimeUS,Q1,Q2,Q3,Q4,GX,GY,GZ,Vld",
+    ));
+    let end = levels.len() as i64 * BIN;
+    for t in (0..=end).step_by(STEP as usize) {
+        if let Some((_, s)) = steps.iter().find(|(st, _)| *st == t) {
+            let q = quat(s.est[0], s.est[1], s.est[2]);
+            let mut nav = vec![int(t)];
+            nav.extend(q.map(V::Float));
+            nav.extend([V::Float(s.rate[0]), V::Float(s.rate[1]), V::Float(0.0)]);
+            nav.push(int(1));
+            f.extend(record(136, NAV, &nav));
+            if setp {
+                let q = quat(s.sp[0], s.sp[1], s.sp[2]);
+                let mut sp = vec![int(t), int(s.kind)];
+                sp.extend(q.map(V::Float));
+                sp.extend([V::Float(0.0), V::Float(0.0), V::Float(0.0), V::Float(0.0)]);
+                f.extend(record(133, SETP, &sp));
+            }
+        }
+        let level = levels[((t / BIN) as usize).min(levels.len() - 1)];
+        let mut mot = vec![int(t), int(1), int(0)];
+        mot.extend((0..4).map(|_| int(level)));
+        mot.extend((0..4).map(|_| int(0)));
+        f.extend(record(130, MOT, &mot));
+        let mut esc = vec![int(t)];
+        esc.extend((0..4).map(|m| {
+            let (a, b) = line(m);
+            int(erpm(a + b * level as f64))
+        }));
+        esc.extend((0..4).map(|_| int(0)));
+        esc.extend((0..4).map(|_| int(40)));
+        esc.push(int(0));
+        f.extend(record(131, ESC, &esc));
+    }
+    f
+}
+
+fn tracked(steps: &[(i64, Track)]) -> crate::TrackingReport {
+    let r = flight_report_of(Cursor::new(track_log(steps, true)), None, &inputs()).unwrap();
+    let flights = &r.windows[0].flights;
+    assert_eq!(flights.len(), 1, "{flights:?}");
+    assert_eq!(
+        (flights[0].start_us, flights[0].end_us),
+        (FL_START as u64, FL_END as u64)
+    );
+    assert_eq!(r.tracking.state, crate::TrackingState::Done);
+    assert_eq!(r.tracking.flights.len(), 1);
+    r.tracking
+}
+
+fn inside(t: i64) -> bool {
+    (FL_START..FL_END).contains(&t)
+}
+
+fn near_deg(got: f64, want: f64) {
+    assert!((got - want).abs() < 1e-3, "{got} != {want}");
+}
+
+#[test]
+fn a_constant_offset_gives_that_mean_rms_and_largest_error_on_every_axis() {
+    let offset = [3.0, -2.0, 1.5];
+    let sp = |t: i64| {
+        let s = t as f64 / 1e6;
+        [
+            15.0 * (s * 1.3).sin(),
+            -8.0 * (s * 0.7).cos(),
+            30.0 + 5.0 * s,
+        ]
+    };
+    let steps = track_steps(|t| {
+        let sp = sp(t);
+        Some(on_track(
+            sp,
+            [sp[0] - offset[0], sp[1] - offset[1], sp[2] - offset[2]],
+        ))
+    });
+    let tr = tracked(&steps);
+    let f = &tr.flights[0];
+    let n = steps.iter().filter(|(t, _)| inside(*t)).count();
+    assert_eq!(f.records, n as u64);
+    let axes = f.axes.as_ref().unwrap();
+    for a in 0..3 {
+        let vals: Vec<f64> = steps
+            .iter()
+            .filter(|(t, _)| inside(*t))
+            .map(|(_, s)| s.sp[a])
+            .collect();
+        near_deg(
+            axes[a].setpoint_min,
+            vals.iter().copied().fold(f64::INFINITY, f64::min),
+        );
+        near_deg(
+            axes[a].setpoint_max,
+            vals.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        );
+        near_deg(axes[a].mean_error, offset[a]);
+        near_deg(axes[a].rms_error, offset[a].abs());
+        near_deg(axes[a].max_abs_error, offset[a]);
+        assert!(inside(axes[a].max_abs_error_at_us as i64));
+    }
+}
+
+#[test]
+fn the_largest_error_is_found_at_its_time_and_only_inside_the_flight() {
+    let spike = 4_000_000;
+    let steps = track_steps(|t| {
+        let e = if t == spike {
+            -7.0
+        } else if t == FL_START - STEP {
+            50.0
+        } else {
+            1.0
+        };
+        Some(on_track([10.0, 0.0, 0.0], [10.0 - e, 0.0, 0.0]))
+    });
+    let f = &tracked(&steps).flights[0];
+    let a = &f.axes.as_ref().unwrap()[0];
+    near_deg(a.max_abs_error, -7.0);
+    assert_eq!(a.max_abs_error_at_us, spike as u64);
+    let n = f.records as f64;
+    near_deg(a.mean_error, (n - 1.0 + -7.0) / n);
+}
+
+#[test]
+fn an_estimate_past_the_recent_setpoint_range_is_an_excursion_and_a_lag_inside_it_is_not() {
+    let (over, small, near_small, rate) = (4.0, 2.0, 3.0, 0.5);
+    let (lo, hi) = (9.0, 11.0);
+    let t_over = 3_500_000;
+    let t_small = 5_500_000;
+    let t_near = t_small + 400_000;
+    let steps = track_steps(|t| {
+        // Roll: a setpoint alternating between lo and hi, the estimate between them, with three
+        // single-record overshoots.
+        let wob = if (t / STEP) % 2 == 0 { -1.0 } else { 1.0 };
+        let mut est = [(lo + hi) / 2.0, 0.0, 0.0];
+        // The first records of the flight are exactly on target: the range of the window is then one record.
+        let mut sp = if t < FL_START + 100_000 {
+            est
+        } else {
+            [if wob < 0.0 { lo } else { hi }, wob, 0.0]
+        };
+        let mut rate_x = 0.0;
+        if t == t_over {
+            est[0] = hi + over;
+            rate_x = rate;
+        }
+        if t == t_small {
+            est[0] = lo - small;
+        }
+        if t == t_near {
+            est[0] = hi + near_small;
+        }
+        // Pitch: a pulse of the setpoint from 4.5 s for 0.4 s that the estimate follows with a lag of 0.3 s,
+        // up and down, always inside the range of the last 0.5 s.
+        let s = t - 4_500_000;
+        if (0..700_000).contains(&s) {
+            sp[1] = if s < 400_000 { 20.0 } else { wob };
+            est[1] = 19.0
+                * if s < 300_000 {
+                    s as f64 / 300_000.0
+                } else if s < 400_000 {
+                    1.0
+                } else {
+                    1.0 - (s - 400_000) as f64 / 300_000.0
+                };
+        }
+        Some(Track {
+            kind: 1,
+            sp,
+            est,
+            rate: [rate_x, 0.0],
+        })
+    });
+    let tr = tracked(&steps);
+    let f = &tr.flights[0];
+    let roll = f.excursions[0].as_ref().expect("a roll excursion");
+    near_deg(roll.value, over);
+    assert_eq!(roll.at_us, t_over as u64);
+    near_deg(roll.estimate, hi + over);
+    near_deg(roll.bound, hi);
+    near_deg(roll.rate_dps, rate.to_degrees());
+    assert!(f.excursions[1].is_none(), "{:?}", f.excursions[1]);
+    // Events: 4 at 3.5 s, then 3 at 5.9 s; the 2 at 5.5 s lies within the separation of the 3.
+    let ev = &tr.events[0];
+    assert_eq!(ev.len(), 2, "{ev:?}");
+    assert_eq!(ev[0].excursion.at_us, t_over as u64);
+    near_deg(ev[0].excursion.value, over);
+    assert_eq!(ev[1].excursion.at_us, t_near as u64);
+    near_deg(ev[1].excursion.value, near_small);
+    assert!(
+        (t_near - t_small) < (crate::EXCURSION_SEPARATION_S * 1e6) as i64,
+        "the test needs the two close"
+    );
+    assert!(tr.events[1].is_empty());
+}
+
+#[test]
+fn an_overshoot_of_a_setpoint_that_moved_is_measured_against_the_last_half_second_only() {
+    // The setpoint steps from 0 to 20 at 4 s; the estimate overshoots to 25 right after the step (5 over
+    // the new top) and, later, when the window holds only 20, stays 1 over it.
+    let step_at = 4_000_000;
+    let steps = track_steps(|t| {
+        let s = t - step_at;
+        let (sp, est) = if s < 0 {
+            (0.0, 0.0)
+        } else if s < 100_000 {
+            (20.0, 25.0)
+        } else if s < 1_000_000 {
+            (20.0, 19.0)
+        } else {
+            (20.0, 21.0)
+        };
+        Some(on_track([sp, 0.0, 0.0], [est, 0.0, 0.0]))
+    });
+    let tr = tracked(&steps);
+    let roll = tr.flights[0].excursions[0].as_ref().unwrap();
+    near_deg(roll.value, 5.0);
+    near_deg(roll.bound, 20.0);
+    assert_eq!(tr.events[0].len(), 2, "{:?}", tr.events[0]);
+    near_deg(tr.events[0][1].excursion.value, 1.0);
+}
+
+#[test]
+fn a_hold_is_found_with_its_start_duration_and_settled_error_and_short_or_small_runs_are_not() {
+    let settle = (crate::HOLD_SETTLE_S * 1e6) as i64;
+    let min_hold = (crate::HOLD_MIN_S * 1e6) as i64;
+    let (roll_sp, roll_err) = (20.0, 2.0);
+    let (roll_start, roll_len) = (2_000_000, 1_500_000);
+    // Pitch: a hold at a negative angle (error -1), a run just under the minimum length, a run just under the
+    // minimum angle.
+    let (pitch_sp, pitch_err) = (-(crate::HOLD_MIN_DEG + 10.0), -1.0);
+    let (pitch_start, pitch_len) = (5_000_000, 1_000_000);
+    let (short_start, short_len) = (3_700_000, min_hold - 100_000);
+    let (low_start, low_len) = (4_000_000, 900_000);
+    let low_sp = crate::HOLD_MIN_DEG - 2.0;
+    let steps = track_steps(|t| {
+        // A drift of the setpoint within the tolerance, so that the mean is not the first value.
+        let wob = if (t / STEP) % 2 == 0 {
+            0.4 * crate::HOLD_TOL_DEG
+        } else {
+            0.0
+        };
+        let mut sp = [0.0; 3];
+        let mut est = [0.0; 3];
+        if (roll_start..roll_start + roll_len).contains(&t) {
+            sp[0] = roll_sp + wob;
+            est[0] = if t < roll_start + settle {
+                roll_sp - 15.0
+            } else {
+                sp[0] - roll_err
+            };
+        }
+        if (short_start..short_start + short_len).contains(&t) {
+            sp[1] = 15.0 + wob;
+            est[1] = sp[1];
+        }
+        if (low_start..low_start + low_len).contains(&t) {
+            sp[1] = low_sp + wob;
+            est[1] = sp[1];
+        }
+        if (pitch_start..pitch_start + pitch_len).contains(&t) {
+            sp[1] = pitch_sp - wob;
+            est[1] = if t < pitch_start + settle {
+                0.0
+            } else {
+                sp[1] - pitch_err
+            };
+        }
+        Some(on_track(sp, est))
+    });
+    let tr = tracked(&steps);
+    assert_eq!(tr.holds[0].len(), 1, "{:?}", tr.holds[0]);
+    assert_eq!(tr.holds[1].len(), 1, "{:?}", tr.holds[1]);
+    let h = &tr.holds[0][0];
+    assert_eq!(h.start_us, roll_start as u64);
+    // The last record of the run is the one before the setpoint leaves.
+    assert_eq!(h.duration_us, (roll_len - STEP) as u64);
+    near_deg(h.settled_error, roll_err);
+    // The mean setpoint of the settled part, from the data.
+    let settled: Vec<f64> = steps
+        .iter()
+        .filter(|(t, _)| (roll_start + settle..roll_start + roll_len).contains(t))
+        .map(|(_, s)| s.sp[0])
+        .collect();
+    near_deg(
+        h.mean_setpoint,
+        settled.iter().sum::<f64>() / settled.len() as f64,
+    );
+    near_deg(h.mean_estimate, h.mean_setpoint - roll_err);
+    let p = &tr.holds[1][0];
+    assert_eq!(p.start_us, pitch_start as u64);
+    assert_eq!(p.duration_us, (pitch_len - STEP) as u64);
+    near_deg(p.settled_error, pitch_err);
+    assert_eq!(tr.hold_stats[0].count, 1);
+    near_deg(tr.hold_stats[0].max_abs_error.unwrap(), roll_err);
+    near_deg(tr.hold_stats[0].median_abs_error.unwrap(), roll_err);
+    near_deg(tr.hold_stats[1].max_abs_error.unwrap(), pitch_err.abs());
+}
+
+#[test]
+fn the_median_of_the_holds_is_taken_over_the_magnitudes() {
+    let errs = [1.0, -3.0, 2.0, -6.0];
+    let steps = track_steps(|t| {
+        let mut sp = [0.0; 3];
+        let mut est = [0.0; 3];
+        for (i, e) in errs.iter().enumerate() {
+            let start = FL_START + 200_000 + i as i64 * 1_000_000;
+            if (start..start + 800_000).contains(&t) {
+                sp[0] = 30.0;
+                est[0] = 30.0 - e;
+            }
+        }
+        Some(on_track(sp, est))
+    });
+    let tr = tracked(&steps);
+    assert_eq!(tr.hold_stats[0].count, errs.len());
+    near_deg(tr.hold_stats[0].median_abs_error.unwrap(), 2.5);
+    near_deg(tr.hold_stats[0].max_abs_error.unwrap(), 6.0);
+}
+
+#[test]
+fn records_of_another_setpoint_kind_are_left_out_and_counted() {
+    let (t0, t1) = (3_000_000, 3_400_000);
+    // Before the flight too: not counted.
+    let early = 100_000..300_000;
+    let steps = track_steps(|t| {
+        let other = (t0..t1).contains(&t) || early.contains(&t);
+        Some(Track {
+            kind: if other { 2 } else { 1 },
+            // Garbage in the other kind: it would show if it were used.
+            sp: if other { [80.0, 80.0, 80.0] } else { [5.0; 3] },
+            est: [4.0; 3],
+            rate: [0.0; 2],
+        })
+    });
+    let tr = tracked(&steps);
+    let others = steps.iter().filter(|(t, _)| (t0..t1).contains(t)).count() as u64;
+    assert_eq!(tr.other_kind_records, others);
+    let in_flight = steps.iter().filter(|(t, _)| inside(*t)).count() as u64;
+    assert_eq!(tr.flights[0].records, in_flight - others);
+    let a = &tr.flights[0].axes.as_ref().unwrap()[0];
+    near_deg(a.setpoint_max, 5.0);
+    near_deg(a.mean_error, 1.0);
+}
+
+#[test]
+fn a_log_without_setp_says_not_in_this_log() {
+    let steps = track_steps(|_| Some(on_track([1.0; 3], [0.0; 3])));
+    let r = flight_report_of(Cursor::new(track_log(&steps, false)), None, &inputs()).unwrap();
+    assert!(!r.present.setp && r.present.nav);
+    assert_eq!(r.tracking.state, crate::TrackingState::NotInLog);
+    assert!(r.tracking.flights.is_empty());
+}
+
+#[test]
+fn the_yaw_error_wraps_across_180_degrees() {
+    for (sp, est, want) in [
+        (175.0, -175.0, -10.0),
+        (-175.0, 175.0, 10.0),
+        (10.0, 20.0, -10.0),
+    ] {
+        let steps = track_steps(|_| Some(on_track([0.0, 0.0, sp], [0.0, 0.0, est])));
+        let a = &tracked(&steps).flights[0].axes.as_ref().unwrap()[2].clone();
+        near_deg(a.mean_error, want);
+        near_deg(a.rms_error, 10.0);
+        near_deg(a.max_abs_error, want);
+    }
+}
+
+#[test]
+fn a_flight_without_setpoint_records_has_no_figures() {
+    let steps = track_steps(|t| (!inside(t)).then(|| on_track([1.0; 3], [0.0; 3])));
+    let tr = tracked(&steps);
+    assert_eq!(tr.flights[0].records, 0);
+    assert!(tr.flights[0].axes.is_none());
+}
