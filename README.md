@@ -380,11 +380,17 @@ window; the long spacing across an arm or disarm edge is not a logging gap.
 **The flight definition** (deliberate, fixed): within an armed window, time is cut in bins of 0.5 s from the window's
 start (a partial last bin is left out). For a bin, r = kf x (the mean over its `ESC` records of the sum over the four
 motors of speed^2) / (mass x 9.80665 N); a bin with no `ESC` record has r = 0. A flight starts at the first bin with
-r >= 1.0 and ends before the first later bin with r < 0.5, or at the end of the armed window; its last bin is dropped;
-it needs at least 6 bins (after dropping). Every figure "per flight" and the saturation count use its bins (means of
-per-bin means, so a busier record type does not weigh more). Why not "r >= 0.95 for a run": a single bin just under
-the line used to split one flight into two, and keeping only the high-thrust bins biased the thrust constant upward;
-the hysteresis (start at 1.0, stay above 0.5) keeps the whole of a flight, including its slow bins. Between the
+r >= 0.85 (`FLIGHT_START_RATIO`) and ends before the first later bin with r < 0.5, or at the end of the armed window;
+its last bin is dropped; it needs at least 6 bins (after dropping). Every figure "per flight" and the saturation
+count use its bins (means of per-bin means, so a busier record type does not weigh more). Why 0.85: on the ground a
+run-up below 85 % of the weight is not a flight; in the air the thrust stays near the weight, so a steady hover sits
+at r = 1 within a few per cent and a start at 1.0 misses it whenever the given kf is a few per cent high; the few
+run-up bins between 0.85 and 1.0 that are included are short against a flight. Round 2 (below) computes r with k1,
+which makes the threshold 85 % of the mean flight thrust, nearly independent of the given kf. Why the end at 0.5: a
+single bin just under the start line used to split one flight into two, and keeping only the high-thrust bins
+biased the thrust constant upward; the hysteresis keeps the whole of a flight, including its slow bins. If round 1
+finds no flight in a log that has armed bins with r >= 0.5, the report says "no flight found with the given kf; if
+the vehicle flew, kf is probably too low (the largest r seen was X)". Between the
 bounds nothing about the thrust is assumed except the one physical fact below.
 
 **The thrust constant:** from lift-off to touchdown the mean thrust equals the weight, so for a flight
@@ -392,9 +398,7 @@ k = mass x g / (the time-mean of the sum of speed^2 over the whole flight); pool
 taken over all their bins (a weighting by duration). The bounds of a flight depend on the given kf, so it is done twice:
 bounds with the given kf give k1; bounds again with k1 give k2. The flights reported are those of the second round, and
 the report prints both constants. When a flight bound moved by more than one bin between the rounds (or the number of
-flights changed) it says so: the constant then depends on the kf given, and the bounds deserve a look. A steady
-hover whose bins all have the same speed has r = 1.0 exactly in round 2, so its start is decided by rounding; real
-flights vary.
+flights changed) it says so: the constant then depends on the kf given, and the bounds deserve a look.
 
 **Identification:** per motor, a bin counts when it has at least two `MOT` and one `ESC` record, the standard
 deviation (population) of that motor's level in it is below 12 levels, and its mean level is above the idle plateau,

@@ -13,8 +13,12 @@ pub const GRAVITY: f64 = 9.80665;
 /// The length of one bin, microseconds (half a second).
 pub const BIN_US: u64 = 500_000;
 /// A flight starts at the first bin whose r (`kf` x the sum of the squared rotor speeds over `mass` x
-/// [`GRAVITY`]) reaches this.
-pub const FLIGHT_START_R: f64 = 1.0;
+/// [`GRAVITY`]) reaches this. On the ground a run-up below 85 % of the weight is not a flight; in the air the
+/// thrust stays near the weight, so a steady hover sits at r = 1 within a few per cent, and a threshold at 1.0
+/// would miss it whenever the given kf is a few per cent high; the few run-up bins between 0.85 and 1.0 that this
+/// includes are short against a flight. In round 2 r is computed with k1, so the threshold is 85 % of the mean
+/// flight thrust and nearly independent of the given kf.
+pub const FLIGHT_START_RATIO: f64 = 0.85;
 /// A flight ends before the first later bin whose r is below this.
 pub const FLIGHT_END_R: f64 = 0.5;
 /// A flight, without its dropped last bin, has at least this many bins.
@@ -99,7 +103,7 @@ pub struct Health {
     pub battery_min_v: Option<f64>,
 }
 
-/// One flight: from the first bin with r >= [`FLIGHT_START_R`] to before the first later bin with r <
+/// One flight: from the first bin with r >= [`FLIGHT_START_RATIO`] to before the first later bin with r <
 /// [`FLIGHT_END_R`] (or the end of the armed window), without its last bin.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Flight {
@@ -216,6 +220,8 @@ pub struct FlightReport {
     pub windows: Vec<ArmedWindow>,
     pub identification: Identification,
     pub vibration: VibrationReport,
+    /// The largest r of any armed bin with the given kf; `None` without a pole count or `ESC` bins.
+    pub largest_r: Option<f64>,
 }
 
 impl FlightReport {
@@ -574,7 +580,7 @@ fn flight_bounds(windows: &[Window], c: f64, k: f64, mg: f64) -> Vec<Span> {
         };
         let mut idx = 0;
         while idx < nbins {
-            if r(idx) < FLIGHT_START_R {
+            if r(idx) < FLIGHT_START_RATIO {
                 idx += 1;
                 continue;
             }
@@ -655,7 +661,7 @@ fn rotor_range(w: &Window, start: u64, end: u64, poles: f64) -> Option<(f64, f64
 /// - Rotor speed is `eRPM / (poles / 2) x 2 pi / 60` rad/s. Without a pole count (`--poles`, else the log's
 ///   `MOT_POLES`) nothing that needs it is computed.
 /// - r of a bin is the mean over its `ESC` records of `kf x sum over the motors of speed^2`, over `mass` x
-///   [`GRAVITY`]. A flight starts at the first bin of an armed window with r >= [`FLIGHT_START_R`] and ends
+///   [`GRAVITY`]. A flight starts at the first bin of an armed window with r >= [`FLIGHT_START_RATIO`] and ends
 ///   before the first later bin with r < [`FLIGHT_END_R`] (a bin without `ESC` records has r = 0) or at the
 ///   end of the window; its last bin is dropped; it needs at least [`MIN_FLIGHT_BINS`] bins. Values per
 ///   flight are means of the per-bin means.
@@ -743,9 +749,18 @@ pub fn flight_report_with<R: Read + Seek>(
     let mut motors = None;
     let mut pooled = None;
     let mut specs: Vec<Spec> = Vec::new();
+    let mut largest_r = None;
     if let Some(poles) = poles {
         // rad/s per eRPM.
         let c = 2.0 / poles * std::f64::consts::TAU / 60.0;
+
+        largest_r = pass
+            .windows
+            .iter()
+            .flat_map(|w| w.bins.range(..(w.end - w.start) / BIN_US))
+            .filter_map(|(_, b)| speed_sq(c, b))
+            .map(|ssq| inputs.kf * ssq / mg)
+            .reduce(f64::max);
 
         // Flights, in two rounds: the bounds depend on the constant.
         let round1 = flight_bounds(&pass.windows, c, inputs.kf, mg);
@@ -967,6 +982,7 @@ pub fn flight_report_with<R: Read + Seek>(
             thrust,
         },
         vibration: VibrationReport { state, intervals },
+        largest_r,
     }))
 }
 

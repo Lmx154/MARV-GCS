@@ -939,3 +939,60 @@ fn a_narrow_level_range_is_marked_ill_conditioned() {
         assert!(f.ill_conditioned, "{f:?}");
     }
 }
+
+#[test]
+fn a_hover_a_few_per_cent_under_the_given_kf_is_one_flight_from_its_first_bin() {
+    // Every hover bin lies between 0.90 and 0.99 by the given kf (which is about 6 % high).
+    let rs = [
+        0.92, 0.90, 0.95, 0.99, 0.93, 0.96, 0.91, 0.97, 0.94, 0.98, 0.95,
+    ];
+    let mut levels = vec![100, 100, level_for_r(0.4)];
+    levels.extend(rs.iter().map(|r| level_for_r(*r)));
+    levels.extend([100, 100]);
+    let r = flight_report_of(
+        Cursor::new(plain_log(&levels, 10_000, |_| 0.0, |_| GRAVITY)),
+        None,
+        &inputs(),
+    )
+    .unwrap();
+    assert_eq!(r.windows[0].flights.len(), 1, "{:?}", r.windows[0].flights);
+    let f = &r.windows[0].flights[0];
+    // From the first hover bin (bin 3); the last bin is dropped.
+    assert_eq!(f.start_us, (3 * BIN) as u64);
+    assert_eq!(f.end_us, (3 * BIN + 10 * BIN) as u64);
+    let mg = MASS * GRAVITY;
+    let truth = mg / (levels[3..13].iter().map(|l| sum_sq(*l as f64)).sum::<f64>() / 10.0);
+    let t = r.identification.thrust.as_ref().unwrap();
+    within(t.k2.unwrap(), truth, 0.01);
+    assert!(r.largest_r.unwrap() > 0.98);
+}
+
+#[test]
+fn a_run_up_that_peaks_at_80_per_cent_is_not_a_flight() {
+    let up = level_for_r(0.8);
+    let levels = [
+        100,
+        100,
+        level_for_r(0.4),
+        up,
+        up,
+        up,
+        up,
+        up,
+        up,
+        up,
+        level_for_r(0.4),
+        100,
+        100,
+    ];
+    let r = flight_report_of(
+        Cursor::new(plain_log(&levels, 10_000, |_| 0.0, |_| GRAVITY)),
+        None,
+        &inputs(),
+    )
+    .unwrap();
+    assert!(r.windows[0].flights.is_empty());
+    assert!(r.identification.thrust.is_none());
+    let largest = r.largest_r.unwrap();
+    assert!((largest - 0.8).abs() < 0.01, "{largest}");
+}

@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use std::io::Write;
 
 use gcs_dflog::{
-    FLIGHT_END_R, FLIGHT_START_R, Flight, FlightReport, GROUND_RUN_MARGIN, IntervalKind,
+    FLIGHT_END_R, FLIGHT_START_RATIO, Flight, FlightReport, GROUND_RUN_MARGIN, IntervalKind,
     IntervalVibration, MIN_FLIGHT_BINS, MIN_GROUND_RUN_BINS, MIN_SPECTRUM_RATE_HZ, MotorFit,
     MotorFitResult, NARROW_LEVEL_RANGE, ONE_G_WINDOW, PolesSource, ReportInputs, SEGMENT,
     VibrationState, flight_report,
@@ -191,7 +191,7 @@ pub fn to_text(r: &FlightReport) -> String {
     let _ = writeln!(
         s,
         "\nFlights (bins of 0.5 s; r = kf x sum of speed^2 / (mass x g); a flight starts at the first bin with \
-         r >= {FLIGHT_START_R} and ends before the first later bin with r < {FLIGHT_END_R} or at the end of the \
+         r >= {FLIGHT_START_RATIO} and ends before the first later bin with r < {FLIGHT_END_R} or at the end of the \
          armed window; its last bin is dropped; at least {MIN_FLIGHT_BINS} bins)"
     );
     if r.poles.is_none() {
@@ -209,6 +209,16 @@ pub fn to_text(r: &FlightReport) -> String {
         }
         if w.flights.is_empty() {
             let _ = writeln!(s, "  window {}: armed, not airborne", i + 1);
+        }
+        if i == 0
+            && r.identification.thrust.is_none()
+            && let Some(largest) = r.largest_r.filter(|x| *x >= FLIGHT_END_R)
+        {
+            let _ = writeln!(
+                s,
+                "  no flight found with the given kf; if the vehicle flew, kf is probably too low \
+                 (the largest r seen was {largest:.2})"
+            );
         }
         for (j, f) in w.flights.iter().enumerate() {
             flight_text(&mut s, i + 1, j + 1, f, r);

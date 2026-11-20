@@ -156,6 +156,20 @@ fn the_report_prints_and_writes_json_and_holds_no_position() {
     assert_eq!(value["armed_windows"][0]["flights"][0]["bins"], 8);
     assert_eq!(value["motor_identification"]["pooled"]["usable_bins"], 36);
 
+    // A kf too low for the log to fly: the report says so, with the largest r.
+    let low = run(&format!(
+        "log report {} --mass-kg 1 --kf 1.5e-5 --poles 14",
+        log.display()
+    ));
+    assert_eq!(low.code, 0, "{low:?}");
+    assert!(
+        low.out.contains(
+            "no flight found with the given kf; if the vehicle flew, kf is probably too low (the largest r seen was 0.79)"
+        ),
+        "{}",
+        low.out
+    );
+
     // Without a pole count the sections that need the rotor speed say so; the rest is still there.
     let json2 = dir.file("report2.json");
     let r = run(&format!(

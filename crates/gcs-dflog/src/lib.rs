@@ -61,7 +61,7 @@ pub use condition::{
 pub use events::{Event, EventSource, events, events_of, events_with};
 pub use export::{Export, ExportError, ExportRequest, TypeExport, export_with};
 pub use flight_report::{
-    ArmedWindow, BIN_US, FLIGHT_END_R, FLIGHT_START_R, Flight, FlightReport, GRAVITY,
+    ArmedWindow, BIN_US, FLIGHT_END_R, FLIGHT_START_RATIO, Flight, FlightReport, GRAVITY,
     GROUND_RUN_MARGIN, Health, IDLE_MARGIN, Identification, MIN_FLIGHT_BINS, MIN_GROUND_RUN_BINS,
     MOTORS, MotorFit, MotorFitResult, NARROW_LEVEL_RANGE, POLES_PARAMETER, PolesSource,
     ReportInputs, STEADY_LEVEL_STD, ThrustConstant, TypesPresent, flight_report, flight_report_of,
