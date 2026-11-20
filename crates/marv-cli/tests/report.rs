@@ -327,7 +327,7 @@ fn the_report_has_a_tracking_section_in_text_and_json() {
 }
 
 /// A log with one ground run (1 s to 5.5 s, the motors well above idle, a kf too small for any flight): the
-/// estimated roll drifts by 0.5 degrees per second while the gyro reads only its bias.
+/// estimated roll turns by 6 degrees within 0.3 s and the gyro reads that turn on top of its bias.
 fn ground_log() -> Vec<u8> {
     let mut f = Vec::new();
     f.extend(fmt(
@@ -373,11 +373,7 @@ fn ground_log() -> Vec<u8> {
         r.extend(t.to_le_bytes());
         r.extend([0u8; 16 + 8 + 5]);
         f.extend(r);
-        let roll = if t < 1_000_000 {
-            0.0f32
-        } else {
-            0.5 * (t - 1_000_000) as f32 / 1e6
-        };
+        let roll = (6.0 * (t.saturating_sub(1_000_000) as f32 / 300_000.0)).min(6.0);
         let h = roll.to_radians() / 2.0;
         let mut r = vec![0xA3, 0x95, 134];
         r.extend(t.to_le_bytes());
@@ -389,7 +385,9 @@ fn ground_log() -> Vec<u8> {
         let mut r = vec![0xA3, 0x95, 133];
         r.extend(t.to_le_bytes());
         r.push(0);
-        for v in [0.01f32, 0.0, 0.0, 0.0, 0.0, -9.80665] {
+        let turning = t > 1_000_000 && t <= 1_300_000;
+        let gx = 0.01f32 + if turning { 0.3490658 } else { 0.0 };
+        for v in [gx, 0.0, 0.0, 0.0, 0.0, -9.80665] {
             r.extend(v.to_le_bytes());
         }
         f.extend(r);
@@ -413,8 +411,8 @@ fn the_report_has_the_ground_check_and_the_closing_block_in_text_and_json() {
         "Ground check of the tilt estimate (each ground run; reference: the 1 s before the run",
         "window 1 ground run 1: 1.000 s to 5.500 s",
         "reference: roll 0.00, pitch 0.00 (100 NAV, 100 IMU records); gyro bias x 0.573",
-        "largest estimate shift from the reference: roll 2.1",
-        "gyro-integrated rotation at the end of the run: about x 0.00, about y 0.00",
+        "largest estimate shift from the reference: roll 6.00 at 1.500 s",
+        "gyro-integrated rotation at the end of the run: about x 6.00, about y 0.00",
         "largest unexplained shift",
         "Values this log supports (valid only for the levels, speeds and battery voltage seen in this log)",
         "thrust constant k: no flight",
@@ -433,17 +431,17 @@ fn the_report_has_the_ground_check_and_the_closing_block_in_text_and_json() {
         (f["largest_estimate_shift_roll"]["deg"]
             .as_f64()
             .expect("number")
-            - 2.125)
+            - 6.0)
             .abs()
             < 0.05
     );
-    assert_eq!(
-        f["gyro_integrated_end_x_deg"]
+    assert!((f["gyro_integrated_end_x_deg"].as_f64().expect("number") - 6.0).abs() < 0.01);
+    assert!(
+        f["largest_unexplained_shift_roll"]["deg"]
             .as_f64()
             .expect("number")
             .abs()
-            < 1e-3,
-        true
+            < 0.1
     );
     assert!(f["largest_unexplained_shift_pitch"]["bin_start_us"].is_number());
     let v = &value["values_supported"];

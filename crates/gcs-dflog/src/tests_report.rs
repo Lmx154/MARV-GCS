@@ -1658,14 +1658,9 @@ fn a_vehicle_that_really_rotates_is_explained_by_the_gyro() {
         let end = rot(RUN_END - STEP, a);
         near_deg(f.gyro_end[a], end);
         let u = f.max_unexplained[a].as_ref().unwrap();
-        near_deg(u.value, shift - end);
-        // A steady rotation leaves only half a bin of it: small against the shift.
-        assert!(
-            u.value.abs() < 0.05 * shift.abs(),
-            "{} vs {}",
-            u.value,
-            shift
-        );
+        // Like with like: the bin mean of the integral is that of the estimate, to within a sample of rotation.
+        let one_sample = rate[a].abs().to_degrees() * STEP as f64 / 1e6;
+        assert!(u.value.abs() < one_sample, "{} vs {one_sample}", u.value);
         // The accelerometer agrees with the estimate within the tilt of a mean.
         let acc = f.max_accel_shift[a].as_ref().unwrap();
         assert!(
@@ -1826,4 +1821,31 @@ fn the_closing_block_holds_the_figures_of_the_sections_it_comes_from() {
     assert!(
         r.supports.thrust.is_none() && r.supports.hover.flights == 0 && r.supports.one_g.is_none()
     );
+}
+
+#[test]
+fn a_fast_rotation_inside_the_first_bin_is_explained_by_the_gyro_of_that_bin() {
+    let (turn, over) = (6.0, 300_000);
+    let rate = (turn / (over as f64 / 1e6)).to_radians();
+    let est = |t: i64| turn * ((t - RUN_START).clamp(0, over) as f64 / over as f64);
+    let moving = |t: i64| t > RUN_START && t <= RUN_START + over;
+    let g = ground_report(ground_track_log(
+        |t| level_step([est(t), 0.0], [if moving(t) { rate } else { 0.0 }, 0.0]),
+        |_| true,
+        |_| true,
+    ));
+    let f = g.runs[0].figures.as_ref().expect("figures");
+    near_deg(f.gyro_end[0], turn);
+    let first = mean_over(RUN_START, RUN_START + BIN, est);
+    let s = f.max_shift[0].as_ref().unwrap();
+    near_deg(s.value, turn);
+    // The first bin's shift against the end of the run's rotation would read as a fault; against its own
+    // mean integral it is explained.
+    assert!(
+        (first - turn).abs() > 1.0,
+        "the test needs the first bin to lag the end: {first}"
+    );
+    let u = f.max_unexplained[0].as_ref().unwrap();
+    let one_sample = rate.to_degrees() * STEP as f64 / 1e6;
+    assert!(u.value.abs() < one_sample, "{} at {}", u.value, u.at_us);
 }

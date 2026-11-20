@@ -494,10 +494,10 @@ the same formulas as the tracking section, degrees.
 - Per ground run: the reference roll and pitch; the largest estimate shift from the reference per axis (signed, with
   its bin time); the gyro-integrated rotation at the last sample of the run (x, y); the largest unexplained shift per
   axis with its bin time, where the unexplained shift of a bin is (the bin's mean estimate minus the reference) minus
-  (the gyro-integrated rotation at the last sample of that bin), roll with x and pitch with y; and the largest shift
+  (the mean, over the bin's instance-0 samples, of the gyro-integrated rotation up to each sample), roll with x and
+  pitch with y, so that like is compared with like; and the largest shift
   of the accelerometer-implied tilt of a bin from its value over the reference interval, per axis. "Largest" is the
-  largest magnitude, kept signed. The bin mean is compared with the rotation at the bin's end, so a steady rotation
-  of w deg/s leaves about w x 0.25 s in the unexplained shift. A log without `NAV` or `IMU` says "not in this log"; a
+  largest magnitude, kept signed. A log without `NAV` or `IMU` says "not in this log"; a
   log without a ground run says "no ground run".
 
 **Values this log supports:** the last block of the report. It gathers, in one place, the vehicle values the log

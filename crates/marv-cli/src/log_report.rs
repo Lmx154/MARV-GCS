@@ -485,7 +485,7 @@ fn ground_text(s: &mut String, r: &FlightReport) {
         );
         let _ = writeln!(
             s,
-            "    largest unexplained shift (estimate shift minus the gyro-integrated rotation at the end of the bin): roll {}; pitch {}",
+            "    largest unexplained shift (estimate shift minus the mean gyro-integrated rotation over the same bin): roll {}; pitch {}",
             bin_text(&f.max_unexplained[0]),
             bin_text(&f.max_unexplained[1])
         );

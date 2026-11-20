@@ -35,7 +35,7 @@ pub struct GroundFigures {
     pub max_shift: [Option<BinFigure>; 2],
     /// The gyro-integrated rotation about body x and y at the last sample of the run.
     pub gyro_end: [f64; 2],
-    /// The largest of (estimate shift) - (gyro-integrated rotation at the end of the bin).
+    /// The largest of (estimate shift) - (the bin mean of the gyro-integrated rotation).
     pub max_unexplained: [Option<BinFigure>; 2],
     /// The largest shift of the accelerometer-implied tilt of a bin from that of the reference interval.
     pub max_accel_shift: [Option<BinFigure>; 2],
@@ -76,8 +76,8 @@ struct BinAcc {
     pitch: f64,
     imu_n: u64,
     acc: [f64; 3],
-    /// The gyro integral after the last sample of the bin.
-    gyro: Option<[f64; 2]>,
+    /// The sum over the bin's samples of the gyro integral up to each sample.
+    gyro_sum: [f64; 2],
 }
 
 #[derive(Default)]
@@ -219,7 +219,9 @@ impl Runner {
                 for k in 0..3 {
                     bin.acc[k] += sample[3 + k];
                 }
-                bin.gyro = Some(st.integral);
+                for k in 0..2 {
+                    bin.gyro_sum[k] += st.integral[k];
+                }
             }
         }
     }
@@ -285,9 +287,10 @@ fn figures_of(sp: &TrackSpec, st: &State) -> GroundFigures {
             for (best, v) in f.max_shift.iter_mut().zip(s) {
                 largest(best, v, at);
             }
-            if let Some(g) = b.gyro {
-                for a in 0..2 {
-                    largest(&mut f.max_unexplained[a], s[a] - g[a], at);
+            if b.imu_n > 0 {
+                let k = b.imu_n as f64;
+                for (a, best) in f.max_unexplained.iter_mut().enumerate() {
+                    largest(best, s[a] - b.gyro_sum[a] / k, at);
                 }
             }
         }
