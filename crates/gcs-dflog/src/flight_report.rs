@@ -5,6 +5,7 @@ use std::io::{self, Read, Seek};
 use std::path::Path;
 
 use crate::format::Value;
+use crate::ground::{GroundCheck, GroundState, Runner as GroundRunner};
 use crate::reader::{Control, Progress, Reader, Record, scan};
 use crate::tracking::{TrackSpec, Tracker, TrackingReport, TrackingState};
 use crate::vibration::{IntervalKind, Runner, Spec, VibrationReport, VibrationState};
@@ -222,6 +223,8 @@ pub struct FlightReport {
     pub identification: Identification,
     pub vibration: VibrationReport,
     pub tracking: TrackingReport,
+    pub ground: GroundCheck,
+    pub supports: crate::values::ValuesSupported,
     /// The largest r of any armed bin with the given kf; `None` without a pole count or `ESC` bins.
     pub largest_r: Option<f64>,
 }
@@ -649,7 +652,8 @@ fn rotor_range(w: &Window, start: u64, end: u64, poles: f64) -> Option<(f64, f64
 /// One pass over `reader` with progress and cancellation; `None` if `on_progress` answered `Stop`.
 ///
 /// What it reads, by the log's own `FMT` columns: `MOT` (`Arm`, `A0..A3`), `ESC` (`E0..E3`, `T0..T3`), `NAV`,
-/// `SETP` (`Thr`), `DMD` (`TX`, `TY`, `TZ`, `Sat`), `RCS` (`T`), `BAT` (`Inst`, `Volt`, `Curr`; the first
+/// `SETP` (`Thr`, and `K`, `Q1..Q4` for the tracking section), `NAV` (`Q1..Q4`, `GX`, `GY` for tracking and the
+/// ground check), `DMD` (`TX`, `TY`, `TZ`, `Sat`), `RCS` (`T`), `BAT` (`Inst`, `Volt`, `Curr`; the first
 /// instance seen), `FDS` and `DSF` (`Dp`, `FMn`), `PARM` (`MOT_POLES`) and `IMU` (`I`, `GyrX..GyrZ`,
 /// `AccX..AccZ`). It never reads a position record (`GPS`, `GPS2`, `GPA`, `POS`, `ORGN`): the report holds
 /// no position.
@@ -680,6 +684,9 @@ fn rotor_range(w: &Window, start: u64, end: u64, poles: f64) -> Option<(f64, f64
 ///   See [`crate::IntervalVibration`].
 /// - The tracking section reads, in the same second pass, the `NAV` and `SETP` records inside each flight (the
 ///   `SETP` with `K` = 1 paired with the `NAV` of the same `TimeUS`). See [`crate::TrackingReport`].
+/// - The ground check reads, in the same second pass, the `NAV` records and the `IMU` records with `I` = 0 in each
+///   ground run and in the [`crate::GROUND_REF_S`] before it. See [`crate::GroundCheck`].
+/// - The closing block ([`crate::ValuesSupported`]) reads no record: it gathers the results above.
 pub fn flight_report_with<R: Read + Seek>(
     reader: &mut Reader<R>,
     inputs: &ReportInputs,
@@ -754,6 +761,7 @@ pub fn flight_report_with<R: Read + Seek>(
     let mut pooled = None;
     let mut specs: Vec<Spec> = Vec::new();
     let mut track_specs: Vec<TrackSpec> = Vec::new();
+    let mut ground_specs: Vec<TrackSpec> = Vec::new();
     let mut largest_r = None;
     if let Some(poles) = poles {
         // rad/s per eRPM.
@@ -888,6 +896,12 @@ pub fn flight_report_with<R: Read + Seek>(
                             end_us: w.start + i * BIN_US,
                             rotor_hz: rotor_range(w, start, i, poles),
                         });
+                        ground_specs.push(TrackSpec {
+                            window: wi,
+                            number,
+                            start_us: w.start + start * BIN_US,
+                            end_us: w.start + i * BIN_US,
+                        });
                     }
                 }
             }
@@ -952,13 +966,27 @@ pub fn flight_report_with<R: Read + Seek>(
     } else {
         TrackingState::Done
     };
+    let ground_state = if !(present.nav && present.imu) {
+        GroundState::NotInLog
+    } else if poles.is_none() {
+        GroundState::NeedsPoles
+    } else {
+        GroundState::Done
+    };
+    ground_specs.sort_by_key(|s| s.start_us);
+    let mut ground = GroundCheck {
+        state: ground_state,
+        runs: Vec::new(),
+    };
+    let mut ground_runner = (ground_state == GroundState::Done && !ground_specs.is_empty())
+        .then(|| GroundRunner::new(ground_specs));
     let mut intervals = Vec::new();
     let mut tracking = TrackingReport::without_figures(tracking_state);
     let mut runner = (state == VibrationState::Done && !specs.is_empty())
         .then(|| Runner::new(specs, inputs.accel_lpf_hz.clone()));
     let mut tracker = (tracking_state == TrackingState::Done && !track_specs.is_empty())
         .then(|| Tracker::new(track_specs));
-    if runner.is_some() || tracker.is_some() {
+    if runner.is_some() || tracker.is_some() || ground_runner.is_some() {
         reader.rewind()?;
         let finished = scan(
             reader,
@@ -967,10 +995,18 @@ pub fn flight_report_with<R: Read + Seek>(
                     if let Some(rn) = runner.as_mut() {
                         rn.feed(r);
                     }
+                    if let Some(g) = ground_runner.as_mut() {
+                        g.feed(r);
+                    }
                 }
                 "NAV" | "SETP" => {
                     if let Some(tr) = tracker.as_mut() {
                         tr.feed(r);
+                    }
+                    if r.type_name() == "NAV"
+                        && let Some(g) = ground_runner.as_mut()
+                    {
+                        g.feed(r);
                     }
                 }
                 _ => {}
@@ -987,8 +1023,11 @@ pub fn flight_report_with<R: Read + Seek>(
     if let Some(tr) = tracker {
         tracking = tr.finish();
     }
+    if let Some(g) = ground_runner {
+        ground.runs = g.finish();
+    }
 
-    Ok(Some(FlightReport {
+    let mut report = FlightReport {
         file_name: None,
         bytes,
         bad_bytes,
@@ -1018,8 +1057,12 @@ pub fn flight_report_with<R: Read + Seek>(
         },
         vibration: VibrationReport { state, intervals },
         tracking,
+        ground,
+        supports: crate::values::ValuesSupported::empty(),
         largest_r,
-    }))
+    };
+    report.supports = crate::values::values_of(&report);
+    Ok(Some(report))
 }
 
 /// The report of any stream; `total` is its size when known.

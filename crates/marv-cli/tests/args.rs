@@ -363,8 +363,10 @@ fn the_log_report_parses_and_needs_its_inputs() {
             kf,
             poles,
             accel_lpf_hz,
+            level_range,
             json,
         })) => {
+            assert_eq!(level_range, None);
             assert_eq!(file, PathBuf::from("a.BIN"));
             assert_eq!((mass_kg, kf, poles), (1.5, 2e-5, Some(12.0)));
             assert_eq!(accel_lpf_hz, vec![20.0, 5.5]);
@@ -391,6 +393,22 @@ fn the_log_report_parses_and_needs_its_inputs() {
     assert!(
         error("log report a.BIN --mass-kg 1 --kf 1 --accel-lpf-hz 0")
             .contains("--accel-lpf-hz needs a number above 0")
+    );
+    assert!(matches!(
+        parse(&args("log report a.BIN --mass-kg 1 --kf 1 --level-range 0 2000")),
+        Ok(Parsed::Log(LogCommand::Report {
+            level_range: Some((lo, hi)),
+            ..
+        })) if lo == 0.0 && hi == 2000.0
+    ));
+    assert!(error("log report a.BIN --mass-kg 1 --kf 1 --level-range 5").contains("needs a value"));
+    assert!(
+        error("log report a.BIN --mass-kg 1 --kf 1 --level-range 1 x")
+            .contains("--level-range needs two numbers")
+    );
+    assert!(
+        error("log report a.BIN --mass-kg 1 --kf 1 --level-range 5 5")
+            .contains("--level-range needs min below max")
     );
     assert!(error("log").contains("needs report"));
     assert!(error("log erase").contains("unknown log command"));

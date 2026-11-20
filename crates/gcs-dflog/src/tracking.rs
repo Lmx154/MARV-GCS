@@ -158,7 +158,7 @@ pub(crate) struct TrackSpec {
 }
 
 /// Roll, pitch, yaw in degrees of a quaternion [w, x, y, z] (body to NED, ZYX).
-fn euler_deg(q: [f64; 4]) -> [f64; 3] {
+pub(crate) fn euler_deg(q: [f64; 4]) -> [f64; 3] {
     let [w, x, y, z] = q;
     let roll = (2.0 * (w * x + y * z)).atan2(1.0 - 2.0 * (x * x + y * y));
     let pitch = (2.0 * (w * y - z * x)).clamp(-1.0, 1.0).asin();
@@ -167,7 +167,7 @@ fn euler_deg(q: [f64; 4]) -> [f64; 3] {
 }
 
 /// `d` wrapped to [-180, 180].
-fn wrap_deg(d: f64) -> f64 {
+pub(crate) fn wrap_deg(d: f64) -> f64 {
     d - 360.0 * (d / 360.0).round()
 }
 

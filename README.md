@@ -341,7 +341,7 @@ Seven crates; the dependency graph enforces the layers (`docs/architecture.md`).
 ### Flight report (`gcs-dflog`, `marv-cli log report`)
 
 ```
-marv-cli log report flight.BIN --mass-kg 1.2 --kf 2.8e-5 [--poles 14] [--accel-lpf-hz 20 ...] [--json report.json]
+marv-cli log report flight.BIN --mass-kg 1.2 --kf 2.8e-5 [--poles 14] [--accel-lpf-hz 20 ...] [--level-range MIN MAX] [--json report.json]
 ```
 
 `flight_report_with` (also `flight_report(path, &ReportInputs)` and `flight_report_of`) reads one log of the MARV
@@ -354,7 +354,7 @@ log's own FMT records, never from offsets; a record type the log does not define
 last 0.5 s and the accumulators of the flight being read, plus one small entry per hold and per local maximum of the
 excursion, never the records (a 100 MB log is never held decoded). The vibration and tracking sections need the
 flights, which are known only when the first pass is done, so the stream is read a second time, `IMU`, `NAV` and
-`SETP` records only: the stream must be seekable (`Read + Seek`; a file or a
+`SETP` records only (the ground check: `NAV` and `IMU`): the stream must be seekable (`Read + Seek`; a file or a
 `Cursor`), and progress runs from 0 again for it.
 
 Inputs: `--mass-kg` and `--kf` are required (no vehicle number is built in); rotor speed is
@@ -363,6 +363,8 @@ every section that needs the rotor speed (flights, the saturation count, the mot
 constant, the vibration section) says "give --poles: the motor's magnet count", and the rest is still produced.
 `--accel-lpf-hz <Hz>` may be given several times; with none, the 1 g window of the vibration section has only its raw
 share (the tool does not know the firmware's filter setting, so there is no default).
+`--level-range <min> <max>` (two numbers, min below max; anything else is a usage error, exit 2) gives the ends of
+the motor command range: the closing block then prints the motor line's speed at both.
 
 | Section | What it holds |
 |---|---|
@@ -374,6 +376,8 @@ share (the tool does not know the firmware's filter setting, so there is no defa
 | Motor identification | over all armed time, per motor a least-squares line speed = a + b x level (rad/s, levels as sent in `MOT.A0..A3`) with its rms residual, the number of bins, the level range and the mean battery voltage of the bins; the same line fitted to the bins of all four motors together ("pooled"); and the thrust constant (below) |
 | Vibration | per flight and per ground run, from the `IMU` records with `I` = 0 (below) |
 | Tracking | per flight, how well the `NAV` attitude followed the `SETP` attitude setpoint (below) |
+| Ground check of the tilt estimate | per ground run, whether the estimated tilt moved while the vehicle did not (below) |
+| Values this log supports | the last block: the vehicle values the log gives, each with the range it is valid for (below) |
 
 **The NAV spacing:** the firmware writes the records of one step in the order `IMU`, `NAV`, `SETP`, `DMD`, `MOT`, and
 logs every step while armed but only every 8th while disarmed. The armed state of a `NAV` is therefore that of the
@@ -469,6 +473,48 @@ below are `pub const` in `gcs-dflog` (`tracking.rs`); they are not vehicle numbe
   median and the largest magnitude of the settled error (the median of an even count is the mean of the two middle
   values); the text lists up to 10 holds per axis, largest magnitude first (start, duration, mean setpoint, mean
   estimate, settled error), the JSON all of them in time order.
+
+**Ground check of the tilt estimate:** with the motors running on the ground the vehicle does not rotate, so the
+estimated tilt must not move; a filter fault shows as a tilt shift that the gyro does not confirm. One block per
+ground run (the vibration section's definition), from the `NAV` records and the `IMU` records with `I` = 0, in the
+second pass. Figures only: there is no verdict and no threshold. Roll and pitch come from the `NAV` quaternion with
+the same formulas as the tracking section, degrees.
+
+- Reference interval: the `GROUND_REF_S` = 1.0 s that ends at the run's start. Reference tilt: the mean estimated roll
+  and pitch over it; gyro bias: the mean `GyrX` and `GyrY` over it; accelerometer reference tilt: the tilt implied by
+  the mean acceleration over it. With fewer than `GROUND_REF_MIN_RECORDS` = 20 `NAV` records or 20 `IMU` records in
+  it the block says so (with the counts) and gives no figures. Both constants are `pub const` in `gcs-dflog`
+  (`ground.rs`).
+- During the run, per bin of 0.5 s ([`BIN_US`], counted from the run's start, its time the start of the bin): the
+  mean estimated roll and pitch; the gyro-integrated rotation since the run's start about body x and y, the sum of
+  (gyro minus bias) x dt over the instance-0 samples in degrees (a small-angle sum: no rotation composition; dt is
+  the time since the previous sample, the first one's since the run's start, so a sample's rate counts for the
+  interval ending at it); and the tilt implied by the bin's mean acceleration (roll = atan2(-AccY, -AccZ), pitch =
+  atan2(AccX, hypot(AccY, AccZ))).
+- Per ground run: the reference roll and pitch; the largest estimate shift from the reference per axis (signed, with
+  its bin time); the gyro-integrated rotation at the last sample of the run (x, y); the largest unexplained shift per
+  axis with its bin time, where the unexplained shift of a bin is (the bin's mean estimate minus the reference) minus
+  (the gyro-integrated rotation at the last sample of that bin), roll with x and pitch with y; and the largest shift
+  of the accelerometer-implied tilt of a bin from its value over the reference interval, per axis. "Largest" is the
+  largest magnitude, kept signed. The bin mean is compared with the rotation at the bin's end, so a steady rotation
+  of w deg/s leaves about w x 0.25 s in the unexplained shift. A log without `NAV` or `IMU` says "not in this log"; a
+  log without a ground run says "no ground run".
+
+**Values this log supports:** the last block of the report. It gathers, in one place, the vehicle values the log
+gives and the range each is valid for; it computes nothing a second way (every figure is one of the sections above)
+and applies nothing anywhere. Its title says the values are valid only for the levels, speeds and battery voltage seen
+in this log.
+
+- Thrust constant: the round-2 value, the smallest and largest per-flight value, the number of flights.
+- Motor line: the pooled fit (speed = a + b x level, rad/s), its level range, rms residual and mean battery voltage,
+  "ill-conditioned" when the fit says so. With `--level-range <min> <max>` also the line's speed at `min` and at
+  `max`, each marked "extrapolated" when it lies outside the fitted level range.
+- Hover: over all flights weighted by duration, the mean throttle stick (`RCS.T`) and the mean commanded collective
+  as a fraction of mass x g, each with the per-flight smallest and largest, and the lowest and highest of the flights'
+  lowest battery voltage (the hover stick depends on the voltage).
+- Accelerometer low-pass: the share of samples inside the 1 g window over all flights, weighted by sample count, raw,
+  and for each `--accel-lpf-hz` given after that low-pass; with none, only the raw share.
+- A part whose input is missing prints the usual line: "give --poles", "not in this log (...)" or "no flight".
 
 **Privacy:** the report reads no position. The analysis never opens the fields of `GPS`, `GPS2`, `GPA`, `POS` or
 `ORGN` records (not even their time), and the report has no field that could hold one. A test puts a GPS record with a

@@ -12,7 +12,7 @@ marv-cli: the MARV ground station on the command line
 Usage: marv-cli --connect <endpoint> [--timeout <s>] <command> [args]
        marv-cli session export <file.tlog> [--name <name>] [--out <dir>]
        marv-cli session list [<dir>]
-       marv-cli log report <file.BIN> --mass-kg <kg> --kf <N/(rad/s)^2> [--poles <n>] [--accel-lpf-hz <Hz>]... [--json <file>]
+       marv-cli log report <file.BIN> --mass-kg <kg> --kf <N/(rad/s)^2> [--poles <n>] [--accel-lpf-hz <Hz>]... [--level-range <min> <max>] [--json <file>]
 
 Endpoint: serial:PATH[:BAUD], tcp:HOST:PORT or udp:ADDR:PORT. serial and tcp are
 configure links; udp is operate-only (every command that writes is refused).
@@ -59,6 +59,8 @@ Options:
   --kf <k>               log report: the thrust constant of one motor, N/(rad/s)^2 (required)
   --poles <n>            log report: the motor's pole count (the magnet count)
   --accel-lpf-hz <Hz>    log report: a cut-off of the accelerometer low-pass of the 1 g window; repeat for more
+  --level-range <min> <max>  log report: the ends of the motor command range; the closing block prints the
+                         motor line's speed at both
   --json <file>          log report: also write the report as JSON
   --force                let logs get overwrite an existing file
   --help                 this text
@@ -147,6 +149,8 @@ pub enum LogCommand {
         poles: Option<f64>,
         /// The cut-offs given with `--accel-lpf-hz`, in order.
         accel_lpf_hz: Vec<f64>,
+        /// The ends given with `--level-range`.
+        level_range: Option<(f64, f64)>,
         json: Option<PathBuf>,
     },
 }
@@ -293,10 +297,11 @@ fn positive(option: &str, text: &str) -> Result<f64, String> {
     }
 }
 
-/// `log report <file> --mass-kg M --kf K [--poles N] [--accel-lpf-hz F]... [--json FILE]`.
+/// `log report <file> --mass-kg M --kf K [--poles N] [--accel-lpf-hz F]... [--level-range MIN MAX] [--json FILE]`.
 fn log(args: &[String]) -> Result<Parsed, String> {
     let (mut mass, mut kf, mut poles, mut json) = (None, None, None, None);
     let mut lpf = Vec::new();
+    let mut level_range = None;
     let mut words: Vec<&str> = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -313,6 +318,20 @@ fn log(args: &[String]) -> Result<Parsed, String> {
             "--accel-lpf-hz" => {
                 lpf.push(positive("--accel-lpf-hz", value("--accel-lpf-hz")?)?);
             }
+            "--level-range" => {
+                let number = |text: &str| match text.parse::<f64>() {
+                    Ok(x) if x.is_finite() => Ok(x),
+                    _ => Err(format!("--level-range needs two numbers, not {text:?}")),
+                };
+                let lo = number(value("--level-range")?)?;
+                let hi = number(value("--level-range")?)?;
+                if lo >= hi {
+                    return Err(format!(
+                        "--level-range needs min below max, not {lo} and {hi}"
+                    ));
+                }
+                level_range = Some((lo, hi));
+            }
             "--json" => json = Some(PathBuf::from(value("--json")?)),
             option if option.starts_with("--") => return Err(format!("unknown option {option}")),
             word => words.push(word),
@@ -326,6 +345,7 @@ fn log(args: &[String]) -> Result<Parsed, String> {
                 .ok_or("log report needs --kf <N/(rad/s)^2>: the thrust constant of one motor")?,
             poles,
             accel_lpf_hz: lpf,
+            level_range,
             json,
         })),
         ["report"] => Err("log report needs a FILE.BIN".to_string()),

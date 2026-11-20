@@ -1454,3 +1454,376 @@ fn a_flight_without_setpoint_records_has_no_figures() {
     assert_eq!(tr.flights[0].records, 0);
     assert!(tr.flights[0].axes.is_none());
 }
+
+// ---- ground check and the closing block ----
+
+const G_NAV: &str = NAV;
+
+/// What the log holds at one 10 ms step of a ground run: estimated roll and pitch (degrees), gyro X and Y
+/// (rad/s) and the acceleration (m/s^2).
+#[derive(Clone, Copy)]
+struct GStep {
+    est: [f64; 2],
+    gyro: [f64; 2],
+    acc: [f64; 3],
+}
+
+/// The acceleration at rest of a vehicle with this roll and pitch (degrees), the level one being -g on z.
+fn rest_acc(roll: f64, pitch: f64) -> [f64; 3] {
+    let [r, p] = [roll, pitch].map(f64::to_radians);
+    [
+        GRAVITY * p.sin(),
+        -GRAVITY * r.sin() * p.cos(),
+        -GRAVITY * r.cos() * p.cos(),
+    ]
+}
+
+fn level_step(est: [f64; 2], gyro: [f64; 2]) -> GStep {
+    GStep {
+        est,
+        gyro,
+        acc: rest_acc(est[0], est[1]),
+    }
+}
+
+/// A log of `run_levels(level)`: the ground run is 1 s to 12 s. `NAV` where `nav(t)` and `IMU` (instance 0
+/// and a second one that must be ignored) where `imu(t)`, every 10 ms.
+fn ground_track_log(
+    step: impl Fn(i64) -> GStep,
+    nav: impl Fn(i64) -> bool,
+    imu: impl Fn(i64) -> bool,
+) -> Vec<u8> {
+    let levels = run_levels(500);
+    let mut f = Vec::new();
+    f.extend(fmt_record(
+        130,
+        "MOT",
+        MOT,
+        "TimeUS,Arm,Mode,A0,A1,A2,A3,C0,C1,C2,C3",
+    ));
+    f.extend(fmt_record(
+        131,
+        "ESC",
+        ESC,
+        "TimeUS,E0,E1,E2,E3,V0,V1,V2,V3,T0,T1,T2,T3,Fl",
+    ));
+    f.extend(fmt_record(
+        136,
+        "NAV",
+        G_NAV,
+        "TimeUS,Q1,Q2,Q3,Q4,GX,GY,GZ,Vld",
+    ));
+    f.extend(fmt_record(
+        142,
+        "IMU",
+        IMU,
+        "TimeUS,I,GyrX,GyrY,GyrZ,AccX,AccY,AccZ",
+    ));
+    let end = levels.len() as i64 * BIN;
+    for t in (0..=end).step_by(STEP as usize) {
+        let s = step(t);
+        if nav(t) {
+            let q = quat(s.est[0], s.est[1], 0.0);
+            let mut v = vec![int(t)];
+            v.extend(q.map(V::Float));
+            v.extend([V::Float(0.0), V::Float(0.0), V::Float(0.0)]);
+            v.push(int(1));
+            f.extend(record(136, NAV, &v));
+        }
+        if imu(t) {
+            for (inst, scale) in [(0, 1.0), (1, 50.0)] {
+                f.extend(record(
+                    142,
+                    IMU,
+                    &[
+                        int(t),
+                        int(inst),
+                        V::Float(s.gyro[0] * scale),
+                        V::Float(s.gyro[1] * scale),
+                        V::Float(0.0),
+                        V::Float(s.acc[0] * scale),
+                        V::Float(s.acc[1] * scale),
+                        V::Float(s.acc[2] * scale),
+                    ],
+                ));
+            }
+        }
+        let level = levels[((t / BIN) as usize).min(levels.len() - 1)];
+        let mut mot = vec![int(t), int(1), int(0)];
+        mot.extend((0..4).map(|_| int(level)));
+        mot.extend((0..4).map(|_| int(0)));
+        f.extend(record(130, MOT, &mot));
+        let mut esc = vec![int(t)];
+        esc.extend((0..4).map(|m| {
+            let (a, b) = line(m);
+            int(erpm(a + b * level as f64))
+        }));
+        esc.extend((0..4).map(|_| int(0)));
+        esc.extend((0..4).map(|_| int(40)));
+        esc.push(int(0));
+        f.extend(record(131, ESC, &esc));
+    }
+    f
+}
+
+const RUN_START: i64 = 2 * BIN;
+const RUN_END: i64 = 24 * BIN;
+
+fn ground_report(log: Vec<u8>) -> crate::GroundCheck {
+    let r = flight_report_of(Cursor::new(log), None, &ground_inputs(&[])).unwrap();
+    assert!(r.windows[0].flights.is_empty());
+    assert_eq!(r.ground.state, crate::GroundState::Done);
+    assert_eq!(r.ground.runs.len(), 1, "{:?}", r.ground);
+    let run = &r.ground.runs[0];
+    assert_eq!(
+        (run.start_us, run.end_us),
+        (RUN_START as u64, RUN_END as u64)
+    );
+    r.ground
+}
+
+/// The mean of `f` over the steps in `from..to`.
+fn mean_over(from: i64, to: i64, f: impl Fn(i64) -> f64) -> f64 {
+    let v: Vec<f64> = (from..to).step_by(STEP as usize).map(f).collect();
+    v.iter().sum::<f64>() / v.len() as f64
+}
+
+#[test]
+fn an_estimate_that_drifts_while_the_gyro_reads_only_its_bias_is_an_unexplained_shift() {
+    let bias = [0.01, -0.02];
+    let drift = 0.8;
+    let est = |t: i64| {
+        if t < RUN_START {
+            0.0
+        } else {
+            drift * (t - RUN_START) as f64 / 1e6
+        }
+    };
+    let g = ground_report(ground_track_log(
+        |t| level_step([est(t), -0.5 * est(t)], bias),
+        |_| true,
+        |_| true,
+    ));
+    let f = g.runs[0].figures.as_ref().expect("figures");
+    near_deg(f.reference[0], 0.0);
+    near_deg(f.gyro_bias_dps[0], bias[0].to_degrees());
+    near_deg(f.gyro_bias_dps[1], bias[1].to_degrees());
+    let last = RUN_END - BIN;
+    let want = mean_over(last, RUN_END, est);
+    let roll = f.max_shift[0].as_ref().unwrap();
+    near_deg(roll.value, want);
+    assert_eq!(roll.at_us, last as u64);
+    near_deg(f.max_shift[1].as_ref().unwrap().value, -0.5 * want);
+    // The gyro reads only its bias: nothing is integrated, so nothing explains the shift.
+    near_deg(f.gyro_end[0], 0.0);
+    near_deg(f.gyro_end[1], 0.0);
+    near_deg(f.max_unexplained[0].as_ref().unwrap().value, want);
+    near_deg(f.max_unexplained[1].as_ref().unwrap().value, -0.5 * want);
+    // The accelerometer follows the estimate here (level step): its tilt shift is the same.
+    assert!((f.max_accel_shift[0].as_ref().unwrap().value - want).abs() < 0.05);
+    assert_eq!(f.bins, 22);
+}
+
+#[test]
+fn a_vehicle_that_really_rotates_is_explained_by_the_gyro() {
+    let bias = [0.01, 0.0];
+    let rate: [f64; 2] = [0.02, -0.015];
+    let rot = |t: i64, a: usize| {
+        if t < RUN_START {
+            0.0
+        } else {
+            rate[a].to_degrees() * (t - RUN_START) as f64 / 1e6
+        }
+    };
+    let g = ground_report(ground_track_log(
+        |t| {
+            level_step(
+                [rot(t, 0), rot(t, 1)],
+                [
+                    bias[0] + if t >= RUN_START { rate[0] } else { 0.0 },
+                    bias[1] + if t >= RUN_START { rate[1] } else { 0.0 },
+                ],
+            )
+        },
+        |_| true,
+        |_| true,
+    ));
+    let f = g.runs[0].figures.as_ref().expect("figures");
+    let last = RUN_END - BIN;
+    for a in 0..2 {
+        let shift = mean_over(last, RUN_END, |t| rot(t, a));
+        let s = f.max_shift[a].as_ref().unwrap();
+        near_deg(s.value, shift);
+        // The integral at the last sample of the run.
+        let end = rot(RUN_END - STEP, a);
+        near_deg(f.gyro_end[a], end);
+        let u = f.max_unexplained[a].as_ref().unwrap();
+        near_deg(u.value, shift - end);
+        // A steady rotation leaves only half a bin of it: small against the shift.
+        assert!(
+            u.value.abs() < 0.05 * shift.abs(),
+            "{} vs {}",
+            u.value,
+            shift
+        );
+        // The accelerometer agrees with the estimate within the tilt of a mean.
+        let acc = f.max_accel_shift[a].as_ref().unwrap();
+        assert!(
+            (acc.value - shift).abs() < 0.1,
+            "{} vs {}",
+            acc.value,
+            shift
+        );
+    }
+}
+
+#[test]
+fn too_few_reference_records_give_no_figures() {
+    // NAV every 100 ms inside the reference second: fewer than GROUND_REF_MIN_RECORDS.
+    let g = ground_report(ground_track_log(
+        |_| level_step([0.0; 2], [0.0; 2]),
+        |t| t >= RUN_START || (t / STEP) % 10 == 0,
+        |_| true,
+    ));
+    let run = &g.runs[0];
+    assert!(run.figures.is_none());
+    assert!(run.ref_nav_records < crate::GROUND_REF_MIN_RECORDS);
+    assert!(run.ref_imu_records >= crate::GROUND_REF_MIN_RECORDS);
+    // No IMU in the reference: the same.
+    let g = ground_report(ground_track_log(
+        |_| level_step([0.0; 2], [0.0; 2]),
+        |_| true,
+        |t| t >= RUN_START,
+    ));
+    assert!(g.runs[0].figures.is_none());
+    assert_eq!(g.runs[0].ref_imu_records, 0);
+}
+
+#[test]
+fn a_log_without_nav_or_imu_has_no_ground_check_and_a_log_without_a_ground_run_has_no_runs() {
+    let mut i = ground_inputs(&[]);
+    let r = flight_report_of(Cursor::new(synth(&full())), None, &i).unwrap();
+    assert_eq!(r.ground.state, crate::GroundState::Done);
+    i.poles = None;
+    let r = flight_report_of(Cursor::new(synth(&full())), None, &i).unwrap();
+    assert_eq!(r.ground.state, crate::GroundState::NeedsPoles);
+    // A log with MOT and ESC only.
+    let mut f = Vec::new();
+    f.extend(fmt_record(
+        130,
+        "MOT",
+        MOT,
+        "TimeUS,Arm,Mode,A0,A1,A2,A3,C0,C1,C2,C3",
+    ));
+    let r = flight_report_of(Cursor::new(f), None, &inputs()).unwrap();
+    assert_eq!(r.ground.state, crate::GroundState::NotInLog);
+}
+
+#[test]
+fn the_closing_block_holds_the_figures_of_the_sections_it_comes_from() {
+    let i = ReportInputs {
+        accel_lpf_hz: vec![5.0],
+        ..inputs()
+    };
+    let r = report(&full(), &i);
+    let s = &r.supports;
+    let flights: Vec<&crate::Flight> = r.windows.iter().flat_map(|w| &w.flights).collect();
+    assert!(!flights.is_empty());
+    let t = r.identification.thrust.as_ref().unwrap();
+    let tv = s.thrust.as_ref().unwrap();
+    assert_eq!(tv.k2, t.k2.unwrap());
+    assert_eq!(
+        (tv.flights_min, tv.flights_max),
+        (t.flights_min, t.flights_max)
+    );
+    assert_eq!(tv.flights, flights.len());
+    assert_eq!(s.line, r.identification.pooled);
+    // Hover: weighted by duration, from the flights' own figures.
+    let dur = |f: &&crate::Flight| (f.end_us - f.start_us) as f64;
+    let total: f64 = flights.iter().map(dur).sum();
+    let stick = s.hover.stick.as_ref().unwrap();
+    within(
+        stick.mean,
+        flights
+            .iter()
+            .map(|f| f.stick_mean.unwrap() * dur(f))
+            .sum::<f64>()
+            / total,
+        1e-9,
+    );
+    let sticks: Vec<f64> = flights.iter().map(|f| f.stick_mean.unwrap()).collect();
+    assert_eq!(
+        stick.min,
+        sticks.iter().copied().fold(f64::INFINITY, f64::min)
+    );
+    assert_eq!(
+        stick.max,
+        sticks.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+    );
+    let col = s.hover.collective_fraction.as_ref().unwrap();
+    within(
+        col.mean,
+        flights
+            .iter()
+            .map(|f| f.collective_fraction.unwrap() * dur(f))
+            .sum::<f64>()
+            / total,
+        1e-9,
+    );
+    assert_eq!(
+        s.hover.volts_min_lowest,
+        flights.iter().filter_map(|f| f.volts_min).reduce(f64::min)
+    );
+    assert_eq!(
+        s.hover.volts_min_highest,
+        flights.iter().filter_map(|f| f.volts_min).reduce(f64::max)
+    );
+    // The 1 g shares: weighted by samples over the flight intervals.
+    let ivs: Vec<_> = r
+        .vibration
+        .intervals
+        .iter()
+        .filter(|v| v.kind == IntervalKind::Flight)
+        .collect();
+    let n: f64 = ivs.iter().map(|v| v.samples as f64).sum();
+    let g = s.one_g.as_ref().unwrap();
+    within(
+        g.raw,
+        ivs.iter()
+            .map(|v| v.samples as f64 * v.one_g.as_ref().unwrap().raw)
+            .sum::<f64>()
+            / n,
+        1e-9,
+    );
+    assert_eq!(g.filtered.len(), 1);
+    assert_eq!(g.filtered[0].0, 5.0);
+    within(
+        g.filtered[0].1,
+        ivs.iter()
+            .map(|v| v.samples as f64 * v.one_g.as_ref().unwrap().filtered[0].1)
+            .sum::<f64>()
+            / n,
+        1e-9,
+    );
+    // The line's speeds: marked only outside the fitted range.
+    let Some(MotorFitResult::Fit(fit)) = &s.line else {
+        panic!("{:?}", s.line)
+    };
+    let inside_level = (fit.level_min + fit.level_max) / 2.0;
+    let (v, extra) = crate::line_speed(fit, inside_level);
+    assert!(!extra);
+    within(v, fit.a + fit.b * inside_level, 1e-12);
+    assert!(!crate::line_speed(fit, fit.level_min).1);
+    assert!(!crate::line_speed(fit, fit.level_max).1);
+    assert!(crate::line_speed(fit, fit.level_min - 1.0).1);
+    assert!(crate::line_speed(fit, fit.level_max + 1.0).1);
+    // Without a pole count nothing of it is there.
+    let none = ReportInputs {
+        poles: None,
+        ..inputs()
+    };
+    let r = flight_report_of(Cursor::new(synth(&full())), None, &none).unwrap();
+    assert!(
+        r.supports.thrust.is_none() && r.supports.hover.flights == 0 && r.supports.one_g.is_none()
+    );
+}

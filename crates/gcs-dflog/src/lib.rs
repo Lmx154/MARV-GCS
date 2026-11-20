@@ -39,9 +39,11 @@ mod events;
 mod export;
 mod flight_report;
 mod format;
+mod ground;
 mod reader;
 mod summary;
 mod tracking;
+mod values;
 mod vibration;
 
 #[cfg(test)]
@@ -69,6 +71,10 @@ pub use flight_report::{
     flight_report_with,
 };
 pub use format::{Format, Value};
+pub use ground::{
+    BinFigure, GROUND_REF_MIN_RECORDS, GROUND_REF_S, GroundCheck, GroundFigures, GroundRunCheck,
+    GroundState,
+};
 pub use reader::{Control, Progress, Reader, Record, scan};
 pub use summary::{Summary, TypeCount, summary, summary_of, summary_with};
 pub use tracking::{
@@ -76,6 +82,7 @@ pub use tracking::{
     EXCURSION_WINDOW_S, Excursion, ExcursionEvent, FlightTracking, HOLD_MIN_DEG, HOLD_MIN_S,
     HOLD_SETTLE_S, HOLD_TOL_DEG, Hold, HoldStats, TrackingReport, TrackingState,
 };
+pub use values::{HoverValues, OneGValues, ThrustValue, ValuesSupported, WeightedStat, line_speed};
 pub use vibration::{
     AxisSpectrum, BAND_MARGIN, IntervalKind, IntervalVibration, MIN_SPECTRUM_RATE_HZ, ONE_G_WINDOW,
     OneGShares, PEAK_HALF_WIDTH, PEAKS, Peak, RotorBand, SEGMENT, Spectra, VibrationReport,

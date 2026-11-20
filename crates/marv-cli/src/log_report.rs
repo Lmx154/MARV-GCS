@@ -5,6 +5,9 @@ use std::fmt::Write as _;
 use std::io::Write;
 
 use gcs_dflog::{
+    BinFigure, GROUND_REF_MIN_RECORDS, GROUND_REF_S, GroundState, WeightedStat, line_speed,
+};
+use gcs_dflog::{
     EXCURSION_SEPARATION_S, EXCURSION_WINDOW_S, Excursion, HOLD_MIN_DEG, HOLD_MIN_S, HOLD_SETTLE_S,
     HOLD_TOL_DEG, Hold, TRACKING_AXES, TrackingState,
 };
@@ -33,6 +36,7 @@ pub fn run(command: &LogCommand, out: &mut dyn Write, err: &mut dyn Write) -> i3
         kf,
         poles,
         accel_lpf_hz,
+        level_range,
         json,
     } = command;
     let inputs = ReportInputs {
@@ -53,7 +57,8 @@ pub fn run(command: &LogCommand, out: &mut dyn Write, err: &mut dyn Write) -> i3
         }
     };
     if let Some(path) = json {
-        let text = serde_json::to_string_pretty(&to_json(&report)).expect("a JSON value");
+        let text =
+            serde_json::to_string_pretty(&to_json(&report, *level_range)).expect("a JSON value");
         let written = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -64,7 +69,10 @@ pub fn run(command: &LogCommand, out: &mut dyn Write, err: &mut dyn Write) -> i3
             return exit::FAILED;
         }
     }
-    if out.write_all(to_text(&report).as_bytes()).is_err() {
+    if out
+        .write_all(to_text(&report, *level_range).as_bytes())
+        .is_err()
+    {
         return exit::FAILED;
     }
     exit::OK
@@ -89,7 +97,7 @@ fn gap(present: bool, name: &str) -> String {
     }
 }
 
-pub fn to_text(r: &FlightReport) -> String {
+pub fn to_text(r: &FlightReport, level_range: Option<(f64, f64)>) -> String {
     let mut s = String::new();
     let p = &r.present;
     let _ = writeln!(
@@ -396,7 +404,225 @@ pub fn to_text(r: &FlightReport) -> String {
         }
         TrackingState::Done => tracking_text(&mut s, r),
     }
+
+    let _ = writeln!(
+        s,
+        "\nGround check of the tilt estimate (each ground run; reference: the {GROUND_REF_S} s before the run; \
+         figures only, degrees)"
+    );
+    match r.ground.state {
+        GroundState::NotInLog => {
+            let _ = writeln!(
+                s,
+                "  {}",
+                gap(
+                    false,
+                    match (p.nav, p.imu) {
+                        (false, false) => "NAV, IMU",
+                        (false, true) => "NAV",
+                        _ => "IMU",
+                    }
+                )
+            );
+        }
+        GroundState::NeedsPoles => {
+            let _ = writeln!(s, "  {NEEDS_POLES}");
+        }
+        GroundState::Done => ground_text(&mut s, r),
+    }
+    values_text(&mut s, r, level_range);
     s
+}
+
+fn bin_text(b: &Option<BinFigure>) -> String {
+    match b {
+        None => "no bin".to_string(),
+        Some(b) => format!("{:.2} at {}", b.value, secs(b.at_us)),
+    }
+}
+
+fn ground_text(s: &mut String, r: &FlightReport) {
+    if r.ground.runs.is_empty() {
+        let _ = writeln!(s, "  no ground run");
+    }
+    for run in &r.ground.runs {
+        let _ = writeln!(
+            s,
+            "  window {} ground run {}: {} to {}",
+            run.window + 1,
+            run.number,
+            secs(run.start_us),
+            secs(run.end_us)
+        );
+        let Some(f) = &run.figures else {
+            let _ = writeln!(
+                s,
+                "    the reference interval holds {} NAV and {} IMU records (at least {GROUND_REF_MIN_RECORDS} of each are needed): no figures",
+                run.ref_nav_records, run.ref_imu_records
+            );
+            continue;
+        };
+        let _ = writeln!(
+            s,
+            "    reference: roll {:.2}, pitch {:.2} ({} NAV, {} IMU records); gyro bias x {:.3}, y {:.3} deg/s",
+            f.reference[0],
+            f.reference[1],
+            run.ref_nav_records,
+            run.ref_imu_records,
+            f.gyro_bias_dps[0],
+            f.gyro_bias_dps[1]
+        );
+        let _ = writeln!(
+            s,
+            "    largest estimate shift from the reference: roll {}; pitch {}",
+            bin_text(&f.max_shift[0]),
+            bin_text(&f.max_shift[1])
+        );
+        let _ = writeln!(
+            s,
+            "    gyro-integrated rotation at the end of the run: about x {:.2}, about y {:.2}",
+            f.gyro_end[0], f.gyro_end[1]
+        );
+        let _ = writeln!(
+            s,
+            "    largest unexplained shift (estimate shift minus the gyro-integrated rotation at the end of the bin): roll {}; pitch {}",
+            bin_text(&f.max_unexplained[0]),
+            bin_text(&f.max_unexplained[1])
+        );
+        let _ = writeln!(
+            s,
+            "    largest shift of the accelerometer-implied tilt from its reference value: roll {}; pitch {}",
+            bin_text(&f.max_accel_shift[0]),
+            bin_text(&f.max_accel_shift[1])
+        );
+    }
+}
+
+fn stat_text(st: &Option<WeightedStat>, missing: &str, decimals: usize) -> String {
+    match st {
+        Some(w) => format!(
+            "mean {:.decimals$} (per flight {:.decimals$} to {:.decimals$}, {} flights)",
+            w.mean, w.min, w.max, w.flights
+        ),
+        None => missing.to_string(),
+    }
+}
+
+fn values_text(s: &mut String, r: &FlightReport, level_range: Option<(f64, f64)>) {
+    let p = &r.present;
+    let v = &r.supports;
+    let volts = |f: &MotorFit| opt(f.mean_volts, 2, " V", &gap(p.bat, "BAT"));
+    let _ = writeln!(
+        s,
+        "\nValues this log supports (valid only for the levels, speeds and battery voltage seen in this log)"
+    );
+    match (&v.thrust, r.poles) {
+        (_, None) => {
+            let _ = writeln!(s, "  thrust constant k: {NEEDS_POLES}");
+        }
+        (Some(t), _) => {
+            let _ = writeln!(
+                s,
+                "  thrust constant k (round 2): {:.4e} N/(rad/s)^2; per flight {:.4e} to {:.4e}; {} flights",
+                t.k2, t.flights_min, t.flights_max, t.flights
+            );
+        }
+        (None, _) => {
+            let _ = writeln!(
+                s,
+                "  thrust constant k: {}",
+                if p.esc {
+                    "no flight"
+                } else {
+                    "not in this log (ESC)"
+                }
+            );
+        }
+    }
+    match (&v.line, r.poles) {
+        (_, None) => {
+            let _ = writeln!(s, "  motor line: {NEEDS_POLES}");
+        }
+        (Some(MotorFitResult::Fit(f)), _) => {
+            let _ = writeln!(
+                s,
+                "  motor line (all four motors pooled): speed = {:.3} + {:.5} x level rad/s; level {:.0} to {:.0}; rms residual {:.3} rad/s; mean battery {}{}",
+                f.a,
+                f.b,
+                f.level_min,
+                f.level_max,
+                f.rms_residual,
+                volts(f),
+                ill(f)
+            );
+            if let Some((lo, hi)) = level_range {
+                for level in [lo, hi] {
+                    let (speed, extra) = line_speed(f, level);
+                    let _ = writeln!(
+                        s,
+                        "    at level {level}: {speed:.2} rad/s{}",
+                        if extra { " (extrapolated)" } else { "" }
+                    );
+                }
+            }
+        }
+        (Some(MotorFitResult::NotEnough(n)), _) => {
+            let _ = writeln!(s, "  motor line: not enough steady bins ({n})");
+        }
+        (None, _) => {
+            let _ = writeln!(s, "  motor line: {}", gap(p.mot && p.esc, "MOT, ESC"));
+        }
+    }
+    match r.poles {
+        None => {
+            let _ = writeln!(s, "  hover: {NEEDS_POLES}");
+        }
+        Some(_) if v.hover.flights == 0 => {
+            let _ = writeln!(s, "  hover: no flight");
+        }
+        Some(_) => {
+            let h = &v.hover;
+            let _ = writeln!(
+                s,
+                "  hover throttle stick (RCS.T): {}",
+                stat_text(&h.stick, &gap(p.rcs, "RCS"), 3)
+            );
+            let _ = writeln!(
+                s,
+                "  hover commanded collective (SETP.Thr) over mass x g: {}",
+                stat_text(&h.collective_fraction, &gap(p.setp, "SETP"), 3)
+            );
+            let _ = writeln!(
+                s,
+                "  lowest battery voltage per flight: {} to {}",
+                opt(h.volts_min_lowest, 2, " V", &gap(p.bat, "BAT")),
+                opt(h.volts_min_highest, 2, " V", &gap(p.bat, "BAT"))
+            );
+        }
+    }
+    match r.vibration.state {
+        VibrationState::NeedsPoles => {
+            let _ = writeln!(s, "  1 g window: {NEEDS_POLES}");
+        }
+        VibrationState::NoImu => {
+            let _ = writeln!(s, "  1 g window: not in this log (IMU)");
+        }
+        VibrationState::Done => match &v.one_g {
+            None => {
+                let _ = writeln!(s, "  1 g window: no flight");
+            }
+            Some(g) => {
+                let _ = writeln!(
+                    s,
+                    "  share of accelerometer samples with {:.1} g <= |a| <= {:.1} g over all flights ({} samples, weighted by sample count): raw {:.3}",
+                    ONE_G_WINDOW.0, ONE_G_WINDOW.1, g.samples, g.raw
+                );
+                for (hz, share) in &g.filtered {
+                    let _ = writeln!(s, "    low-passed at {hz} Hz: {share:.3}");
+                }
+            }
+        },
+    }
 }
 
 fn exc_text(e: &Option<Excursion>) -> String {
@@ -706,7 +932,7 @@ fn jn(v: Option<f64>) -> Value {
     v.map_or(Value::Null, |x| json!(x))
 }
 
-pub fn to_json(r: &FlightReport) -> Value {
+pub fn to_json(r: &FlightReport, level_range: Option<(f64, f64)>) -> Value {
     let p = &r.present;
     let h = &r.health;
     let missing: Vec<&str> = [
@@ -914,6 +1140,8 @@ pub fn to_json(r: &FlightReport) -> Value {
             "intervals": intervals,
         },
         "tracking": tracking_json(r),
+        "ground_check": ground_json(r),
+        "values_supported": values_json(r, level_range),
     })
 }
 
@@ -1008,5 +1236,117 @@ fn tracking_json(r: &FlightReport) -> Value {
             "hold_min_deg": HOLD_MIN_DEG,
             "hold_settle_s": HOLD_SETTLE_S,
         },
+    })
+}
+
+fn bin_json(b: &Option<BinFigure>) -> Value {
+    b.as_ref().map_or(
+        Value::Null,
+        |b| json!({"deg": b.value, "bin_start_us": b.at_us}),
+    )
+}
+
+fn ground_json(r: &FlightReport) -> Value {
+    let runs: Vec<Value> = r
+        .ground
+        .runs
+        .iter()
+        .map(|run| {
+            let figures = run.figures.as_ref().map(|f| {
+                json!({
+                    "reference_roll_deg": f.reference[0],
+                    "reference_pitch_deg": f.reference[1],
+                    "gyro_bias_x_deg_s": f.gyro_bias_dps[0],
+                    "gyro_bias_y_deg_s": f.gyro_bias_dps[1],
+                    "bins": f.bins,
+                    "largest_estimate_shift_roll": bin_json(&f.max_shift[0]),
+                    "largest_estimate_shift_pitch": bin_json(&f.max_shift[1]),
+                    "gyro_integrated_end_x_deg": f.gyro_end[0],
+                    "gyro_integrated_end_y_deg": f.gyro_end[1],
+                    "largest_unexplained_shift_roll": bin_json(&f.max_unexplained[0]),
+                    "largest_unexplained_shift_pitch": bin_json(&f.max_unexplained[1]),
+                    "largest_accel_tilt_shift_roll": bin_json(&f.max_accel_shift[0]),
+                    "largest_accel_tilt_shift_pitch": bin_json(&f.max_accel_shift[1]),
+                })
+            });
+            json!({
+                "window": run.window + 1,
+                "ground_run": run.number,
+                "start_us": run.start_us,
+                "end_us": run.end_us,
+                "reference_nav_records": run.ref_nav_records,
+                "reference_imu_records": run.ref_imu_records,
+                "figures": figures,
+            })
+        })
+        .collect();
+    json!({
+        "state": match r.ground.state {
+            GroundState::Done => "done",
+            GroundState::NeedsPoles => "needs_poles",
+            GroundState::NotInLog => "not_in_this_log",
+        },
+        "reference_s": GROUND_REF_S,
+        "reference_min_records": GROUND_REF_MIN_RECORDS,
+        "runs": runs,
+    })
+}
+
+fn stat_json(st: &Option<WeightedStat>) -> Value {
+    st.as_ref().map_or(
+        Value::Null,
+        |w| json!({"mean": w.mean, "min": w.min, "max": w.max, "flights": w.flights}),
+    )
+}
+
+fn values_json(r: &FlightReport, level_range: Option<(f64, f64)>) -> Value {
+    let v = &r.supports;
+    let line = match &v.line {
+        Some(MotorFitResult::Fit(f)) => {
+            let speeds = level_range.map(|(lo, hi)| {
+                [lo, hi]
+                    .map(|level| {
+                        let (speed, extra) = line_speed(f, level);
+                        json!({"level": level, "speed_rad_s": speed, "extrapolated": extra})
+                    })
+                    .to_vec()
+            });
+            json!({
+                "a_rad_s": f.a,
+                "b_rad_s_per_level": f.b,
+                "level_min": f.level_min,
+                "level_max": f.level_max,
+                "rms_residual_rad_s": f.rms_residual,
+                "points": f.bins,
+                "mean_battery_v": jn(f.mean_volts),
+                "ill_conditioned": f.ill_conditioned,
+                "speed_at_level_range": speeds,
+            })
+        }
+        Some(MotorFitResult::NotEnough(n)) => json!({"not_enough_bins": n}),
+        None => Value::Null,
+    };
+    json!({
+        "validity": "valid only for the levels, speeds and battery voltage seen in this log",
+        "needs_poles": r.poles.is_none(),
+        "thrust_constant": v.thrust.as_ref().map(|t| json!({
+            "k_round2": t.k2,
+            "per_flight_min": t.flights_min,
+            "per_flight_max": t.flights_max,
+            "flights": t.flights,
+        })),
+        "motor_line_pooled": line,
+        "hover": {
+            "flights": v.hover.flights,
+            "throttle_stick": stat_json(&v.hover.stick),
+            "collective_fraction_of_mass_g": stat_json(&v.hover.collective_fraction),
+            "lowest_battery_v_per_flight_min": jn(v.hover.volts_min_lowest),
+            "lowest_battery_v_per_flight_max": jn(v.hover.volts_min_highest),
+        },
+        "one_g_window": v.one_g.as_ref().map(|g| json!({
+            "samples": g.samples,
+            "raw_share": g.raw,
+            "filtered": g.filtered.iter().map(|(hz, s)| json!({"cutoff_hz": hz, "share": s})).collect::<Vec<_>>(),
+        })),
     })
 }

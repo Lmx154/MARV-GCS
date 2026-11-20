@@ -325,3 +325,151 @@ fn the_report_has_a_tracking_section_in_text_and_json() {
         r.out
     );
 }
+
+/// A log with one ground run (1 s to 5.5 s, the motors well above idle, a kf too small for any flight): the
+/// estimated roll drifts by 0.5 degrees per second while the gyro reads only its bias.
+fn ground_log() -> Vec<u8> {
+    let mut f = Vec::new();
+    f.extend(fmt(
+        130,
+        "MOT",
+        "QBBHHHHHHHH",
+        "TimeUS,Arm,Mode,A0,A1,A2,A3,C0,C1,C2,C3",
+        3 + 8 + 1 + 1 + 16,
+    ));
+    f.extend(fmt(
+        131,
+        "ESC",
+        "QIIIIccccBBBBB",
+        "TimeUS,E0,E1,E2,E3,V0,V1,V2,V3,T0,T1,T2,T3,Fl",
+        3 + 8 + 16 + 8 + 5,
+    ));
+    f.extend(fmt(
+        134,
+        "NAV",
+        "QfffffffB",
+        "TimeUS,Q1,Q2,Q3,Q4,GX,GY,GZ,Vld",
+        3 + 8 + 28 + 1,
+    ));
+    f.extend(fmt(
+        133,
+        "IMU",
+        "QBffffff",
+        "TimeUS,I,GyrX,GyrY,GyrZ,AccX,AccY,AccZ",
+        3 + 8 + 1 + 24,
+    ));
+    for i in 0..600u64 {
+        let t = i * 10_000;
+        let level: u16 = if t < 1_000_000 { 100 } else { 500 };
+        let mut r = vec![0xA3, 0x95, 130];
+        r.extend(t.to_le_bytes());
+        r.extend([u8::from(i < 599), 0]);
+        for _ in 0..4 {
+            r.extend(level.to_le_bytes());
+        }
+        r.extend([0u8; 8]);
+        f.extend(r);
+        let mut r = vec![0xA3, 0x95, 131];
+        r.extend(t.to_le_bytes());
+        r.extend([0u8; 16 + 8 + 5]);
+        f.extend(r);
+        let roll = if t < 1_000_000 {
+            0.0f32
+        } else {
+            0.5 * (t - 1_000_000) as f32 / 1e6
+        };
+        let h = roll.to_radians() / 2.0;
+        let mut r = vec![0xA3, 0x95, 134];
+        r.extend(t.to_le_bytes());
+        for v in [h.cos(), h.sin(), 0.0, 0.0, 0.0, 0.0, 0.0] {
+            r.extend(v.to_le_bytes());
+        }
+        r.push(1);
+        f.extend(r);
+        let mut r = vec![0xA3, 0x95, 133];
+        r.extend(t.to_le_bytes());
+        r.push(0);
+        for v in [0.01f32, 0.0, 0.0, 0.0, 0.0, -9.80665] {
+            r.extend(v.to_le_bytes());
+        }
+        f.extend(r);
+    }
+    f
+}
+
+#[test]
+fn the_report_has_the_ground_check_and_the_closing_block_in_text_and_json() {
+    let dir = TempDir::new("ground");
+    let log = dir.file("ground.BIN");
+    std::fs::write(&log, ground_log()).expect("write the log");
+    let json = dir.file("report.json");
+    let r = run(&format!(
+        "log report {} --mass-kg 1 --kf 1e-9 --poles 14 --level-range 0 3000 --json {}",
+        log.display(),
+        json.display()
+    ));
+    assert_eq!(r.code, 0, "{r:?}");
+    for part in [
+        "Ground check of the tilt estimate (each ground run; reference: the 1 s before the run",
+        "window 1 ground run 1: 1.000 s to 5.500 s",
+        "reference: roll 0.00, pitch 0.00 (100 NAV, 100 IMU records); gyro bias x 0.573",
+        "largest estimate shift from the reference: roll 2.1",
+        "gyro-integrated rotation at the end of the run: about x 0.00, about y 0.00",
+        "largest unexplained shift",
+        "Values this log supports (valid only for the levels, speeds and battery voltage seen in this log)",
+        "thrust constant k: no flight",
+        "hover: no flight",
+        "1 g window: no flight",
+    ] {
+        assert!(r.out.contains(part), "{part:?} missing in\n{}", r.out);
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&json).expect("the JSON file"))
+            .expect("JSON");
+    let g = &value["ground_check"];
+    assert_eq!(g["state"], "done");
+    let f = &g["runs"][0]["figures"];
+    assert!(
+        (f["largest_estimate_shift_roll"]["deg"]
+            .as_f64()
+            .expect("number")
+            - 2.125)
+            .abs()
+            < 0.05
+    );
+    assert_eq!(
+        f["gyro_integrated_end_x_deg"]
+            .as_f64()
+            .expect("number")
+            .abs()
+            < 1e-3,
+        true
+    );
+    assert!(f["largest_unexplained_shift_pitch"]["bin_start_us"].is_number());
+    let v = &value["values_supported"];
+    assert!(v["validity"].is_string());
+    assert!(v["thrust_constant"].is_null());
+    assert_eq!(v["hover"]["flights"], 0);
+    assert!(v["motor_line_pooled"].is_object() || v["motor_line_pooled"].is_null());
+
+    // No ground run in the other synthetic log; no NAV, no IMU in a log without them.
+    let flight = dir.file("flight.BIN");
+    std::fs::write(&flight, tracking_log()).expect("write the log");
+    let r = run(&format!(
+        "log report {} --mass-kg 1 --kf 3e-5 --poles 14",
+        flight.display()
+    ));
+    assert!(r.out.contains("no ground run"), "{}", r.out);
+    assert!(r.out.contains("thrust constant k (round 2)"), "{}", r.out);
+    assert!(r.out.find("Tracking").unwrap() < r.out.find("Ground check").unwrap());
+    assert!(r.out.find("Ground check").unwrap() < r.out.find("Values this log supports").unwrap());
+
+    // Bad --level-range is a usage error.
+    for bad in ["--level-range 5", "--level-range 3 3", "--level-range a b"] {
+        let r = run(&format!(
+            "log report {} --mass-kg 1 --kf 1e-9 {bad}",
+            log.display()
+        ));
+        assert_eq!(r.code, 2, "{bad}: {r:?}");
+    }
+}
