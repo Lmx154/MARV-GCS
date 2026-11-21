@@ -111,6 +111,13 @@ pub struct SimConfig {
     /// Names of parameters whose every PARAM_SET is refused (the echo carries the old value and a STATUSTEXT
     /// follows), to test a ground station that writes several parameters and must stop at a refusal. Empty is none.
     pub refuse_params: Vec<String>,
+    /// After this many PARAM_SETs have been received the vehicle goes silent (as [`SimVehicle::set_silent`]; the
+    /// write that reaches the count is applied but not answered), to test a link that drops during a sequence of
+    /// writes. 0 is off.
+    pub silent_after_param_sets: u32,
+    /// Names of Real32 parameters that the list (PARAM_REQUEST_LIST) reports one more than they hold, to test a
+    /// ground station's read-back. Echoes and PARAM_REQUEST_READ answers are true. Empty is none.
+    pub list_differs: Vec<String>,
 }
 
 impl SimConfig {
@@ -189,6 +196,8 @@ impl Default for SimConfig {
             mag: MagEnvironment::default(),
             user: None,
             refuse_params: Vec::new(),
+            silent_after_param_sets: 0,
+            list_differs: Vec::new(),
         }
     }
 }
@@ -591,7 +600,17 @@ impl SimVehicle {
             } else if self.list_due_ms <= self.now_ms {
                 self.list_next = Some(index + 1);
                 self.list_due_ms += PARAM_LIST_PERIOD_MS;
+                let held = self.config.params[index].value;
+                if let ParamValue::Real32(v) = held
+                    && self
+                        .config
+                        .list_differs
+                        .contains(&self.config.params[index].name)
+                {
+                    self.config.params[index].value = ParamValue::Real32(v + 1.0);
+                }
                 self.push_param_value(index, out);
+                self.config.params[index].value = held;
             } else {
                 break;
             }
@@ -797,6 +816,11 @@ impl SimVehicle {
                     for (at, value) in changes {
                         self.config.params[at].value = value;
                     }
+                }
+                if self.config.silent_after_param_sets != 0
+                    && self.param_sets_received >= self.config.silent_after_param_sets
+                {
+                    self.silent = true;
                 }
                 if stale {
                 } else if self.echoes_dropped < self.config.drop_first_param_echoes {

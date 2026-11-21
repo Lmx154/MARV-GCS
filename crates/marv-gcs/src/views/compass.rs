@@ -51,8 +51,6 @@ pub const HEADING_STOP: &str = "Stop heading check";
 pub const DISCARD_BUTTON: &str = "Discard";
 /// How long the list may take to come back for the read-back.
 const READ_BACK_WAIT: Duration = Duration::from_secs(30);
-/// A read-back whose list was never seen going by is taken as done when it is complete after this long.
-const READ_BACK_QUIET: Duration = Duration::from_secs(3);
 /// The most HIGHRES_IMU samples a heading check keeps (25 Hz: forty minutes).
 const HEADING_MAX_SAMPLES: usize = 60_000;
 const TILE: f32 = 78.0;
@@ -247,6 +245,11 @@ fn new_imu(store: &MessageStore, seen: &mut u64) -> Vec<Imu> {
         .collect()
 }
 
+/// How many PARAM_VALUE messages have been received.
+fn param_values(store: &MessageStore) -> u64 {
+    store.entry("PARAM_VALUE", 0).map_or(0, |e| e.count)
+}
+
 fn latest_accel(store: &MessageStore) -> Option<[f32; 3]> {
     let e = store.entry("HIGHRES_IMU", 0)?;
     Some([
@@ -297,7 +300,8 @@ struct Sampling {
 
 struct ReadBack {
     at: Duration,
-    saw_fetch: bool,
+    /// PARAM_VALUE messages received when the list was asked for: a list that came after it adds one per parameter.
+    values_before: u64,
 }
 
 struct Commit {
@@ -467,18 +471,17 @@ impl Compass {
 
     fn advance_commit(&mut self, mut c: Box<Commit>, state: &VehicleState, now: Duration) {
         let plan_len = c.success.plan.len();
-        if let Some(rb) = &mut c.read_back {
+        if let Some(rb) = &c.read_back {
             let table = &state.params;
-            let missing = c.success.plan.iter().any(|(n, _)| table.value(n).is_none());
+            // The list was asked for after the last write, and the table is emptied when it starts: a value in the
+            // table came from that list, and the PARAM_VALUE count says a whole list arrived after the request.
+            let values = param_values(&state.messages).saturating_sub(rb.values_before);
             match &table.fetch {
-                FetchStatus::Fetching { .. } => rb.saw_fetch = true,
                 FetchStatus::Failed(why) => {
                     let why = format!("the read-back failed: {why}");
                     return self.fail(why, false);
                 }
-                FetchStatus::Complete
-                    if rb.saw_fetch || missing || now.saturating_sub(rb.at) >= READ_BACK_QUIET =>
-                {
+                FetchStatus::Complete if values >= table.params.len().max(1) as u64 => {
                     let read: Vec<(&str, f32)> = c
                         .success
                         .plan
@@ -493,7 +496,7 @@ impl Compass {
                 _ => {}
             }
             if now.saturating_sub(rb.at) > READ_BACK_WAIT {
-                return self.fail("the read-back was not answered".to_string(), false);
+                return self.fail("read-back did not complete".to_string(), false);
             }
             self.run = Run::Commit(c);
             return;
@@ -541,7 +544,7 @@ impl Compass {
             self.outbox.push(Command::RefreshParams);
             c.read_back = Some(ReadBack {
                 at: now,
-                saw_fetch: false,
+                values_before: param_values(&state.messages),
             });
         }
         self.run = Run::Commit(c);

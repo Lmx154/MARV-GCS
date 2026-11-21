@@ -113,6 +113,15 @@ struct Rig {
 
 impl Rig {
     fn start(user: CalibrationUser, mag: impl FnOnce(&mut MagEnvironment), refuse: &[&str]) -> Rig {
+        Rig::start_with(user, mag, refuse, |_| {})
+    }
+
+    fn start_with(
+        user: CalibrationUser,
+        mag: impl FnOnce(&mut MagEnvironment),
+        refuse: &[&str],
+        tweak: impl FnOnce(&mut SimConfig),
+    ) -> Rig {
         let mut env = MagEnvironment {
             s_true: S_TRUE,
             o_true: O_TRUE,
@@ -120,12 +129,13 @@ impl Rig {
             ..MagEnvironment::default()
         };
         mag(&mut env);
-        let config = SimConfig {
+        let mut config = SimConfig {
             mag: env,
             user: Some(user),
             refuse_params: refuse.iter().map(|s| (*s).to_string()).collect(),
             ..SimConfig::default()
         };
+        tweak(&mut config);
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("address").to_string();
         let vehicle = Arc::new(Mutex::new(SimVehicle::new(config)));
@@ -601,4 +611,70 @@ fn an_operate_link_disables_the_buttons_with_the_reason_and_so_does_an_armed_veh
     let window = Window::over_state(armed, Access::Configure);
     assert!(window.disabled(GUIDED));
     assert!(window.shows("the vehicle is armed"));
+}
+
+#[test]
+fn a_link_that_drops_during_the_write_stops_the_commit_with_type_0_and_no_save() {
+    // The simulator applies the 5th write (MAG_DIAGX) and then goes silent.
+    let rig = Rig::start_with(user(), |_| {}, &[], |c| c.silent_after_param_sets = 5);
+    let mut window = Window::with_commands(rig.session.clone());
+    window.click(GUIDED);
+    window.pump_until(60.0, "no answer", |w| w.shows("MAG_DIAGX got no answer"));
+
+    assert!(window.shows("marked not calibrated (type 0)"));
+    assert!(window.shows("Discard or a reboot restores"));
+    assert_eq!(window.set_params().len(), 5, "{:?}", window.set_params());
+    assert_eq!(rig.param("MAG_CAL_TYPE"), Some(SimValue::Int32(0)));
+    assert!(
+        window
+            .harness
+            .query_all_by_label("Save to flash")
+            .next()
+            .is_none()
+    );
+    assert!(
+        window
+            .harness
+            .query_all_by_label("Discard")
+            .next()
+            .is_some()
+    );
+    assert!(!window.shows(SAVED_TEXT));
+}
+
+#[test]
+fn a_read_back_that_differs_from_the_plan_names_the_parameter_and_offers_no_save() {
+    // Every write is answered truly; the list then reports MAG_FLD_INC one degree off.
+    let rig = Rig::start_with(
+        user(),
+        |_| {},
+        &[],
+        |c| {
+            c.list_differs = vec!["MAG_FLD_INC".to_string()];
+        },
+    );
+    let mut window = Window::with_commands(rig.session.clone());
+    window.click(GUIDED);
+    window.pump_until(60.0, "a differing read-back", |w| {
+        w.shows("the read-back differs: MAG_FLD_INC reads back")
+    });
+
+    assert!(window.shows("marked not calibrated (type 0)"));
+    assert!(window.shows("Discard or a reboot restores"));
+    assert_eq!(window.set_params().len(), 13);
+    assert!(
+        window
+            .harness
+            .query_all_by_label("Save to flash")
+            .next()
+            .is_none()
+    );
+    assert!(
+        window
+            .harness
+            .query_all_by_label("Discard")
+            .next()
+            .is_some()
+    );
+    assert!(!window.shows(SAVED_TEXT));
 }
