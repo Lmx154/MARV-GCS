@@ -38,8 +38,11 @@
 //! three diagonal and three off-diagonal terms at the sphere's radius). Model: |S (r - o)| = radius.
 //!
 //! What differs from the C++: f64 instead of f32. PX4 works in gauss and its thresholds (`cost_threshold`,
-//! `step_threshold`, the radius window, the initial damping) are in gauss units, so the samples are converted to
-//! gauss inside and the results back to uT; every iteration count, damping factor and acceptance rule is PX4's.
+//! `step_threshold`, the initial damping) are in gauss units, so the samples are converted to gauss inside and
+//! the results back to uT; every iteration count, damping factor and acceptance rule is PX4's, with one departure:
+//! PX4's convergence test also requires 0.2 < radius < 0.7 gauss (lm_fit.cpp:325-326, :343). That window is left
+//! out (the radius only has to be finite), so "converged" is purely numerical and an implausible field is refused
+//! by the radius row of the acceptance (strictly between 15 and 95 uT, decision section 4) with its own message.
 //! In PX4's sphere iteration the trial residual for `fit1` reads `z[k] + fit1_params[3]` in two terms
 //! (lm_fit.cpp:124, :127); those terms are multiplied by the off-diagonal, which is zero during the sphere fit,
 //! so writing `z - offset` here changes nothing. Two other PX4 behaviours are kept as they are because they
@@ -58,9 +61,6 @@ const MAX_ITERATIONS: usize = 100;
 const MIN_ITERATIONS: usize = 10;
 const COST_THRESHOLD: f64 = 0.01;
 const STEP_THRESHOLD: f64 = 0.001;
-/// The radius window of a converged fit, gauss (lm_fit.cpp:325-326; 20 to 70 uT).
-const MIN_RADIUS_GAUSS: f64 = 0.2;
-const MAX_RADIUS_GAUSS: f64 = 0.7;
 /// Initial cost and damping, lm_fit.cpp:329-330.
 const INITIAL_COST: f64 = 1e30;
 const INITIAL_DAMPING: f64 = 1.0;
@@ -319,8 +319,7 @@ fn lm_mag_fit(samples: &[Vec3], params: &mut Params, full_ellipsoid: bool) -> bo
             sphere_iteration(samples, params, &mut iter);
         }
         if iter.success
-            && MIN_RADIUS_GAUSS < params.radius
-            && params.radius < MAX_RADIUS_GAUSS
+            && params.radius.is_finite()
             && i > MIN_ITERATIONS
             && (iter.cost < COST_THRESHOLD || iter.gradient_damping < STEP_THRESHOLD)
         {

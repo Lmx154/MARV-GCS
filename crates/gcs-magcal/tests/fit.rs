@@ -53,8 +53,12 @@ impl Rng {
 }
 
 fn field_ned() -> Vec3 {
+    field_ned_of(FIELD_UT)
+}
+
+fn field_ned_of(field_ut: f64) -> Vec3 {
     let i = INCLINATION_DEG.to_radians();
-    [FIELD_UT * i.cos(), 0.0, FIELD_UT * i.sin()]
+    [field_ut * i.cos(), 0.0, field_ut * i.sin()]
 }
 
 fn model() -> Field {
@@ -104,6 +108,11 @@ struct Data {
 
 /// One full turn about the vertical in each listed pose, 30 points per ring, noise on the raw field.
 fn rings(poses: &[usize], seed: u64) -> Data {
+    rings_of(poses, seed, FIELD_UT)
+}
+
+/// As [`rings`] with another true field strength.
+fn rings_of(poses: &[usize], seed: u64, field_ut: f64) -> Data {
     let mut rng = Rng(seed);
     let s_inv = inv3(&S_TRUE);
     let mut d = Data {
@@ -118,7 +127,7 @@ fn rings(poses: &[usize], seed: u64) -> Data {
             let (s, c) = psi.sin_cos();
             let yaw: M3 = [[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]];
             let att = mm(&POSES[p].1, &yaw);
-            let b = mv(&att, field_ned());
+            let b = mv(&att, field_ned_of(field_ut));
             let r = mv(&s_inv, b);
             d.raw
                 .push([0, 1, 2].map(|i| r[i] + O_TRUE[i] + NOISE_UT * rng.gauss()));
@@ -502,4 +511,63 @@ fn row_scale_to_the_model() {
     );
     let e = refusal(|_| {}, |m| m.intensity_ut = f.radius_ut / 1.55);
     assert!(matches!(e, Refusal::Scale { .. }));
+}
+
+/// The radius row governs the field strength (not PX4's 20..70 uT convergence window): a true field of 12 or 100 uT
+/// converges and is refused by the radius row; 80 uT passes the radius row and is refused by the scale row against
+/// the 43.7 uT model.
+#[test]
+fn implausible_and_off_model_field_strengths() {
+    let m = model();
+    for field in [12.0, 100.0, 80.0] {
+        let d = rings_of(&[0, 1, 2, 3, 4, 5], 0x00C0_FFEE, field);
+        let f = fit(&d.raw, FIELD_UT);
+        assert!(f.converged(), "{field} uT: {f:?}");
+        let e = accept::accept(&inputs(&f, &d, &m)).unwrap_err();
+        println!("true field {field} uT: radius {:.2} uT, {e}", f.radius_ut);
+        if field == 80.0 {
+            assert!(f.radius_ut > accept::RADIUS_MIN_UT && f.radius_ut < accept::RADIUS_MAX_UT);
+            assert_eq!(
+                e.message(),
+                format!(
+                    "Field strength {:.1} uT against {FIELD_UT:.1} expected here: compass faulty or a magnet nearby",
+                    f.radius_ut
+                )
+            );
+        } else {
+            assert_eq!(
+                e.message(),
+                format!(
+                    "Field strength {:.1} uT is not plausible: compass faulty or a magnet nearby",
+                    f.radius_ut
+                )
+            );
+        }
+    }
+}
+
+/// A diagonal that passes before the scaling to the model and not after it is refused with the distortion text.
+#[test]
+fn scaled_terms_are_checked_again() {
+    let (d, mut f) = six();
+    f.diag[0] = 4.0;
+    let mut m = model();
+    m.intensity_ut = f.radius_ut * 1.4;
+    let wide = Inputs {
+        inclination_tolerance_deg: 90.0,
+        ..inputs(&f, &d, &m)
+    };
+    let e = accept::accept(&wide).unwrap_err();
+    assert_eq!(e, Refusal::Distortion);
+    assert_eq!(
+        e.message(),
+        "Compass distortion too large: is something magnetic mounted near it?"
+    );
+    // Control: the same fit at correction 1.2 (scaled diagonal 4.8) is accepted.
+    m.intensity_ut = f.radius_ut * 1.2;
+    let ok = Inputs {
+        inclination_tolerance_deg: 90.0,
+        ..inputs(&f, &d, &m)
+    };
+    assert!(accept::accept(&ok).is_ok());
 }

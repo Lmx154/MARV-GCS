@@ -11,7 +11,9 @@ section 16). Pure: no I/O, no clock, no dependency beyond `std`. Units are micro
   notice is kept in `src/fit.rs`). `cargo run -p gcs-magcal --example fit_csv -- FILE.csv [RADIUS_UT]` fits a CSV
   of raw x,y,z in uT.
 - `accept`: the checks of the decision's section 4 in its order, each with its message; on acceptance S is scaled so
-  the mean corrected strength equals the model's. Coverage (all six poses turned) is an input, `incomplete_poses`.
+  the mean corrected strength equals the model's, and the scaled terms are checked again against the same limits.
+  Coverage (all six poses turned) is an input, `incomplete_poses`. Acceptance without it is NOT a guarantee against
+  poor coverage: data with one direction missing can pass every numeric row; the coverage row is the guard.
 
 Tests: `tests/wmm.rs` (NOAA's two WMM2025 test tables, `tests/data/`), `tests/undo.rs` (the contract's test vector
 and a round-trip property), `tests/fit.rs` (synthetic rings, a thin band, one test per acceptance row).

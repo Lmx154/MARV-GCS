@@ -154,7 +154,13 @@ pub fn measured_inclination_deg(fit: &Fit, samples: &[Vec3], down: &[Vec3]) -> f
     }
 }
 
-/// Runs the checks in the decision's order; the first that fails is returned.
+/// Runs the checks in the decision's order; the first that fails is returned. After the scaling to the model the
+/// written terms are checked again against the same diagonal, off-diagonal and offset limits, so what is written
+/// is inside the parameters' ranges.
+///
+/// Acceptance without the coverage input (`incomplete_poses`, filled by the pose and turn detection) is NOT a
+/// guarantee against poor coverage: data with one direction missing can pass every numeric row (`tests/fit.rs`,
+/// thin band). The coverage row is the guard.
 pub fn accept(inputs: &Inputs) -> Result<Accepted, Refusal> {
     let fit = inputs.fit;
     if let Some(pose) = inputs.incomplete_poses.first() {
@@ -212,11 +218,22 @@ pub fn accept(inputs: &Inputs) -> Result<Accepted, Refusal> {
         });
     }
     let scale = |v: Vec3| [v[0] * correction, v[1] * correction, v[2] * correction];
+    let (diag, offdiag) = (scale(fit.diag), scale(fit.offdiag));
+    if !diag.iter().all(|&d| d > DIAG_MIN && d < DIAG_MAX)
+        || !offdiag.iter().all(|&o| o.abs() < OFFDIAG_MAX)
+    {
+        return Err(Refusal::Distortion);
+    }
+    if !fit.offsets.iter().all(|&o| o.abs() <= OFFSET_LIMIT_UT) {
+        return Err(Refusal::OffsetOutOfRange {
+            offsets: fit.offsets,
+        });
+    }
     Ok(Accepted {
         calibration: Calibration {
             offsets: fit.offsets,
-            diag: scale(fit.diag),
-            offdiag: scale(fit.offdiag),
+            diag,
+            offdiag,
         },
         field_ut: inputs.model.intensity_ut,
         inclination_deg: expected,
