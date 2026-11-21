@@ -15,11 +15,15 @@ pub const DEFAULT_WINDOW: u32 = 30;
 pub fn window_selector(ui: &mut egui::Ui, id_salt: impl AsIdSalt) -> f64 {
     let id = ui.make_persistent_id(("plot_window", id_salt));
     let mut window = ui.data(|d| d.get_temp::<u32>(id)).unwrap_or(DEFAULT_WINDOW);
+    let labels = WINDOWS.map(|w| format!("{w} s"));
+    let choices: Vec<(u32, &str)> = WINDOWS
+        .iter()
+        .zip(&labels)
+        .map(|(w, label)| (*w, label.as_str()))
+        .collect();
     ui.horizontal(|ui| {
-        ui.label("Window");
-        for w in WINDOWS {
-            ui.selectable_value(&mut window, w, format!("{w} s"));
-        }
+        ui.label(crate::theme::muted("Window"));
+        crate::theme::segmented(ui, &mut window, &choices);
     });
     ui.data_mut(|d| d.insert_temp(id, window));
     f64::from(window)
@@ -28,11 +32,10 @@ pub fn window_selector(ui: &mut egui::Ui, id_salt: impl AsIdSalt) -> f64 {
 /// A line within this many screen pixels (vertically) of the pointer is marked in the readout.
 pub const NEAR_PX: f64 = 6.0;
 
-/// The colour egui_plot gives its `index`-th line when none is set (`PlotUi::auto_color`). The lines
-/// are given it explicitly so the readout's swatch is the line's colour by construction.
+/// The colour of the `index`-th line: the theme's plot palette. The lines are given it explicitly so
+/// the readout's swatch is the line's colour by construction.
 fn auto_color(index: usize) -> Color32 {
-    let golden_ratio = std::f32::consts::GOLDEN_RATIO - 1.0;
-    egui::ecolor::Hsva::new(index as f32 * golden_ratio, 0.85, 0.5, 1.0).into()
+    crate::theme::series(index)
 }
 
 /// One series as the readout sees it: the legend name, the line colour and the points `[t, value]`

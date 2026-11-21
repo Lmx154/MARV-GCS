@@ -22,6 +22,7 @@ use super::actions;
 use super::devices;
 use super::{View, ViewCtx};
 use crate::status::{self, GREY, YELLOW};
+use crate::theme;
 
 /// The RC row's `device_id` in `MARV_DEVICE_STATUS`.
 const RC_DEVICE: u8 = 7;
@@ -38,7 +39,17 @@ pub const MAPPED_CHANNELS: usize = 8;
 const MARKER: Color32 = Color32::from_rgb(235, 160, 40);
 /// Shown in place of the markers and tags when the vehicle has no `RC1_MIN`.
 pub const NO_RC_PARAMS: &str = "this firmware has no RC mapping parameters";
-const BAR_SIZE: egui::Vec2 = vec2(420.0, 16.0);
+const BAR_HEIGHT: f32 = 16.0;
+/// What a bar leaves free on its line for the words after it; the bar takes the rest of the width.
+const AFTER_CHANNEL_BAR: f32 = 340.0;
+const AFTER_FUNCTION_BAR: f32 = 220.0;
+
+fn bar_size(ui: &egui::Ui, after: f32) -> egui::Vec2 {
+    vec2(
+        (ui.available_width() - after).clamp(200.0, 1200.0),
+        BAR_HEIGHT,
+    )
+}
 /// A channel counts as moved when its captured range reaches below the first and above the second.
 pub const MOVED_BELOW_US: u16 = 1300;
 pub const MOVED_ABOVE_US: u16 = 1700;
@@ -202,63 +213,101 @@ impl View for Radio {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx) {
-        let store = &cx.state.messages;
-        let sticks = Sticks::of(store, cx.now);
-        let (text, colour) = sticks.age_line();
-        ui.colored_label(colour, text);
-        ui.label(link_quality_text(sticks.rssi));
-        let rc_row = devices::rows(store, cx.now)
-            .into_iter()
-            .find(|row| row.device == RC_DEVICE);
-        match &rc_row {
-            Some(row) => {
-                let colour = if row.stale {
-                    GREY
-                } else {
-                    devices::state_colour(&row.state)
-                };
-                ui.colored_label(
-                    colour,
-                    format!(
-                        "RC row: {}, last error {}, {}",
-                        row.state, row.last_error, row.received
-                    ),
-                );
-            }
-            None => {
-                ui.label("RC row: no RC row yet");
-            }
-        }
-        ui.label(radio_status_text(store.entry("RADIO_STATUS", 0)));
-        ui.separator();
-        let control = ManualControl::of(store, cx.now);
-        ui.label("Sticks as the vehicle maps them (MANUAL_CONTROL)");
-        for function in Function::ALL {
-            let value = control.map(|c| function.value(c));
-            ui.horizontal(|ui| {
-                function_bar(ui, value, function.range());
-                ui.label(function.text(value));
-            });
-        }
-        ui.separator();
+        let sticks = Sticks::of(&cx.state.messages, cx.now);
         let mapping = Mapping::of(&cx.state.params);
-        if mapping == Mapping::Missing {
-            ui.label(NO_RC_PARAMS);
+        if ui.available_width() >= WIDE {
+            ui.columns(2, |columns| {
+                self.sections(&mut columns[0], cx, &sticks, &mapping);
+                self.channels(&mut columns[1], &sticks, &mapping);
+            });
+        } else {
+            self.sections(ui, cx, &sticks, &mapping);
+            self.channels(ui, &sticks, &mapping);
         }
-        self.calibration(ui, cx, &sticks, &mapping);
-        self.mapping_editor(ui, cx, &mapping);
-        if let Some(applied) = &self.applied
-            && !applied.saved
-        {
-            applied_section(ui, cx, applied);
-        }
-        ui.separator();
+    }
+}
+
+/// From this width on the channels stand beside the other sections instead of under them.
+const WIDE: f32 = 1300.0;
+
+impl Radio {
+    /// The receiver's state, the function bars, the calibration and the mapping, each in a card.
+    fn sections(
+        &mut self,
+        ui: &mut egui::Ui,
+        cx: &mut ViewCtx,
+        sticks: &Sticks,
+        mapping: &Mapping,
+    ) {
+        let store = &cx.state.messages;
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let (text, colour) = sticks.age_line();
+            ui.colored_label(colour, text);
+            ui.label(link_quality_text(sticks.rssi));
+            let rc_row = devices::rows(store, cx.now)
+                .into_iter()
+                .find(|row| row.device == RC_DEVICE);
+            match &rc_row {
+                Some(row) => {
+                    let colour = if row.stale {
+                        GREY
+                    } else {
+                        devices::state_colour(&row.state)
+                    };
+                    ui.colored_label(
+                        colour,
+                        format!(
+                            "RC row: {}, last error {}, {}",
+                            row.state, row.last_error, row.received
+                        ),
+                    );
+                }
+                None => {
+                    ui.label("RC row: no RC row yet");
+                }
+            }
+            ui.label(radio_status_text(store.entry("RADIO_STATUS", 0)));
+        });
+        ui.add_space(theme::GAP);
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let control = ManualControl::of(store, cx.now);
+            theme::section_title(ui, "Sticks as the vehicle maps them (MANUAL_CONTROL)");
+            for function in Function::ALL {
+                let value = control.map(|c| function.value(c));
+                ui.horizontal(|ui| {
+                    function_bar(ui, value, function.range());
+                    ui.label(function.text(value));
+                });
+            }
+        });
+        ui.add_space(theme::GAP);
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if *mapping == Mapping::Missing {
+                ui.label(NO_RC_PARAMS);
+            }
+            self.calibration(ui, cx, sticks, mapping);
+            self.mapping_editor(ui, cx, mapping);
+            if let Some(applied) = &self.applied
+                && !applied.saved
+            {
+                applied_section(ui, cx, applied);
+            }
+        });
+        ui.add_space(theme::GAP);
+    }
+
+    /// The sixteen channel bars with their marks, in a card.
+    fn channels(&self, ui: &mut egui::Ui, sticks: &Sticks, mapping: &Mapping) {
         let capture = match &self.flow {
             Flow::Capturing(c) | Flow::Centre(c) | Flow::Review(c) => Some(c),
             Flow::Idle => None,
         };
-        marks_header(ui);
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            marks_header(ui);
             for channel in 0..sticks.shown() {
                 let value = sticks
                     .values
@@ -271,20 +320,17 @@ impl View for Radio {
                 ui.horizontal(|ui| {
                     ui.monospace(format!("CH {:>2}", channel + 1));
                     bar(ui, value, marks, captured);
-                    ui.label(value_text(value));
+                    ui.label(theme::value(value_text(value)));
                     if let Some((lo, hi)) = captured {
                         ui.label(format!("captured {lo} to {hi}"));
                     }
                     if let Some(marks) = marks {
-                        ui.label(marks.text());
+                        ui.label(theme::muted(marks.text()));
                     }
                 });
             }
         });
     }
-}
-
-impl Radio {
     /// The calibration: the button and its reason, the steps, and the "not saved" line.
     fn calibration(
         &mut self,
@@ -304,7 +350,7 @@ impl Radio {
         {
             applied.saved = true;
         }
-        ui.strong("Calibration");
+        theme::section_title(ui, "Calibration");
         let staged = !self.staged_writes(&cx.state.params).is_empty();
         let flow = std::mem::take(&mut self.flow);
         self.flow = match flow {
@@ -418,7 +464,7 @@ impl Radio {
     /// The mapping: a channel for each function, and its reversal and dead zone, as staged edits.
     fn mapping_editor(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx, mapping: &Mapping) {
         ui.separator();
-        ui.strong("Mapping");
+        theme::section_title(ui, "Mapping");
         let reason = self.mapping_gate(cx, mapping);
         if let Some(reason) = reason {
             ui.colored_label(YELLOW, reason);
@@ -1008,7 +1054,10 @@ pub fn radio_status_text(entry: Option<&MessageEntry>) -> String {
 fn marks_header(ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.monospace("     ");
-        let (rect, _) = ui.allocate_exact_size(vec2(BAR_SIZE.x, 14.0), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(
+            vec2(bar_size(ui, AFTER_CHANNEL_BAR).x, 14.0),
+            Sense::hover(),
+        );
         let painter = ui.painter_at(rect);
         for mark in MARKS_US {
             let x = rect.left() + fraction(mark as u16) * rect.width();
@@ -1029,9 +1078,9 @@ fn bar(
     marks: Option<&ChannelMarks>,
     captured: Option<(u16, u16)>,
 ) {
-    let (rect, _) = ui.allocate_exact_size(BAR_SIZE, Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(bar_size(ui, AFTER_CHANNEL_BAR), Sense::hover());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+    painter.rect_filled(rect, 3.0, ui.visuals().extreme_bg_color);
     if let Some((lo, hi)) = captured {
         let span = Rect::from_min_max(
             egui::pos2(rect.left() + fraction(lo) * rect.width(), rect.top()),
@@ -1042,7 +1091,7 @@ fn bar(
     if let Some(us) = value {
         let filled =
             Rect::from_min_size(rect.min, vec2(rect.width() * fraction(us), rect.height()));
-        painter.rect_filled(filled, 2.0, Color32::from_rgb(70, 150, 220));
+        painter.rect_filled(filled, 3.0, theme::ACCENT.gamma_multiply(0.85));
     }
     for mark in MARKS_US {
         let x = rect.left() + fraction(mark as u16) * rect.width();
@@ -1062,15 +1111,20 @@ fn bar(
             Stroke::new(2.0, MARKER),
         );
     }
-    painter.rect_stroke(rect, 2.0, Stroke::new(1.0, GREY), StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        3.0,
+        Stroke::new(1.0, theme::BORDER_STRONG),
+        StrokeKind::Inside,
+    );
 }
 
 /// A function bar: the value on `range`, drawn from the left edge for 0 at the bottom of the range and
 /// from the centre for a signed range. Empty for `None`.
 fn function_bar(ui: &mut egui::Ui, value: Option<i32>, range: (i32, i32)) {
-    let (rect, _) = ui.allocate_exact_size(BAR_SIZE, Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(bar_size(ui, AFTER_FUNCTION_BAR), Sense::hover());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+    painter.rect_filled(rect, 3.0, ui.visuals().extreme_bg_color);
     let span = (range.1 - range.0) as f32;
     let at =
         |v: i32| rect.left() + (v.clamp(range.0, range.1) - range.0) as f32 / span * rect.width();
@@ -1081,7 +1135,7 @@ fn function_bar(ui: &mut egui::Ui, value: Option<i32>, range: (i32, i32)) {
             egui::pos2(a.min(b), rect.top()),
             egui::pos2(a.max(b), rect.bottom()),
         );
-        painter.rect_filled(filled, 2.0, Color32::from_rgb(70, 150, 220));
+        painter.rect_filled(filled, 3.0, theme::ACCENT.gamma_multiply(0.85));
     }
     if range.0 < 0 {
         let x = at(0);
@@ -1090,7 +1144,12 @@ fn function_bar(ui: &mut egui::Ui, value: Option<i32>, range: (i32, i32)) {
             Stroke::new(1.0, ui.visuals().weak_text_color()),
         );
     }
-    painter.rect_stroke(rect, 2.0, Stroke::new(1.0, GREY), StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        3.0,
+        Stroke::new(1.0, theme::BORDER_STRONG),
+        StrokeKind::Inside,
+    );
 }
 
 #[cfg(test)]

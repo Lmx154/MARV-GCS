@@ -15,7 +15,7 @@ use gcs_mavlink::{Access, Command, VehicleState};
 use super::devices::{self, DeviceRow};
 use super::log_review::Review;
 use super::{View, ViewCtx, actions};
-use crate::{logfile, sessions, status};
+use crate::{logfile, sessions, status, theme};
 
 /// What the user chose in this view.
 struct Choices {
@@ -71,26 +71,24 @@ impl View for Log {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx) {
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.heading("Station recording (.tlog)");
-                recording_part(ui, cx);
-                ui.add_space(4.0);
-                self.sessions.ui(ui);
-                ui.separator();
-                ui.heading("On-board logs (SD card)");
-                on_board_part(ui, cx, &mut self.on_board);
-                if let Some(path) = self.on_board.review.take() {
-                    self.review.open(ui.ctx(), PathBuf::from(path));
-                }
-                ui.separator();
-                ui.heading("Review a log file");
-                self.review.ui(ui);
-                ui.separator();
-                ui.heading("Vehicle messages");
-                texts_part(ui, cx, &mut self.choices);
-            });
+        theme::section(ui, "Station recording (.tlog)", |ui| {
+            recording_part(ui, cx);
+            ui.add_space(4.0);
+            self.sessions.ui(ui);
+        });
+        ui.add_space(theme::GAP);
+        theme::section(ui, "On-board logs (SD card)", |ui| {
+            on_board_part(ui, cx, &mut self.on_board);
+            if let Some(path) = self.on_board.review.take() {
+                self.review.open(ui.ctx(), PathBuf::from(path));
+            }
+        });
+        ui.add_space(theme::GAP);
+        theme::section(ui, "Review a log file", |ui| self.review.ui(ui));
+        ui.add_space(theme::GAP);
+        theme::section(ui, "Vehicle messages", |ui| {
+            texts_part(ui, cx, &mut self.choices)
+        });
     }
 }
 
@@ -323,7 +321,10 @@ fn on_board_part(ui: &mut egui::Ui, cx: &mut ViewCtx, on_board: &mut OnBoard) {
     let connected = cx.now.is_some();
     let row = sd_row(cx.state, cx.now);
     let (text, colour) = sd_line(row.as_ref());
-    ui.colored_label(colour, text);
+    ui.horizontal(|ui| {
+        theme::status_dot(ui, colour);
+        ui.colored_label(colour, text);
+    });
 
     let gate = status::command_gate(cx.access, cx.state, connected);
     let logs_gate = logs_gate(cx.access, cx.state, connected);
@@ -383,7 +384,8 @@ fn list_table(
         .header(20.0, |mut header| {
             for title in ["Log", "Bytes", "MiB", "", ""] {
                 header.col(|ui| {
-                    ui.strong(title);
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                    ui.label(theme::muted(title).strong());
                 });
             }
         })
@@ -392,20 +394,25 @@ fn list_table(
                 let info = list.logs[row.index()];
                 let (bytes, mib) = size_cells(info.size);
                 row.col(|ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     ui.label(info.number.to_string());
                 });
                 row.col(|ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     ui.label(bytes);
                 });
                 row.col(|ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     ui.label(mib);
                 });
                 row.col(|ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     if info.number == list.last_log_num {
                         ui.label("being written").on_hover_text(MARKER_HELP);
                     }
                 });
                 row.col(|ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     if actions::button(ui, "Download", gate) {
                         match logfile::download_command(Path::new(folder), info.number, info.size) {
                             Ok((command, path)) => {

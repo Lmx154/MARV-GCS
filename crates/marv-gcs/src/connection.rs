@@ -8,7 +8,7 @@ use gcs_mavlink::tlog::{ReplaySpeed, replay};
 use gcs_mavlink::{Access, Session, SessionConfig};
 use gcs_transport::{DEFAULT_BAUD, Endpoint, PortInfo};
 
-use crate::status;
+use crate::{status, theme};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Transport {
@@ -158,55 +158,70 @@ impl Bar {
         let mut action = None;
         ui.horizontal(|ui| {
             ui.add_enabled_ui(!connected, |ui| {
-                ui.selectable_value(&mut self.transport, Transport::Serial, "Serial");
-                ui.selectable_value(&mut self.transport, Transport::Tcp, "TCP");
-                ui.selectable_value(&mut self.transport, Transport::Udp, "UDP");
-                ui.selectable_value(&mut self.transport, Transport::LogFile, "Log file");
-                ui.separator();
+                theme::segmented(
+                    ui,
+                    &mut self.transport,
+                    &[
+                        (Transport::Serial, "Serial"),
+                        (Transport::Tcp, "TCP"),
+                        (Transport::Udp, "UDP"),
+                        (Transport::LogFile, "Log file"),
+                    ],
+                );
+                ui.add_space(6.0);
                 match self.transport {
                     Transport::Serial => self.serial_inputs(ui),
                     Transport::Tcp => {
-                        ui.label("Address");
+                        ui.label(theme::muted("Address"));
                         ui.add(egui::TextEdit::singleline(&mut self.tcp_addr).desired_width(150.0));
                     }
                     Transport::Udp => {
-                        let label = ui.label("Listen on");
+                        let label = ui.label(theme::muted("Listen on"));
                         ui.add(egui::TextEdit::singleline(&mut self.udp_addr).desired_width(150.0))
                             .labelled_by(label.id);
                     }
                     Transport::LogFile => {
-                        let label = ui.label("Path");
+                        let label = ui.label(theme::muted("Path"));
                         ui.add(egui::TextEdit::singleline(&mut self.log_path).desired_width(300.0))
                             .labelled_by(label.id);
-                        ui.selectable_value(
+                        theme::segmented(
+                            ui,
                             &mut self.replay_speed,
-                            ReplaySpeed::RealTime,
-                            "real time",
+                            &[
+                                (ReplaySpeed::RealTime, "real time"),
+                                (ReplaySpeed::Fast, "fast"),
+                            ],
                         );
-                        ui.selectable_value(&mut self.replay_speed, ReplaySpeed::Fast, "fast");
                     }
                 }
             });
-            ui.separator();
+            ui.add_space(6.0);
             if connected {
                 if ui.button("Disconnect").clicked() {
                     action = Some(Action::Disconnect);
                 }
-            } else if ui.button("Connect").clicked() {
+            } else if ui
+                .add(
+                    egui::Button::new(egui::RichText::new("Connect").color(theme::TEXT_STRONG))
+                        .fill(theme::ACCENT_FILL)
+                        .stroke(egui::Stroke::new(1.0, theme::ACCENT)),
+                )
+                .clicked()
+            {
                 self.error = None;
                 match self.action() {
                     Ok(a) => action = Some(a),
                     Err(e) => self.error = Some(e),
                 }
             }
-            ui.separator();
+            ui.add_space(6.0);
             let rest = ui.available_width();
             let share = if self.error.is_some() {
                 rest / 2.0
             } else {
                 rest
             };
-            truncated(ui, share, &status.0, status.1);
+            theme::pill(ui, &status.0, status.1, share);
             if let Some(error) = &self.error {
                 truncated(ui, ui.available_width(), error, status::RED);
             }
@@ -230,7 +245,7 @@ impl Bar {
             .find(|(path, _)| Some(path) == self.port.as_ref())
             .map_or("no port", |(_, label)| label.as_str())
             .to_string();
-        let port_label_widget = ui.label("Port");
+        let port_label_widget = ui.label(theme::muted("Port"));
         egui::ComboBox::from_id_salt("serial_port")
             .selected_text(selected_text)
             .width(320.0)
@@ -245,7 +260,7 @@ impl Bar {
             self.ports = gcs_transport::list_serial_ports();
         }
         ui.checkbox(&mut self.all_ports, "all ports");
-        let baud_label = ui.label("Baud");
+        let baud_label = ui.label(theme::muted("Baud"));
         ui.add(egui::TextEdit::singleline(&mut self.baud).desired_width(70.0))
             .labelled_by(baud_label.id);
     }

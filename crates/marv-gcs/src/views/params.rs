@@ -19,7 +19,7 @@ use gcs_mavlink::services::params::{FetchStatus, ParamTable, ParamValue, WriteSt
 use super::actions::{self, Confirm};
 use super::presets::{self, DebugFlag};
 use super::{View, ViewCtx};
-use crate::status;
+use crate::{status, theme};
 
 const OTHER_GROUP: &str = "(other)";
 const DEFAULT_PATH: &str = "marv.param";
@@ -423,102 +423,101 @@ fn draw(ui: &mut egui::Ui, cx: &mut ViewCtx, st: &mut State, debug: bool) {
     let blocked = status::configure_blocked(cx.access);
     st.prune(table);
 
-    ui.horizontal(|ui| {
-        if connected {
-            fetch_status(ui, table, blocked.is_some());
-        } else {
-            let (text, colour) = status::not_connected();
-            ui.colored_label(colour, text);
-        }
-        ui.add_enabled_ui(connected, |ui| {
-            if ui.button("Refresh").clicked() {
-                cx.commands.push(Command::RefreshParams);
-            }
-            let sendable = st.sendable(table, debug).len();
-            let write = ui.add_enabled(
-                sendable > 0 && blocked.is_none(),
-                egui::Button::new(format!("Write changes ({sendable})")),
-            );
-            if let Some(reason) = blocked {
-                write.clone().on_disabled_hover_text(reason);
-            }
-            if write.clicked() {
-                st.write(table, debug, cx.commands);
-            }
-            if ui
-                .add_enabled(!st.edits.is_empty(), egui::Button::new("Discard changes"))
-                .clicked()
-            {
-                st.discard();
-            }
-        });
-    });
-    if connected && let Some(reason) = blocked {
-        ui.colored_label(status::YELLOW, reason);
-    }
-
-    storage_buttons(ui, cx, &mut st.confirm);
-
-    ui.add_enabled_ui(connected, |ui| {
-        ui.add(
-            egui::TextEdit::singleline(&mut st.search)
-                .hint_text("Search")
-                .desired_width(200.0),
-        )
-        .accessible_name("Search");
-
+    theme::card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            ui.label("File");
-            ui.add(egui::TextEdit::singleline(&mut st.path).desired_width(240.0))
-                .accessible_name("parameter file path");
-            if ui
-                .add_enabled(!table.params.is_empty(), egui::Button::new("Save"))
-                .clicked()
-            {
-                st.save(table);
+            if connected {
+                fetch_status(ui, table, blocked.is_some());
+            } else {
+                let (text, colour) = status::not_connected();
+                ui.colored_label(colour, text);
             }
-            let load = ui.add_enabled(blocked.is_none(), egui::Button::new("Load"));
-            if let Some(reason) = blocked {
-                load.clone().on_disabled_hover_text(reason);
-            }
-            if load.clicked() {
-                st.load(table);
-            }
+            ui.add_enabled_ui(connected, |ui| {
+                if ui.button("Refresh").clicked() {
+                    cx.commands.push(Command::RefreshParams);
+                }
+                let sendable = st.sendable(table, debug).len();
+                let write = ui.add_enabled(
+                    sendable > 0 && blocked.is_none(),
+                    egui::Button::new(format!("Write changes ({sendable})")),
+                );
+                if let Some(reason) = blocked {
+                    write.clone().on_disabled_hover_text(reason);
+                }
+                if write.clicked() {
+                    st.write(table, debug, cx.commands);
+                }
+                if ui
+                    .add_enabled(!st.edits.is_empty(), egui::Button::new("Discard changes"))
+                    .clicked()
+                {
+                    st.discard();
+                }
+            });
         });
+        if connected && let Some(reason) = blocked {
+            ui.colored_label(status::YELLOW, reason);
+        }
+
+        storage_buttons(ui, cx, &mut st.confirm);
+
+        ui.add_enabled_ui(connected, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut st.search)
+                    .hint_text("Search")
+                    .desired_width(200.0),
+            )
+            .accessible_name("Search");
+
+            ui.horizontal(|ui| {
+                ui.label("File");
+                ui.add(egui::TextEdit::singleline(&mut st.path).desired_width(240.0))
+                    .accessible_name("parameter file path");
+                if ui
+                    .add_enabled(!table.params.is_empty(), egui::Button::new("Save"))
+                    .clicked()
+                {
+                    st.save(table);
+                }
+                let load = ui.add_enabled(blocked.is_none(), egui::Button::new("Load"));
+                if let Some(reason) = blocked {
+                    load.clone().on_disabled_hover_text(reason);
+                }
+                if load.clicked() {
+                    st.load(table);
+                }
+            });
+        });
+        if !st.outcome.is_empty() {
+            ui.label(&st.outcome);
+        }
+        for problem in &st.problems {
+            ui.colored_label(status::YELLOW, problem);
+        }
+        let withheld = if debug {
+            0
+        } else {
+            st.edits.keys().filter(|n| presets::is_governed(n)).count()
+        };
+        if withheld > 0 {
+            ui.colored_label(
+                status::YELLOW,
+                format!(
+                    "{withheld} staged sensor preset setting(s) not sent: {}",
+                    presets::SET_IN_DEVICES_TEXT
+                ),
+            );
+        }
     });
-    if !st.outcome.is_empty() {
-        ui.label(&st.outcome);
-    }
-    for problem in &st.problems {
-        ui.colored_label(status::YELLOW, problem);
-    }
-    let withheld = if debug {
-        0
-    } else {
-        st.edits.keys().filter(|n| presets::is_governed(n)).count()
-    };
-    if withheld > 0 {
-        ui.colored_label(
-            status::YELLOW,
-            format!(
-                "{withheld} staged sensor preset setting(s) not sent: {}",
-                presets::SET_IN_DEVICES_TEXT
-            ),
-        );
-    }
-    ui.separator();
+    ui.add_space(theme::GAP);
 
     let searching = !st.search.trim().is_empty();
     let tree = tree(table, &st.search);
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            for (scope, groups) in &tree {
-                scope_section(
-                    ui, table, st, blocked, connected, searching, debug, *scope, groups,
-                );
-            }
-        });
+    for (scope, groups) in &tree {
+        scope_section(
+            ui, table, st, blocked, connected, searching, debug, *scope, groups,
+        );
+    }
 }
 
 fn counts(shown: usize, total: usize, searching: bool) -> String {
@@ -546,38 +545,42 @@ fn scope_section(
     let total: usize = groups.iter().map(|g| g.total).sum();
     let shown: usize = groups.iter().map(|g| g.shown.len()).sum();
     let title = format!("{} ({})", scope.title(), counts(shown, total, searching));
-    let mut header = egui::CollapsingHeader::new(title)
+    let mut header = egui::CollapsingHeader::new(theme::title_text(&title))
         .id_salt(("scope", scope.title(), searching))
         .default_open(true);
     if searching {
         header = header.open(Some(shown > 0 || total == 0));
     }
-    header.show(ui, |ui| {
-        if total == 0 {
-            ui.label("no parameters from the vehicle yet");
-        }
-        for group in groups.iter().filter(|g| !searching || !g.shown.is_empty()) {
-            let title = format!(
-                "{} ({})",
-                group.name,
-                counts(group.shown.len(), group.total, searching)
-            );
-            let mut header = egui::CollapsingHeader::new(title).id_salt((
-                "group",
-                scope.title(),
-                &group.name,
-                searching,
-            ));
-            if searching {
-                header = header.open(Some(true));
+    theme::card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        header.show(ui, |ui| {
+            if total == 0 {
+                ui.label("no parameters from the vehicle yet");
             }
-            header.show(ui, |ui| {
-                ui.add_enabled_ui(connected, |ui| {
-                    rows(ui, table, st, blocked, debug, &group.name, &group.shown);
+            for group in groups.iter().filter(|g| !searching || !g.shown.is_empty()) {
+                let title = format!(
+                    "{} ({})",
+                    group.name,
+                    counts(group.shown.len(), group.total, searching)
+                );
+                let mut header = egui::CollapsingHeader::new(title).id_salt((
+                    "group",
+                    scope.title(),
+                    &group.name,
+                    searching,
+                ));
+                if searching {
+                    header = header.open(Some(true));
+                }
+                header.show(ui, |ui| {
+                    ui.add_enabled_ui(connected, |ui| {
+                        rows(ui, table, st, blocked, debug, &group.name, &group.shown);
+                    });
                 });
-            });
-        }
+            }
+        });
     });
+    ui.add_space(theme::GAP);
 }
 
 fn rows(
@@ -603,7 +606,7 @@ fn rows(
             .header(row_height, |mut header| {
                 for title in ["Name", "Value", "Type", "Unit", "State"] {
                     header.col(|ui| {
-                        ui.strong(title);
+                        ui.label(theme::muted(title).strong());
                     });
                 }
             })
@@ -623,8 +626,8 @@ fn rows(
                     let info = param_info::lookup(name);
                     row.col(|ui| {
                         let label = match colour {
-                            Some(c) => ui.colored_label(c, name),
-                            None => ui.label(name),
+                            Some(c) => ui.label(theme::value(name).color(c)),
+                            None => ui.label(theme::value(name)),
                         };
                         if let Some(info) = info {
                             label.on_hover_text(format!(

@@ -20,7 +20,7 @@ use gcs_dflog::{
     Found, Progress, Reader, Summary, events_with, export_with, find_with, summary_with,
 };
 
-use crate::{logfile, status};
+use crate::{logfile, status, theme};
 
 const MIB: f64 = 1_048_576.0;
 const TABLE_HEIGHT: f32 = 240.0;
@@ -773,7 +773,8 @@ fn events_part(ui: &mut egui::Ui, o: &Opened, view: &mut EventsView) {
                     };
                     for title in titles {
                         header.col(|ui| {
-                            ui.strong(title);
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                            ui.label(theme::muted(title).strong());
                         });
                     }
                 })
@@ -781,10 +782,12 @@ fn events_part(ui: &mut egui::Ui, o: &Opened, view: &mut EventsView) {
                     body.rows(ROW_HEIGHT, rows.len(), |mut row| {
                         let event = &o.events[rows[row.index()] as usize];
                         row.col(|ui| {
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                             ui.label(egui::RichText::new(seconds(event.time_us)).monospace());
                         });
                         if wall {
                             row.col(|ui| {
+                                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                                 // "UTC" is in the column title, so a cell fits on one line.
                                 let text = o
                                     .summary
@@ -798,14 +801,17 @@ fn events_part(ui: &mut egui::Ui, o: &Opened, view: &mut EventsView) {
                             });
                         }
                         row.col(|ui| {
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                             ui.label(event.source.name());
                         });
                         row.col(|ui| {
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                             if event.initial {
                                 ui.weak("initial");
                             }
                         });
                         row.col(|ui| {
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                             ui.add(egui::Label::new(&event.text).truncate());
                         });
                     });
@@ -885,13 +891,15 @@ fn intervals(ui: &mut egui::Ui, fields: &[String], found: &Found) {
         .header(ROW_HEIGHT, |mut header| {
             for title in ["Start (s)", "End (s)", "Duration (s)"] {
                 header.col(|ui| {
-                    ui.strong(title);
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                    ui.label(theme::muted(title).strong());
                 });
             }
             for field in fields {
                 for edge in ["min", "max"] {
                     header.col(|ui| {
-                        ui.strong(format!("{field} {edge}"));
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                        ui.label(theme::muted(format!("{field} {edge}")).strong());
                     });
                 }
             }
@@ -900,20 +908,25 @@ fn intervals(ui: &mut egui::Ui, fields: &[String], found: &Found) {
             body.rows(ROW_HEIGHT, found.intervals.len(), |mut row| {
                 let interval = &found.intervals[row.index()];
                 row.col(|ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     ui.label(seconds(interval.start_us));
                 });
                 row.col(|ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     ui.label(interval.end_us.map_or_else(|| "open".to_string(), seconds));
                 });
                 row.col(|ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     ui.label(seconds(interval.duration_us));
                 });
                 for i in 0..fields.len() {
                     let range = interval.ranges.get(i);
                     row.col(|ui| {
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                         ui.label(range.map_or_else(String::new, |r| number(r.min)));
                     });
                     row.col(|ui| {
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                         ui.label(range.map_or_else(String::new, |r| number(r.max)));
                     });
                 }

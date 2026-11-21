@@ -7,10 +7,12 @@ use gcs_mavlink::{
     Access, CancelStatus, CommandRecord, CommandStatus, LinkState, LinkStatus, VehicleState,
 };
 
-pub const YELLOW: Color32 = Color32::from_rgb(230, 190, 40);
-pub const GREEN: Color32 = Color32::from_rgb(70, 200, 100);
-pub const RED: Color32 = Color32::from_rgb(235, 80, 80);
-pub const GREY: Color32 = Color32::from_rgb(150, 150, 150);
+use crate::theme;
+
+pub const YELLOW: Color32 = theme::WARN;
+pub const GREEN: Color32 = theme::OK;
+pub const RED: Color32 = theme::ERROR;
+pub const GREY: Color32 = theme::STALE;
 
 /// The session's role as shown in the bar and the Link view.
 pub fn role(access: Access) -> &'static str {

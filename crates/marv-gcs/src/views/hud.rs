@@ -1,7 +1,8 @@
-//! The HUD: a flight instrument at the top left of the window, on every tab. It shows what the vehicle
-//! sends and computes nothing: ATTITUDE (roll, pitch, yaw) for the horizon and the heading, GPS_RAW_INT for
-//! ground speed, altitude, course over ground, fix and satellites, SYS_STATUS for the battery. Only units
-//! are converted. It draws from the state and sends nothing, so it takes no command list.
+//! The side panel: a flight instrument at the top left of the window, on every tab, and the vehicle's
+//! status sections under it ([`super::sidebar`]). It shows what the vehicle sends and computes nothing:
+//! ATTITUDE (roll, pitch, yaw) for the horizon and the heading, GPS_RAW_INT for ground speed, altitude and
+//! course over ground. Only units are converted. It draws from the state and sends nothing, so it takes no
+//! command list. The drawing is a square as wide as the panel; every length in it is a share of its side.
 
 use std::time::Duration;
 
@@ -12,23 +13,26 @@ use eframe::egui::{
 use gcs_mavlink::services::messages::{MessageEntry, MessageStore};
 use gcs_mavlink::{LinkStatus, VehicleState};
 
-use super::sensors;
+use super::sidebar;
 use crate::status::GREY;
 
-/// Width of the side panel that holds the HUD.
-pub const PANEL_WIDTH: f32 = 260.0;
-/// Side of the square drawing.
-const DRAWING: f32 = 240.0;
+/// The side panel's width when the window opens, and the range the user can drag it in (logical px).
+pub const PANEL_DEFAULT_WIDTH: f32 = 320.0;
+pub const PANEL_MIN_WIDTH: f32 = 240.0;
+pub const PANEL_MAX_WIDTH: f32 = 480.0;
+/// The side the lengths below were drawn for; a drawing of side `s` scales them by `s / DESIGN_SIDE`.
+const DESIGN_SIDE: f32 = 240.0;
 /// An ATTITUDE older than this is not shown.
 pub(super) const ATTITUDE_STALE: Duration = Duration::from_secs(2);
 /// A GPS_RAW_INT older than this is not shown.
-const GPS_STALE: Duration = Duration::from_secs(3);
+pub(super) const GPS_STALE: Duration = Duration::from_secs(3);
 /// GPS_RAW_INT `vel` and `cog` when unknown.
 const UNKNOWN_U16: f64 = 65_535.0;
 /// GPS_RAW_INT `satellites_visible` when unknown.
 const UNKNOWN_SATELLITES: f64 = 255.0;
 /// The heading strip shows this many degrees on each side of the heading.
 const HEADING_SPAN: f32 = 45.0;
+/// Height of the heading strip, at [`DESIGN_SIDE`].
 const STRIP_HEIGHT: f32 = 22.0;
 /// The roll arc covers -60 to +60 degrees.
 const ARC_LIMIT: f32 = 60.0;
@@ -46,19 +50,19 @@ pub struct Attitude {
 }
 
 /// The fresh values, in the units the vehicle sends.
-struct Data {
-    attitude: Option<Attitude>,
+pub(super) struct Data {
+    pub(super) attitude: Option<Attitude>,
     /// m/s.
     speed: Option<f64>,
     /// m, above mean sea level, from GPS_RAW_INT.
     altitude: Option<f64>,
     /// Degrees.
     course: Option<f64>,
-    fix: Option<String>,
-    satellites: Option<u32>,
+    pub(super) fix: Option<String>,
+    pub(super) satellites: Option<u32>,
 }
 
-fn fresh<'a>(
+pub(super) fn fresh<'a>(
     store: &'a MessageStore,
     name: &str,
     now: Option<Duration>,
@@ -69,7 +73,7 @@ fn fresh<'a>(
     (age <= limit).then_some(entry)
 }
 
-fn data(store: &MessageStore, now: Option<Duration>) -> Data {
+pub(super) fn data(store: &MessageStore, now: Option<Duration>) -> Data {
     let attitude = fresh(store, "ATTITUDE", now, ATTITUDE_STALE).and_then(|e| {
         Some(Attitude {
             roll: e.number("roll")?,
@@ -109,12 +113,12 @@ fn fix_text(name: &str) -> String {
 }
 
 /// A value with one decimal and no "-0.0".
-fn one_decimal(v: f64) -> String {
+pub(super) fn one_decimal(v: f64) -> String {
     format!("{:.1}", (v * 10.0).round() / 10.0 + 0.0)
 }
 
 /// Degrees in 0 to 359.
-fn heading_deg(yaw: f64) -> u32 {
+pub(super) fn heading_deg(yaw: f64) -> u32 {
     (yaw.to_degrees().round().rem_euclid(360.0) as u32) % 360
 }
 
@@ -140,7 +144,7 @@ fn px_per_deg(side: f32) -> f32 {
     side / 80.0
 }
 
-struct Colours {
+pub(super) struct Colours {
     sky: Color32,
     ground: Color32,
     line: Color32,
@@ -149,7 +153,7 @@ struct Colours {
 }
 
 impl Colours {
-    fn live() -> Self {
+    pub(super) fn live() -> Self {
         Colours {
             sky: Color32::from_rgb(70, 130, 200),
             ground: Color32::from_rgb(130, 90, 50),
@@ -159,7 +163,7 @@ impl Colours {
         }
     }
 
-    fn grey() -> Self {
+    pub(super) fn grey() -> Self {
         Colours {
             sky: Color32::from_gray(105),
             ground: Color32::from_gray(75),
@@ -182,8 +186,25 @@ fn place(ui: &mut egui::Ui, area: Rect, label: Label) {
     .add(label);
 }
 
-/// The HUD: the drawing, then the numbers and text lines.
+/// The scale of a drawing of side `side` against [`DESIGN_SIDE`].
+fn scale(side: f32) -> f32 {
+    side / DESIGN_SIDE
+}
+
+/// The side panel: the drawing, the numbers under it, then the status sections, scrolling when they
+/// do not fit.
 pub fn ui(ui: &mut egui::Ui, state: &VehicleState, now: Option<Duration>) {
+    let max_side = ui.available_height() * MAX_HEIGHT_SHARE;
+    egui::ScrollArea::vertical()
+        .id_salt("side_panel")
+        .auto_shrink([false, false])
+        .show(ui, |ui| instrument(ui, state, now, max_side));
+}
+
+/// The drawing takes at most this share of the panel's height, so the sections under it stay in view.
+pub const MAX_HEIGHT_SHARE: f32 = 0.4;
+
+fn instrument(ui: &mut egui::Ui, state: &VehicleState, now: Option<Duration>, max_side: f32) {
     let connected = now.is_some() && state.link.status == LinkStatus::Connected;
     let data = data(&state.messages, now);
     let colours = if connected {
@@ -191,8 +212,11 @@ pub fn ui(ui: &mut egui::Ui, state: &VehicleState, now: Option<Duration>) {
     } else {
         Colours::grey()
     };
-    let side = ui.available_width().min(DRAWING);
-    let (rect, response) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
+    let side = ui.available_width().min(max_side).max(1.0);
+    let k = scale(side);
+    let (rect, response) = ui
+        .vertical_centered(|ui| ui.allocate_exact_size(vec2(side, side), Sense::hover()))
+        .inner;
     response.widget_info(|| WidgetInfo::labeled(Role::Image, true, DRAWING_NAME));
     let painter = ui.painter_at(rect);
     // Without an attitude the level horizon is grey, so it cannot be read as a real "level".
@@ -218,9 +242,13 @@ pub fn ui(ui: &mut egui::Ui, state: &VehicleState, now: Option<Duration>) {
             ui,
             Rect::from_center_size(
                 rect.center() + vec2(0.0, 0.2 * side),
-                vec2(side - 20.0, 20.0),
+                vec2(side - 20.0 * k, 20.0 * k),
             ),
-            Label::new(RichText::new("no attitude from the vehicle").color(colours.text)),
+            Label::new(
+                RichText::new("no attitude from the vehicle")
+                    .size(font(13.0, k))
+                    .color(colours.text),
+            ),
         );
     }
 
@@ -233,50 +261,45 @@ pub fn ui(ui: &mut egui::Ui, state: &VehicleState, now: Option<Duration>) {
         ui.label(RichText::new(s).color(colour));
     };
     ui.add_space(4.0);
-    ui.columns(3, |columns| {
-        let a = data.attitude;
+    let a = data.attitude;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0 * k.max(1.0);
         text(
-            &mut columns[0],
+            ui,
             format!(
                 "Roll {}°",
                 a.map_or("--".into(), |a| one_decimal(a.roll.to_degrees()))
             ),
         );
         text(
-            &mut columns[1],
+            ui,
             format!(
                 "Pitch {}°",
                 a.map_or("--".into(), |a| one_decimal(a.pitch.to_degrees()))
             ),
         );
         text(
-            &mut columns[2],
+            ui,
             format!(
                 "Heading {}",
                 a.map_or("--".into(), |a| format!("{}°", heading_deg(a.yaw)))
             ),
         );
     });
-    text(
-        ui,
-        format!(
-            "GPS: {}, {} satellites",
-            data.fix.as_deref().unwrap_or("--"),
-            data.satellites.map_or("--".into(), |n| n.to_string())
-        ),
-    );
-    text(ui, sensors::battery_text(&state.messages));
-    text(
-        ui,
-        if connected {
-            "Link: connected".into()
-        } else {
-            "Link: not connected".into()
-        },
-    );
+    sidebar::ui(ui, state, now);
 }
 
-fn draw_horizon(
+/// A font size of `design` points at scale `k`, never below 8.
+fn font(design: f32, k: f32) -> f32 {
+    (design * k).max(8.0)
+}
+
+/// A line width of `design` px at scale `k`, never below 1.
+fn width(design: f32, k: f32) -> f32 {
+    (design * k).max(1.0)
+}
+
+pub(super) fn draw_horizon(
     painter: &egui::Painter,
     rect: Rect,
     colours: &Colours,
@@ -294,11 +317,12 @@ fn draw_horizon(
         colours.ground,
         Stroke::NONE,
     ));
-    painter.line_segment([a, b], Stroke::new(2.0, colours.line));
+    let side = rect.width();
+    let k = scale(side);
+    painter.line_segment([a, b], Stroke::new(width(2.0, k), colours.line));
     if attitude.is_none() {
         return;
     }
-    let side = rect.width();
     let along = vec2(roll.cos(), -roll.sin());
     let centre = (a.to_vec2() + b.to_vec2()) / 2.0;
     for step in (-18..=18).filter(|s| *s != 0) {
@@ -311,20 +335,20 @@ fn draw_horizon(
         let half = side * if long { 0.12 } else { 0.06 };
         painter.line_segment(
             [at - along * half, at + along * half],
-            Stroke::new(1.5, colours.line),
+            Stroke::new(width(1.5, k), colours.line),
         );
         if long {
             let label = format!("{}", degrees as i32);
-            let font = FontId::proportional(10.0);
+            let font = FontId::proportional(font(10.0, k));
             painter.text(
-                at - along * (half + 3.0),
+                at - along * (half + 3.0 * k),
                 Align2::RIGHT_CENTER,
                 &label,
                 font.clone(),
                 colours.text,
             );
             painter.text(
-                at + along * (half + 3.0),
+                at + along * (half + 3.0 * k),
                 Align2::LEFT_CENTER,
                 &label,
                 font,
@@ -343,7 +367,8 @@ fn on_circle(centre: Pos2, r: f32, degrees: f32) -> Pos2 {
 fn draw_arc(painter: &egui::Painter, rect: Rect, colours: &Colours, attitude: Option<Attitude>) {
     let centre = rect.center();
     let radius = 0.40 * rect.width();
-    let stroke = Stroke::new(1.5, colours.line);
+    let k = scale(rect.width());
+    let stroke = Stroke::new(width(1.5, k), colours.line);
     let points: Vec<Pos2> = (-12..=12)
         .map(|i| on_circle(centre, radius, i as f32 * 5.0))
         .collect();
@@ -352,7 +377,7 @@ fn draw_arc(painter: &egui::Painter, rect: Rect, colours: &Colours, attitude: Op
         .into_iter()
         .chain(ARC_TICKS.into_iter().flat_map(|t| [t, -t]))
     {
-        let length = if degrees == 0.0 { 10.0 } else { 6.0 };
+        let length = k * if degrees == 0.0 { 10.0 } else { 6.0 };
         painter.line_segment(
             [
                 on_circle(centre, radius, degrees),
@@ -366,9 +391,9 @@ fn draw_arc(painter: &egui::Painter, rect: Rect, colours: &Colours, attitude: Op
         let at = (-(attitude.roll.to_degrees() as f32)).clamp(-ARC_LIMIT, ARC_LIMIT);
         painter.add(Shape::convex_polygon(
             vec![
-                on_circle(centre, radius + 1.0, at),
-                on_circle(centre, radius + 11.0, at - 4.0),
-                on_circle(centre, radius + 11.0, at + 4.0),
+                on_circle(centre, radius + k, at),
+                on_circle(centre, radius + 11.0 * k, at - 4.0),
+                on_circle(centre, radius + 11.0 * k, at + 4.0),
             ],
             colours.symbol,
             Stroke::NONE,
@@ -388,7 +413,8 @@ fn draw_strip(
     yaw: Option<f64>,
     course: Option<f64>,
 ) {
-    let strip = Rect::from_min_size(rect.min, vec2(rect.width(), STRIP_HEIGHT));
+    let k = scale(rect.width());
+    let strip = Rect::from_min_size(rect.min, vec2(rect.width(), STRIP_HEIGHT * k));
     painter.rect_filled(strip, 0.0, Color32::from_black_alpha(150));
     let Some(yaw) = yaw else {
         return;
@@ -409,20 +435,20 @@ fn draw_strip(
             27 => Some("W"),
             _ => None,
         };
-        let length = if cardinal.is_some() { 4.0 } else { 7.0 };
+        let length = k * if cardinal.is_some() { 4.0 } else { 7.0 };
         painter.line_segment(
             [
                 pos2(x, strip.bottom()),
-                pos2(x, strip.bottom() - length - 2.0),
+                pos2(x, strip.bottom() - length - 2.0 * k),
             ],
-            Stroke::new(1.0, colours.line),
+            Stroke::new(width(1.0, k), colours.line),
         );
         if let Some(letter) = cardinal {
             painter.text(
-                pos2(x, strip.top() + 8.0),
+                pos2(x, strip.top() + 8.0 * k),
                 Align2::CENTER_CENTER,
                 letter,
-                FontId::proportional(12.0),
+                FontId::proportional(font(12.0, k)),
                 colours.text,
             );
         }
@@ -430,8 +456,8 @@ fn draw_strip(
     painter.add(Shape::convex_polygon(
         vec![
             pos2(rect.center().x, strip.bottom()),
-            pos2(rect.center().x - 4.0, strip.bottom() + 6.0),
-            pos2(rect.center().x + 4.0, strip.bottom() + 6.0),
+            pos2(rect.center().x - 4.0 * k, strip.bottom() + 6.0 * k),
+            pos2(rect.center().x + 4.0 * k, strip.bottom() + 6.0 * k),
         ],
         colours.symbol,
         Stroke::NONE,
@@ -442,9 +468,9 @@ fn draw_strip(
             let x = x_of(course as f32);
             painter.add(Shape::convex_polygon(
                 vec![
-                    pos2(x, strip.top() + 8.0),
-                    pos2(x - 4.0, strip.top()),
-                    pos2(x + 4.0, strip.top()),
+                    pos2(x, strip.top() + 8.0 * k),
+                    pos2(x - 4.0 * k, strip.top()),
+                    pos2(x + 4.0 * k, strip.top()),
                 ],
                 Color32::from_rgb(230, 80, 230),
                 Stroke::NONE,
@@ -453,20 +479,27 @@ fn draw_strip(
     }
 }
 
-fn draw_aircraft(painter: &egui::Painter, rect: Rect, colours: &Colours) {
+pub(super) fn draw_aircraft(painter: &egui::Painter, rect: Rect, colours: &Colours) {
     let c = rect.center();
-    let stroke = Stroke::new(3.0, colours.symbol);
+    let k = scale(rect.width());
+    let stroke = Stroke::new(width(3.0, k), colours.symbol);
     for sign in [-1.0, 1.0] {
         painter.line_segment(
-            [c + vec2(sign * 44.0, 0.0), c + vec2(sign * 16.0, 0.0)],
+            [
+                c + vec2(sign * 44.0 * k, 0.0),
+                c + vec2(sign * 16.0 * k, 0.0),
+            ],
             stroke,
         );
         painter.line_segment(
-            [c + vec2(sign * 16.0, 0.0), c + vec2(sign * 16.0, 7.0)],
+            [
+                c + vec2(sign * 16.0 * k, 0.0),
+                c + vec2(sign * 16.0 * k, 7.0 * k),
+            ],
             stroke,
         );
     }
-    painter.circle_filled(c, 2.5, colours.symbol);
+    painter.circle_filled(c, 2.5 * k, colours.symbol);
 }
 
 fn draw_boxes(
@@ -476,12 +509,13 @@ fn draw_boxes(
     colours: &Colours,
     data: &Data,
 ) {
-    let height = 26.0;
+    let k = scale(rect.width());
+    let height = 26.0 * k;
     let boxes = [
         (
             Rect::from_min_size(
-                pos2(rect.left() + 2.0, rect.center().y - height / 2.0),
-                vec2(62.0, height),
+                pos2(rect.left() + 2.0 * k, rect.center().y - height / 2.0),
+                vec2(66.0 * k, height),
             ),
             "ground speed",
             data.speed
@@ -489,8 +523,11 @@ fn draw_boxes(
         ),
         (
             Rect::from_min_size(
-                pos2(rect.right() - 2.0 - 74.0, rect.center().y - height / 2.0),
-                vec2(74.0, height),
+                pos2(
+                    rect.right() - 2.0 * k - 78.0 * k,
+                    rect.center().y - height / 2.0,
+                ),
+                vec2(78.0 * k, height),
             ),
             "GPS alt MSL",
             data.altitude
@@ -498,24 +535,24 @@ fn draw_boxes(
         ),
     ];
     for (area, caption, value) in boxes {
-        painter.rect_filled(area, 2.0, Color32::from_rgb(20, 20, 20));
+        painter.rect_filled(area, 2.0 * k, Color32::from_rgb(20, 20, 20));
         painter.rect_stroke(
             area,
-            2.0,
-            Stroke::new(1.0, colours.line),
+            2.0 * k,
+            Stroke::new(width(1.0, k), colours.line),
             egui::StrokeKind::Inside,
         );
         painter.text(
-            pos2(area.center().x, area.top() - 2.0),
+            pos2(area.center().x, area.top() - 2.0 * k),
             Align2::CENTER_BOTTOM,
             caption,
-            FontId::proportional(9.0),
+            FontId::proportional(font(9.0, k)),
             colours.text,
         );
         place(
             ui,
             area,
-            Label::new(RichText::new(value).color(colours.text))
+            Label::new(RichText::new(value).size(font(13.0, k)).color(colours.text))
                 .wrap_mode(egui::TextWrapMode::Extend),
         );
     }

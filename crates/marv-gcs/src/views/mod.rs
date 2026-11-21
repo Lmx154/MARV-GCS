@@ -21,6 +21,7 @@ mod plot;
 pub mod presets;
 pub mod radio;
 pub mod sensors;
+mod sidebar;
 
 pub struct ViewCtx<'a> {
     /// Locked for the frame.
@@ -37,6 +38,10 @@ pub trait View {
     /// Tab title.
     fn name(&self) -> &'static str;
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx);
+    /// Whether the app wraps the view in one vertical page scroll; false for a view that fills the window.
+    fn scrolls(&self) -> bool {
+        true
+    }
     /// A session started or ended: drop whatever belongs to the previous vehicle.
     fn session_changed(&mut self) {}
     /// Called every frame for every view, selected or not, with the state of the frame: a view that
@@ -44,7 +49,7 @@ pub trait View {
     fn update(&mut self, _state: &VehicleState, _now: Option<Duration>) {}
 }
 
-/// The registry for the window: the Map fetches its tiles from OpenStreetMap.
+/// The registry for the window: the Map fetches OpenFreeMap vector tiles over HTTPS.
 pub fn all_with_tiles() -> Vec<Box<dyn View>> {
     registry(true)
 }

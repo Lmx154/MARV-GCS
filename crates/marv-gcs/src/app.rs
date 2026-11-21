@@ -14,6 +14,7 @@ use crate::logfile;
 use crate::screenshot::{Outcome, Screenshot};
 use crate::sessions::{self, Request};
 use crate::status;
+use crate::theme;
 use crate::views::{self, View, ViewCtx};
 
 /// While a session exists the window repaints at least this often, so ages keep moving.
@@ -45,6 +46,7 @@ impl App {
 
     /// As [`App::new`], from the egui context alone (the tests have no window).
     pub fn with_context(ctx: &egui::Context, cli: Cli, outcome: Outcome) -> Self {
+        theme::apply(ctx);
         let sessions = sessions::Manager::new(ctx, &cli.log_dir);
         let mut app = App {
             bar: Bar::default(),
@@ -222,33 +224,66 @@ impl App {
                 None => status::not_connected(),
             };
 
-            egui::Panel::top("connection_bar").show(ui, |ui| {
-                ui.add_space(4.0);
-                action = self.bar.ui(ui, self.session.is_some(), status);
-                ui.add_space(4.0);
-            });
-            egui::Panel::top("tabs").show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    for (index, view) in self.views.iter().enumerate() {
-                        ui.selectable_value(&mut self.selected, index, view.name());
+            egui::Panel::top("connection_bar")
+                .frame(
+                    egui::Frame::new()
+                        .fill(theme::PANEL)
+                        .inner_margin(egui::Margin::symmetric(12, 8)),
+                )
+                .show(ui, |ui| {
+                    action = self.bar.ui(ui, self.session.is_some(), status);
+                });
+            egui::Panel::top("tabs")
+                .frame(
+                    egui::Frame::new()
+                        .fill(theme::PANEL)
+                        .inner_margin(egui::Margin::symmetric(8, 0)),
+                )
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        ui.spacing_mut().button_padding.x = 14.0;
+                        for (index, view) in self.views.iter().enumerate() {
+                            if theme::tab(ui, self.selected == index, view.name()).clicked() {
+                                self.selected = index;
+                            }
+                        }
+                    });
+                });
+            egui::Panel::left("hud")
+                .default_size(views::hud::PANEL_DEFAULT_WIDTH)
+                .size_range(views::hud::PANEL_MIN_WIDTH..=views::hud::PANEL_MAX_WIDTH)
+                .resizable(true)
+                .frame(
+                    egui::Frame::new()
+                        .fill(theme::PANEL)
+                        .inner_margin(egui::Margin::same(8)),
+                )
+                .show(ui, |ui| views::hud::ui(ui, state, now));
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::new()
+                        .fill(theme::WINDOW)
+                        .inner_margin(egui::Margin::same(12)),
+                )
+                .show(ui, |ui| {
+                    if let Some(view) = self.views.get_mut(self.selected) {
+                        let mut cx = ViewCtx {
+                            state,
+                            commands: &mut commands,
+                            now,
+                            access: self.access,
+                        };
+                        if view.scrolls() {
+                            egui::ScrollArea::vertical()
+                                .id_salt(("page", self.selected))
+                                .auto_shrink(false)
+                                .show(ui, |ui| view.ui(ui, &mut cx));
+                        } else {
+                            view.ui(ui, &mut cx);
+                        }
                     }
                 });
-            });
-            egui::Panel::left("hud")
-                .exact_size(views::hud::PANEL_WIDTH)
-                .resizable(false)
-                .show(ui, |ui| views::hud::ui(ui, state, now));
-            egui::CentralPanel::default().show(ui, |ui| {
-                if let Some(view) = self.views.get_mut(self.selected) {
-                    let mut cx = ViewCtx {
-                        state,
-                        commands: &mut commands,
-                        now,
-                        access: self.access,
-                    };
-                    view.ui(ui, &mut cx);
-                }
-            });
         }
 
         match action {

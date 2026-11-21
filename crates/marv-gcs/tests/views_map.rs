@@ -9,7 +9,7 @@ use gcs_mavlink::VehicleState;
 use gcs_mavlink::services::messages::{Field, FieldValue, MessageEntry, MessageKey};
 use marv_gcs::views::{self, View, ViewCtx};
 
-const ATTRIBUTION: &str = "© OpenStreetMap contributors";
+const ATTRIBUTION: &str = "OpenFreeMap © OpenMapTiles © OpenStreetMap contributors";
 
 fn view() -> Box<dyn View> {
     views::all()

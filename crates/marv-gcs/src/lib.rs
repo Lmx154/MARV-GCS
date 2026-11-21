@@ -12,9 +12,11 @@ pub mod cli;
 pub mod connection;
 pub mod link_test;
 pub mod logfile;
+pub mod missions;
 pub mod screenshot;
 pub mod sessions;
 pub mod status;
+pub mod theme;
 pub mod views;
 
 /// Open the window and run it until it closes. Returns the process exit status: 0, or 1 when the
@@ -25,7 +27,8 @@ pub fn run(cli: cli::Cli) -> i32 {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("MARV GCS")
-            .with_inner_size([1100.0, 700.0]),
+            .with_inner_size([1280.0, 800.0])
+            .with_min_inner_size([960.0, 600.0]),
         ..Default::default()
     };
     let result = eframe::run_native(

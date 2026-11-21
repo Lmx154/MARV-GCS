@@ -8,9 +8,12 @@ use gcs_mavlink::services::messages::{
 
 use super::plot;
 use super::{View, ViewCtx};
+use crate::theme;
 
 const ROW_HEIGHT: f32 = 20.0;
 const TABLE_HEIGHT: f32 = 220.0;
+/// The plot's height: the page scrolls, so the available height is not a size to fill.
+const PLOT_HEIGHT: f32 = 300.0;
 const FIELDS_WIDTH: f32 = 300.0;
 
 #[derive(Default)]
@@ -38,31 +41,40 @@ impl View for Messages {
         let store = &cx.state.messages;
         let choice = &mut self.choice;
 
-        ui.label(format!("Lost frames: {}", store.lost_frames));
-        if store.entries.is_empty() {
-            ui.label("No messages yet");
-        } else {
-            table(ui, cx, choice);
-        }
-        ui.separator();
-        let window = plot::window_selector(ui, "messages");
-        let height = ui.available_height().max(120.0);
-        ui.horizontal_top(|ui| {
-            ui.allocate_ui(egui::vec2(FIELDS_WIDTH, height), |ui| {
-                fields(ui, store, choice);
+        let table_height = TABLE_HEIGHT;
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(theme::muted(format!("Lost frames: {}", store.lost_frames)));
+            if store.entries.is_empty() {
+                ui.label("No messages yet");
+            } else {
+                table(ui, cx, choice, table_height);
+            }
+        });
+        ui.add_space(theme::GAP);
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let window = plot::window_selector(ui, "messages");
+            ui.separator();
+            let height = PLOT_HEIGHT;
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui(egui::vec2(FIELDS_WIDTH, height), |ui| {
+                    fields(ui, store, choice);
+                });
+                ui.separator();
+                ui.vertical(|ui| chosen_plot(ui, store, choice, window, height));
             });
-            ui.vertical(|ui| chosen_plot(ui, store, choice, window, height));
         });
     }
 }
 
-fn table(ui: &mut egui::Ui, cx: &ViewCtx, choice: &mut Choice) {
+fn table(ui: &mut egui::Ui, cx: &ViewCtx, choice: &mut Choice, height: f32) {
     let mut clicked = None;
     TableBuilder::new(ui)
         .id_salt("messages_table")
         .striped(true)
         .sense(egui::Sense::click())
-        .max_scroll_height(TABLE_HEIGHT)
+        .max_scroll_height(height)
         .column(Column::auto().at_least(180.0))
         .column(Column::auto().at_least(70.0))
         .column(Column::auto().at_least(70.0))
@@ -71,6 +83,7 @@ fn table(ui: &mut egui::Ui, cx: &ViewCtx, choice: &mut Choice) {
         .header(ROW_HEIGHT, |mut header| {
             for title in ["Message", "Sender", "Count", "Rate", "Age"] {
                 header.col(|ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     ui.strong(title);
                 });
             }
@@ -93,9 +106,15 @@ fn table(ui: &mut egui::Ui, cx: &ViewCtx, choice: &mut Choice) {
                     format!("{:.1} Hz", entry.rate_hz),
                     age,
                 ];
-                for text in cells {
+                for (column, text) in cells.into_iter().enumerate() {
+                    let text = if column == 0 {
+                        egui::RichText::new(text)
+                    } else {
+                        theme::value(text)
+                    };
                     let mut hit = false;
                     row.col(|ui| {
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                         hit = ui
                             .add(egui::Label::new(text).sense(egui::Sense::click()))
                             .clicked();
@@ -123,19 +142,15 @@ fn fields(ui: &mut egui::Ui, store: &MessageStore, choice: &mut Choice) {
         ui.label("Click a message to see its fields.");
         return;
     };
-    ui.strong(&entry.label);
-    egui::ScrollArea::vertical()
-        .id_salt("messages_fields")
+    theme::section_title(ui, &entry.label);
+    egui::Grid::new("messages_fields_grid")
+        .num_columns(2)
+        .spacing([16.0, 4.0])
         .show(ui, |ui| {
-            egui::Grid::new("messages_fields_grid")
-                .num_columns(2)
-                .spacing([16.0, 4.0])
-                .show(ui, |ui| {
-                    for field in &entry.fields {
-                        field_row(ui, &key, field, choice);
-                        ui.end_row();
-                    }
-                });
+            for field in &entry.fields {
+                field_row(ui, &key, field, choice);
+                ui.end_row();
+            }
         });
 }
 
@@ -155,7 +170,7 @@ fn field_row(ui: &mut egui::Ui, key: &MessageKey, field: &Field, choice: &mut Ch
                     None => choice.plotted.push((key.clone(), field.name.clone())),
                 }
             }
-            ui.label(format_number(*n));
+            ui.label(theme::value(format_number(*n)));
         }
         FieldValue::Text(text) => {
             ui.label(&field.name);

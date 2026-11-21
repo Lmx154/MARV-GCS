@@ -80,21 +80,41 @@ fn with_gps(state: &mut VehicleState, vel: f64, alt_mm: f64, seen: f64) {
     );
 }
 
+/// The width the side panel opens with.
+const WIDTH: f32 = 320.0;
+
 fn draw(state: &VehicleState, now: Option<Duration>, check: impl FnOnce(&Harness<'_>)) {
-    let mut harness = Harness::new_ui(|ui| {
-        let mut commands = Vec::new();
-        let cx = ViewCtx {
-            state,
-            commands: &mut commands,
-            now,
-            access: gcs_mavlink::Access::Operate,
-        };
-        views::hud::ui(ui, cx.state, cx.now);
-        assert!(commands.is_empty(), "the HUD is read only");
-    });
+    draw_at(WIDTH, state, now, check);
+}
+
+/// The panel's content in a column `width` wide, as in a panel dragged to that width, in a window tall
+/// enough that the drawing's height cap does not bite.
+fn draw_at(
+    width: f32,
+    state: &VehicleState,
+    now: Option<Duration>,
+    check: impl FnOnce(&Harness<'_>),
+) {
+    let mut harness = Harness::builder()
+        .with_size(eframe::egui::vec2(800.0, TALL))
+        .build_ui(|ui| {
+            ui.set_max_width(width);
+            let mut commands = Vec::new();
+            let cx = ViewCtx {
+                state,
+                commands: &mut commands,
+                now,
+                access: gcs_mavlink::Access::Operate,
+            };
+            views::hud::ui(ui, cx.state, cx.now);
+            assert!(commands.is_empty(), "the HUD is read only");
+        });
     harness.run();
     check(&harness);
 }
+
+/// A window height at which the drawing is as wide as the panel.
+const TALL: f32 = 1400.0;
 
 fn secs(s: u64) -> Option<Duration> {
     Some(Duration::from_secs(s))
@@ -109,7 +129,7 @@ fn attitude_values_are_shown_in_degrees() {
         h.get_by_label("Pitch -10.0°");
         h.get_by_label("Heading 90°");
         assert!(h.query_by_label("no attitude from the vehicle").is_none());
-        h.get_by_label("Link: connected");
+        h.get_by_label("Connected");
     });
 }
 
@@ -126,7 +146,7 @@ fn the_text_lines_start_below_the_drawing() {
             "Pitch -10.0°",
             "Heading 90°",
             "GPS: 3D FIX, 12 satellites",
-            "Link: connected",
+            "Connected",
         ] {
             let rect = h.get_by_label(text).rect();
             assert!(
@@ -238,10 +258,11 @@ fn not_connected_says_so() {
     let mut state = connected();
     state.link.status = LinkStatus::Lost;
     draw(&state, secs(10), |h| {
-        h.get_by_label("Link: not connected");
+        h.get_by_label("Lost (10.0 s silent)");
     });
     draw(&VehicleState::default(), None, |h| {
-        h.get_by_label("Link: not connected");
+        h.get_by_label("Not connected");
+        h.get_by_label("no sensor data");
         h.get_by_label("no attitude from the vehicle");
     });
 }
@@ -261,6 +282,193 @@ fn the_hud_is_on_every_tab() {
         let mut harness = Harness::new_ui(|ui| app.frame(ui));
         harness.run();
         harness.get_by_label("no attitude from the vehicle");
-        harness.get_by_label("Link: not connected");
+        harness.get_by_label("Heartbeat: no data");
+        harness.get_by_label("no sensor data");
+    }
+}
+
+fn text_field(name: &str, v: &str) -> Field {
+    Field {
+        name: name.into(),
+        value: FieldValue::Text(v.into()),
+    }
+}
+
+fn with_device(state: &mut VehicleState, id: u8, name: &str, device_state: &str, seen: f64) {
+    state.messages.entries.insert(
+        MessageKey {
+            system_id: 1,
+            component_id: 1,
+            message_id: 1000,
+            instance: id,
+        },
+        MessageEntry {
+            name: "MARV_DEVICE_STATUS".into(),
+            label: "MARV_DEVICE_STATUS".into(),
+            count: 1,
+            rate_hz: 1.0,
+            last_seen: Duration::from_secs_f64(seen),
+            fields: vec![
+                text_field("device_id", &format!("MARV_DEVICE_{name}")),
+                text_field("state", &format!("MARV_DEVICE_STATE_{device_state}")),
+            ],
+        },
+    );
+}
+
+#[test]
+fn all_sensors_ok_is_one_line() {
+    let mut state = connected();
+    with_device(&mut state, 1, "IMU1", "OK", 9.0);
+    with_device(&mut state, 2, "BARO", "OK", 9.0);
+    draw(&state, secs(10), |h| {
+        h.get_by_label("All sensors OK (2)");
+        assert!(h.query_by_label("IMU1 OK").is_none());
+        assert!(h.query_by_label("BARO OK").is_none());
+    });
+}
+
+#[test]
+fn one_faulty_sensor_is_the_only_one_listed() {
+    let mut state = connected();
+    with_device(&mut state, 1, "IMU1", "OK", 9.0);
+    with_device(&mut state, 2, "BARO", "FAILED", 9.0);
+    draw(&state, secs(10), |h| {
+        h.get_by_label("BARO FAILED");
+        assert!(h.query_by_label("IMU1 OK").is_none());
+        assert!(h.query_by_label("IMU1").is_none());
+        assert!(h.query_by_label_contains("All sensors OK").is_none());
+    });
+}
+
+#[test]
+fn old_sensor_data_is_no_data() {
+    let mut state = connected();
+    with_device(&mut state, 1, "IMU1", "OK", 1.0);
+    draw(&state, secs(100), |h| {
+        h.get_by_label("no sensor data");
+    });
+}
+
+#[test]
+fn motors_are_one_line_or_only_the_offline_ones() {
+    let mut state = connected();
+    put(
+        &mut state,
+        290,
+        "ESC_INFO",
+        vec![number("count", 4.0), number("info", 15.0)],
+        9.0,
+    );
+    draw(&state, secs(10), |h| {
+        h.get_by_label("4/4 ESCs online");
+    });
+    put(
+        &mut state,
+        290,
+        "ESC_INFO",
+        vec![number("count", 4.0), number("info", 13.0)],
+        9.0,
+    );
+    draw(&state, secs(10), |h| {
+        h.get_by_label("3/4 ESCs online");
+        h.get_by_label("Motor 2: offline");
+        assert!(h.query_by_label_contains("Motor 1").is_none());
+    });
+}
+
+#[test]
+fn the_panel_scales_with_its_width() {
+    let mut state = connected();
+    with_attitude(&mut state, 20.0, -10.0, 90.0, 9.0);
+    with_gps(&mut state, 1234.0, 488_000.0, 9.0);
+    with_device(&mut state, 1, "IMU1", "OK", 9.0);
+    for width in [240.0, 320.0, 480.0] {
+        draw_at(width, &state, secs(10), |h| {
+            let drawing = h.get_by_label(views::hud::DRAWING_NAME).rect();
+            assert!(
+                (drawing.width() - drawing.height()).abs() < 0.5,
+                "{width}: {drawing:?} is not square"
+            );
+            assert!(
+                drawing.width() > width - 40.0 && drawing.width() <= width,
+                "{width}: {drawing:?}"
+            );
+            for inside in ["12.3 m/s", "488.0 m"] {
+                let rect = h.get_by_label(inside).rect();
+                assert!(
+                    drawing.contains_rect(rect),
+                    "{width}: {inside}: {rect:?} vs {drawing:?}"
+                );
+            }
+            h.get_by_label("All sensors OK (1)");
+        });
+        draw_at(width, &VehicleState::default(), None, |h| {
+            h.get_by_label("no attitude from the vehicle");
+        });
+    }
+}
+
+#[test]
+fn the_side_panel_renders_at_its_smallest_and_largest_width() {
+    let mut state = connected();
+    with_attitude(&mut state, 20.0, -10.0, 90.0, 9.0);
+    with_gps(&mut state, 1234.0, 488_000.0, 9.0);
+    for width in [views::hud::PANEL_MIN_WIDTH, views::hud::PANEL_MAX_WIDTH] {
+        let mut harness = Harness::builder()
+            .with_size(eframe::egui::vec2(1000.0, TALL))
+            .build_ui(|ui| {
+                eframe::egui::Panel::left("hud_test")
+                    .exact_size(width)
+                    .resizable(false)
+                    .show(ui, |ui| views::hud::ui(ui, &state, secs(10)));
+            });
+        harness.run();
+        let drawing = harness.get_by_label(views::hud::DRAWING_NAME).rect();
+        assert!(
+            drawing.width() > width - 40.0 && drawing.width() < width,
+            "{width}: {drawing:?}"
+        );
+        harness.get_by_label("12.3 m/s");
+    }
+}
+
+#[test]
+fn in_a_short_window_the_drawing_gives_way_to_the_sections() {
+    let mut state = connected();
+    with_attitude(&mut state, 20.0, -10.0, 90.0, 9.0);
+    with_gps(&mut state, 1234.0, 488_000.0, 9.0);
+    for (height, capped) in [(700.0, true), (TALL, false)] {
+        let mut harness = Harness::builder()
+            .with_size(eframe::egui::vec2(1000.0, height))
+            .build_ui(|ui| {
+                eframe::egui::Panel::left("hud_test")
+                    .exact_size(WIDTH)
+                    .resizable(false)
+                    .show(ui, |ui| views::hud::ui(ui, &state, secs(10)));
+            });
+        harness.run();
+        let drawing = harness.get_by_label(views::hud::DRAWING_NAME).rect();
+        assert!(
+            (drawing.width() - drawing.height()).abs() < 0.5,
+            "{height}: {drawing:?} is not square"
+        );
+        if capped {
+            assert!(
+                drawing.height() <= views::hud::MAX_HEIGHT_SHARE * height,
+                "{height}: {drawing:?}"
+            );
+        } else {
+            assert!(drawing.width() > WIDTH - 40.0, "{height}: {drawing:?}");
+            let last = harness.get_by_label("Recent messages").rect();
+            assert!(last.bottom() < height, "{height}: {last:?} is out of view");
+        }
+        for inside in ["12.3 m/s", "488.0 m"] {
+            let rect = harness.get_by_label(inside).rect();
+            assert!(
+                drawing.contains_rect(rect),
+                "{height}: {inside}: {rect:?} vs {drawing:?}"
+            );
+        }
     }
 }

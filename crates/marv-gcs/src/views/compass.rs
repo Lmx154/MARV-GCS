@@ -14,7 +14,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use eframe::egui::{self, Color32, Pos2, Sense, Shape, Stroke, vec2};
+use eframe::egui::{self, Pos2, Sense, Shape, Stroke, vec2};
 use gcs_magcal::accept::{ACCEPTED_MESSAGE, FITNESS_LIMIT_UT};
 use gcs_magcal::heading::{self, GpsRecord, HeadingCheck, ImuSample};
 use gcs_magcal::session::{
@@ -34,6 +34,7 @@ use super::actions;
 use super::compass_quad;
 use super::presets::WRITE_WAIT;
 use crate::status::{GREEN, GREY, RED, YELLOW};
+use crate::theme;
 
 /// The line of the unsaved-calibration bar once a guided calibration was read back good.
 pub const GUIDED_UNSAVED_TEXT: &str = ACCEPTED_MESSAGE;
@@ -697,8 +698,7 @@ impl Compass {
         let guided_gate = gate
             .or(armed.then_some(ARMED_REASON))
             .or(busy.then_some(RUNNING_REASON));
-        ui.separator();
-        ui.strong("Compass");
+        theme::section_title(ui, "Compass");
         ui.label(state_line(&state.params).unwrap_or_else(|| {
             "Compass calibration: not known until the parameter list is loaded".to_string()
         }));
@@ -879,11 +879,11 @@ fn draw_ring(painter: &egui::Painter, rect: egui::Rect, visited: &[bool; SECTORS
         for k in (0..=4).rev() {
             points.push(arc(inner, from + (to - from) * k as f32 / 4.0));
         }
-        let fill = if seen { GREEN } else { Color32::from_gray(55) };
+        let fill = if seen { GREEN } else { theme::WIDGET };
         painter.add(Shape::convex_polygon(
             points,
             fill,
-            Stroke::new(1.0, Color32::from_gray(20)),
+            Stroke::new(1.0, theme::INSET),
         ));
     }
 }

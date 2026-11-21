@@ -8,6 +8,7 @@
 //! up and nose down, where it is vertical, the body's down axis is used instead). The camera is south of the quad
 //! and [`ELEVATION_DEG`] above the horizon, so ahead is up the screen and right is right.
 
+use crate::theme;
 use eframe::egui::{Color32, Painter, Pos2, Rect, Shape, Stroke};
 
 /// Camera elevation above the horizon, degrees (a display choice).
@@ -191,10 +192,10 @@ pub fn draw(painter: &Painter, rect: Rect, scale: f32, polys: &[Poly], ghost: bo
             )
         } else {
             match poly.part {
-                Part::Arm => (Color32::from_gray(70), Color32::from_gray(30)),
-                Part::Rotor => (Color32::from_rgb(70, 130, 200), Color32::from_gray(20)),
-                Part::Nose => (Color32::from_rgb(220, 40, 40), Color32::from_gray(20)),
-                Part::Arrow => (Color32::from_rgb(235, 190, 50), Color32::from_gray(20)),
+                Part::Arm => (theme::BORDER_STRONG, theme::INSET),
+                Part::Rotor => (theme::ACCENT, theme::INSET),
+                Part::Nose => (theme::ERROR, theme::INSET),
+                Part::Arrow => (theme::WARN, theme::INSET),
             }
         };
         let points: Vec<Pos2> = poly

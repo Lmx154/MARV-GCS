@@ -30,6 +30,7 @@ use super::ViewCtx;
 use super::actions::{self, Confirm};
 use super::radio::{NOT_SAVED_TEXT, saved_since};
 use crate::status::{self, GREY, RED, YELLOW};
+use crate::theme;
 
 /// Shown for a sensor whose fields the list does not hold yet.
 pub const NOT_LOADED_TEXT: &str = "parameters not loaded";
@@ -91,9 +92,9 @@ pub const CHART_SIZE: Vec2 = vec2(CARD_WIDTH, 180.0);
 const CHART_RADIUS: f32 = 70.0;
 const LABEL_GAP: f32 = 4.0;
 const MIN_CHART_RADIUS: f32 = 30.0;
-const ORANGE: Color32 = Color32::from_rgb(235, 160, 40);
-const ORANGE_FILL: Color32 = Color32::from_rgba_premultiplied(94, 64, 16, 100);
-const COMPARE: Color32 = Color32::from_rgb(120, 190, 240);
+const ORANGE: Color32 = theme::WARN;
+const ORANGE_FILL: Color32 = Color32::from_rgba_premultiplied(94, 72, 25, 100);
+const COMPARE: Color32 = theme::ACCENT;
 /// The chart's rings, in percent of the radius.
 const RINGS: [u8; 4] = [25, 50, 75, 100];
 
@@ -184,7 +185,7 @@ impl SensorPresets {
         let mut switch = debug;
         egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
             .show_header(ui, |ui| {
-                ui.label(egui::RichText::new("Sensor presets").strong());
+                ui.label(theme::title_text("Sensor presets"));
                 ui.checkbox(&mut switch, DEBUG_TEXT);
             })
             .body(|ui| {
@@ -200,9 +201,12 @@ impl SensorPresets {
                 for row in cards.chunks_mut(columns) {
                     ui.horizontal_top(|ui| {
                         for (sensor, card) in row.iter_mut() {
-                            ui.group(|ui| {
-                                ui.vertical(|ui| card.ui(ui, cx, sensor, gate, switch));
-                            });
+                            theme::card()
+                                .fill(theme::INSET)
+                                .inner_margin(egui::Margin::same(10))
+                                .show(ui, |ui| {
+                                    ui.vertical(|ui| card.ui(ui, cx, sensor, gate, switch));
+                                });
                         }
                     });
                 }

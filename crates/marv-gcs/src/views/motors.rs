@@ -15,6 +15,7 @@ use super::plot;
 use super::sensors::{self, Preset};
 use super::{View, ViewCtx};
 use crate::status::{self, GREEN, GREY, RED, YELLOW};
+use crate::theme;
 
 const STATUS: &str = "ESC_STATUS";
 const INFO: &str = "ESC_INFO";
@@ -178,13 +179,13 @@ fn info_samples(store: &MessageStore, index: usize) -> Option<(InfoSample, InfoS
 
 /// How old a message is: `None` when it never arrived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Age {
+pub(super) enum Age {
     Never,
     Fresh,
     Stale,
 }
 
-fn age_of(entry: Option<&MessageEntry>, now: Option<Duration>) -> Age {
+pub(super) fn age_of(entry: Option<&MessageEntry>, now: Option<Duration>) -> Age {
     let Some(entry) = entry else {
         return Age::Never;
     };
@@ -200,7 +201,7 @@ fn value_colour(age: Age, fresh: Color32) -> Color32 {
 }
 
 /// The frame of a box: green online, red offline, grey when that is not known or not current.
-fn frame_colour(online: Option<bool>, info: Age) -> Color32 {
+pub(super) fn frame_colour(online: Option<bool>, info: Age) -> Color32 {
     match (online, info) {
         (Some(true), Age::Fresh) => GREEN,
         (Some(false), Age::Fresh) => RED,
@@ -208,7 +209,7 @@ fn frame_colour(online: Option<bool>, info: Age) -> Color32 {
     }
 }
 
-fn voltage_text(volts: Option<f64>) -> String {
+pub(super) fn voltage_text(volts: Option<f64>) -> String {
     volts
         .filter(|v| v.is_finite())
         .map_or_else(|| "n/a".to_string(), |v| format!("{v:.2} V"))
@@ -220,7 +221,7 @@ fn current_text(amps: Option<f64>) -> String {
 }
 
 /// `ESC_INFO.temperature` is in cdegC; 32767 (INT16_MAX) means the ESC gave none.
-fn temperature_text(centidegrees: Option<f64>) -> String {
+pub(super) fn temperature_text(centidegrees: Option<f64>) -> String {
     centidegrees
         .filter(|t| t.is_finite() && *t != NO_TEMPERATURE)
         .map_or_else(|| "n/a".to_string(), |t| format!("{:.1} °C", t / 100.0))
@@ -230,19 +231,19 @@ fn error_text(percent: Option<f64>) -> String {
     percent.map_or_else(|| "—".to_string(), |p| format!("{p:.1} %"))
 }
 
-fn rpm_text(rpm: Option<f64>) -> String {
+pub(super) fn rpm_text(rpm: Option<f64>) -> String {
     rpm.filter(|r| r.is_finite())
         .map_or_else(|| "n/a".to_string(), |r| format!("{r:.0}"))
 }
 
 /// Whether ESC `index` is online by `ESC_INFO.info`; `None` when there is no `info`.
-fn online(info: Option<&MessageEntry>, index: usize) -> Option<bool> {
+pub(super) fn online(info: Option<&MessageEntry>, index: usize) -> Option<bool> {
     let bits = info?.number("info")? as u32;
     Some(bits >> index & 1 == 1)
 }
 
 /// ESCs online of the `count` that `ESC_INFO` announces (at most 4), with that count.
-fn online_count(info: &MessageEntry) -> Option<(usize, usize)> {
+pub(super) fn online_count(info: &MessageEntry) -> Option<(usize, usize)> {
     let count = (info.number("count")? as usize).min(4);
     let n = (0..count)
         .filter(|&i| online(Some(info), i) == Some(true))
@@ -282,12 +283,18 @@ impl View for Motors {
             ui.label("No ESC telemetry from the vehicle");
             return;
         }
-        summary(ui, store, info, info_age, status_age, status, cx.now);
-        ui.separator();
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            summary(ui, store, info, info_age, status_age, status, cx.now);
+        });
+        ui.add_space(theme::GAP);
         let gate = status::command_gate(cx.access, cx.state, cx.now.is_some());
         let spin_reason = gate.or((!self.confirmed).then_some(SWITCH_OFF));
-        self.test_strip(ui, cx, gate, spin_reason);
-        ui.separator();
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            self.test_strip(ui, cx, gate, spin_reason);
+        });
+        ui.add_space(theme::GAP);
         let mut spin = None;
         ui.columns(4, |columns| {
             for (index, ui) in columns.iter_mut().enumerate() {
@@ -312,9 +319,9 @@ impl View for Motors {
             cx.commands
                 .push(motor_test(spin_params(motor, percent, seconds)));
         }
-        ui.separator();
+        ui.add_space(theme::GAP);
         let window = plot::window_selector(ui, "motors");
-        ui.strong(RPM.title);
+        ui.label(theme::title_text(RPM.title));
         let owned = sensors::preset_traces(store, &RPM, window);
         let traces: Vec<(String, &Series)> = owned
             .iter()
@@ -338,7 +345,7 @@ impl Motors {
         gate: Option<&'static str>,
         spin_reason: Option<&'static str>,
     ) {
-        ui.strong("Motor test (propellers off)");
+        theme::section_title(ui, "Motor test (propellers off)");
         ui.checkbox(
             &mut self.confirmed,
             "Propellers are removed and I accept the risk",
@@ -476,19 +483,26 @@ fn motor_box(
     let headline_colour = value_colour(status_age, ui.visuals().strong_text_color());
     let info_colour = value_colour(info_age, normal);
     let mut spin = false;
-    egui::Frame::group(ui.style())
-        .stroke(egui::Stroke::new(2.0, frame_colour(online, info_age)))
+    theme::card()
+        .stroke(egui::Stroke::new(
+            1.0,
+            frame_colour(online, info_age).gamma_multiply(0.55),
+        ))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(
-                RichText::new(title)
-                    .strong()
-                    .color(frame_colour(online, info_age)),
-            );
+            ui.horizontal(|ui| {
+                theme::status_dot(ui, frame_colour(online, info_age));
+                ui.label(
+                    RichText::new(title)
+                        .strong()
+                        .color(frame_colour(online, info_age)),
+                );
+            });
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(rpm_text(number(status, "rpm")))
                         .size(32.0)
+                        .monospace()
                         .strong()
                         .color(headline_colour),
                 );

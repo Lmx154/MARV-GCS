@@ -7,7 +7,7 @@ use gcs_mavlink::services::messages::{MessageStore, Series};
 
 use super::plot;
 use super::{View, ViewCtx};
-use crate::sessions;
+use crate::{sessions, theme};
 
 /// One plot: the fields of one message instance, each value times `scale`, a raw value in
 /// `unavailable` left out (the message's "not available"). Adding a plot is adding a row. Every row
@@ -109,21 +109,28 @@ impl View for Sensors {
 
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx) {
         let store = &cx.state.messages;
-        sessions::bar_ui(ui, &mut self.session);
-        ui.separator();
-        gps_line(ui, store);
-        ui.label(battery_text(store));
-        let window = plot::window_selector(ui, "sensors");
-        ui.separator();
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for pair in PRESETS.chunks(2) {
-                ui.columns(2, |columns| {
-                    for (ui, preset) in columns.iter_mut().zip(pair) {
+        let window = theme::card()
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                sessions::bar_ui(ui, &mut self.session);
+                ui.separator();
+                gps_line(ui, store);
+                ui.label(theme::value(battery_text(store)));
+                plot::window_selector(ui, "sensors")
+            })
+            .inner;
+        ui.add_space(theme::GAP);
+        for pair in PRESETS.chunks(2) {
+            ui.columns(2, |columns| {
+                for (ui, preset) in columns.iter_mut().zip(pair) {
+                    theme::card().show(ui, |ui| {
+                        ui.set_width(ui.available_width());
                         draw_preset(ui, store, preset, window);
-                    }
-                });
-            }
-        });
+                    });
+                }
+            });
+            ui.add_space(theme::GAP);
+        }
     }
 }
 
@@ -164,11 +171,13 @@ pub fn preset_sample_counts(store: &MessageStore) -> Vec<(&'static str, usize)> 
 }
 
 fn draw_preset(ui: &mut egui::Ui, store: &MessageStore, preset: &Preset, window: f64) {
-    ui.strong(preset.title);
+    theme::section_title(ui, preset.title);
     let owned = preset_traces(store, preset, window);
     let traces: Vec<(String, &Series)> = owned.iter().map(|(n, s)| (n.clone(), s)).collect();
     if traces.is_empty() {
-        ui.label("no data");
+        ui.allocate_ui(egui::vec2(ui.available_width(), PLOT_HEIGHT), |ui| {
+            ui.centered_and_justified(|ui| ui.label(theme::muted("no data")));
+        });
     } else {
         plot::draw_with_readout(
             ui,
@@ -223,13 +232,13 @@ fn gps_line(ui: &mut egui::Ui, store: &MessageStore) {
     let latitude = number(gps.number("lat"), |n| format!("{:.7}°", n / 1e7));
     let longitude = number(gps.number("lon"), |n| format!("{:.7}°", n / 1e7));
     let altitude = number(gps.number("alt"), |n| format!("{:.1} m", n / 1e3));
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.strong("GPS");
-        ui.label(format!("fix {fix}"));
-        ui.label(format!("{satellites} satellites"));
-        ui.label(format!("lat {latitude}"));
-        ui.label(format!("lon {longitude}"));
-        ui.label(format!("alt {altitude}"));
+        ui.label(theme::value(format!("fix {fix}")));
+        ui.label(theme::value(format!("{satellites} satellites")));
+        ui.label(theme::value(format!("lat {latitude}")));
+        ui.label(theme::value(format!("lon {longitude}")));
+        ui.label(theme::value(format!("alt {altitude}")));
     });
 }
 

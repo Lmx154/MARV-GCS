@@ -15,6 +15,7 @@ use gcs_mavlink::{Command, UnsavedCalibration, VehicleState};
 use super::actions;
 use super::{View, ViewCtx};
 use crate::status::{self, GREEN, GREY, RED, YELLOW};
+use crate::theme;
 
 const ROW_HEIGHT: f32 = 20.0;
 const MESSAGE: &str = "MARV_DEVICE_STATUS";
@@ -72,16 +73,52 @@ impl View for Devices {
 
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx) {
         let gate = status::command_gate(cx.access, cx.state, cx.now.is_some());
-        calibration_buttons(ui, cx, gate);
-        unsaved_bar(ui, cx, gate, self.compass.unsaved());
-        self.compass.ui(ui, cx, gate);
-        self.presets.ui(ui, cx);
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            calibration_buttons(ui, cx, gate);
+            unsaved_bar(ui, cx, gate, self.compass.unsaved());
+        });
+        ui.add_space(theme::GAP);
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            self.compass.ui(ui, cx, gate);
+        });
+        ui.add_space(theme::GAP);
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            self.presets.ui(ui, cx);
+        });
+        ui.add_space(theme::GAP);
         let rows = rows(&cx.state.messages, cx.now);
         if rows.is_empty() {
             ui.label("No device status yet");
             return;
         }
-        let mut table = TableBuilder::new(ui).id_salt("devices_table").striped(true);
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            Self::table(ui, cx, gate, &rows);
+        });
+    }
+}
+
+impl Devices {
+    fn table(ui: &mut egui::Ui, cx: &mut ViewCtx, gate: Option<&'static str>, rows: &[DeviceRow]) {
+        egui::ScrollArea::horizontal()
+            .id_salt("devices_table_h")
+            .auto_shrink([false, true])
+            .show(ui, |ui| Self::table_inner(ui, cx, gate, rows));
+    }
+
+    fn table_inner(
+        ui: &mut egui::Ui,
+        cx: &mut ViewCtx,
+        gate: Option<&'static str>,
+        rows: &[DeviceRow],
+    ) {
+        let mut table = TableBuilder::new(ui)
+            .id_salt("devices_table")
+            .striped(true)
+            .vscroll(false);
         for _ in 0..TITLES.len() {
             table = table.column(Column::auto().at_least(60.0));
         }
@@ -90,11 +127,12 @@ impl View for Devices {
             .header(ROW_HEIGHT, |mut header| {
                 for (i, title) in TITLES.into_iter().enumerate() {
                     header.col(|ui| {
-                        ui.strong(title);
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                        ui.label(theme::muted(title).strong());
                     });
                     if i == 0 {
                         header.col(|ui| {
-                            ui.strong("Actions");
+                            ui.label(theme::muted("Actions").strong());
                         });
                     }
                 }
@@ -109,12 +147,16 @@ impl View for Devices {
                     };
                     for (i, text) in device.cells().into_iter().enumerate() {
                         row.col(|ui| {
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                             if i == 1 {
+                                theme::status_dot(ui, colour);
                                 ui.colored_label(colour, text);
                             } else if device.stale {
-                                ui.colored_label(GREY, text);
-                            } else {
+                                ui.label(theme::value(text).color(GREY));
+                            } else if i == 0 {
                                 ui.label(text);
+                            } else {
+                                ui.label(theme::value(text));
                             }
                         });
                         if i == 0 {
