@@ -6,6 +6,8 @@ use eframe::egui;
 use gcs_mavlink::{Access, Command, VehicleState};
 
 mod actions;
+mod compass;
+mod compass_quad;
 mod devices;
 pub mod hud;
 mod link;

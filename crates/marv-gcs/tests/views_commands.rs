@@ -412,7 +412,8 @@ fn on_operate_the_device_and_calibration_buttons_are_disabled() {
     for label in [
         "Calibrate gyro",
         "Calibrate accelerometer (level)",
-        "Calibrate compass",
+        "Quick calibration (best effort)",
+        "Calibrate compass (guided)",
         "Cancel calibration",
     ] {
         assert!(
@@ -451,7 +452,7 @@ fn calibration_buttons_send_their_parameters_and_cancel_is_enabled_only_during_a
     h.run();
     h.get_by_label("Calibrate accelerometer (level)").click();
     h.run();
-    h.get_by_label("Calibrate compass").click();
+    h.get_by_label("Quick calibration (best effort)").click();
     h.run();
     {
         let sent = commands.borrow();
@@ -481,7 +482,8 @@ fn calibration_buttons_send_their_parameters_and_cancel_is_enabled_only_during_a
     for label in [
         "Calibrate gyro",
         "Calibrate accelerometer (level)",
-        "Calibrate compass",
+        "Quick calibration (best effort)",
+        "Calibrate compass (guided)",
     ] {
         assert!(
             h.get_by_label(label).accesskit_node().is_disabled(),

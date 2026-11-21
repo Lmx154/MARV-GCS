@@ -108,6 +108,9 @@ pub struct SimConfig {
     /// A scripted user who performs the guided compass calibration ([`crate::script`]); `None`: the vehicle
     /// lies level facing north, with the small motion of [`signals`].
     pub user: Option<CalibrationUser>,
+    /// Names of parameters whose every PARAM_SET is refused (the echo carries the old value and a STATUSTEXT
+    /// follows), to test a ground station that writes several parameters and must stop at a refusal. Empty is none.
+    pub refuse_params: Vec<String>,
 }
 
 impl SimConfig {
@@ -185,6 +188,7 @@ impl Default for SimConfig {
             drop_log_data: Vec::new(),
             mag: MagEnvironment::default(),
             user: None,
+            refuse_params: Vec::new(),
         }
     }
 }
@@ -752,6 +756,8 @@ impl SimVehicle {
                 let param = &self.config.params[index];
                 let reason = if param.read_only {
                     Some("read only")
+                } else if self.config.refuse_params.contains(&param.name) {
+                    Some("refused")
                 } else if d.param_type != param.value.param_type()
                     || matches!(
                         param.value.same_type_from_field(d.param_value, self.config.param_encoding),

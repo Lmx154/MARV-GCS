@@ -22,7 +22,7 @@ The procedure on top of it, still pure (no UI, no link code, no clock, no async;
   reads (0, 0, -g)). The cited constants and file:line are in the module text.
 - `turn`: the gyro integrated about the gravity axis while a pose is held; a ring of 12 sectors of 30 deg per pose,
   complete when every sector was visited (either direction). An incomplete ring is cleared when ANOTHER pose is
-  recognised, not when the reading falls to "none"; a complete ring stays. A step of 0.5 s or more, or not forward in
+  recognised, not when the reading falls to "none"; a complete ring stays. A step longer than 0.5 s, or not forward in
   time, is not integrated (display-only safeguard).
 - `collect`: raw samples (the calibration in force undone) with the unit down vector, thinned by PX4's spacing rule
   (mag_calibration.cpp:147-149: 5.4 R / sqrt(240) / 3, R the model's field strength).

@@ -2030,6 +2030,7 @@ dependencies = [
  "egui_plot",
  "gcs-dflog",
  "gcs-link",
+ "gcs-magcal",
  "gcs-mavlink",
  "gcs-sim",
  "gcs-transport",

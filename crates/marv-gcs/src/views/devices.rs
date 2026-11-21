@@ -10,7 +10,7 @@ use gcs_mavlink::dialect::MavCmd;
 use gcs_mavlink::services::messages::{
     MessageEntry, MessageKey, MessageStore, SeriesKey, flags_text,
 };
-use gcs_mavlink::{Command, UnsavedCalibration};
+use gcs_mavlink::{Command, UnsavedCalibration, VehicleState};
 
 use super::actions;
 use super::{View, ViewCtx};
@@ -43,6 +43,7 @@ const TITLES: [&str; 15] = [
 
 pub struct Devices {
     presets: super::presets::SensorPresets,
+    compass: super::compass::Compass,
 }
 
 impl Devices {
@@ -50,6 +51,7 @@ impl Devices {
     pub fn new(debug: super::presets::DebugFlag) -> Self {
         Self {
             presets: super::presets::SensorPresets::new(debug),
+            compass: super::compass::Compass::default(),
         }
     }
 }
@@ -61,12 +63,18 @@ impl View for Devices {
 
     fn session_changed(&mut self) {
         self.presets.session_changed();
+        self.compass.session_changed();
+    }
+
+    fn update(&mut self, state: &VehicleState, now: Option<Duration>) {
+        self.compass.update(state, now);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx) {
         let gate = status::command_gate(cx.access, cx.state, cx.now.is_some());
         calibration_buttons(ui, cx, gate);
-        unsaved_bar(ui, cx, gate);
+        unsaved_bar(ui, cx, gate, self.compass.unsaved());
+        self.compass.ui(ui, cx, gate);
         self.presets.ui(ui, cx);
         let rows = rows(&cx.state.messages, cx.now);
         if rows.is_empty() {
@@ -168,10 +176,6 @@ fn calibration_buttons(ui: &mut egui::Ui, cx: &mut ViewCtx, gate: Option<&'stati
             cx.commands
                 .push(calibrate([0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0]));
         }
-        if actions::button(ui, "Calibrate compass", gate) {
-            cx.commands
-                .push(calibrate([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]));
-        }
         if actions::button(ui, "Cancel calibration", cancel_gate) {
             cx.commands.push(calibrate([0.0; 7]));
         }
@@ -215,19 +219,25 @@ pub const DISCARD_TEXT: &str = "Discard returns to the saved settings and drops 
 
 /// After a calibration ended accepted: what is in use and not saved, with Save to flash and Discard
 /// (the Parameters tab's storage commands), until a save or a reload is accepted or the vehicle restarts.
-fn unsaved_bar(ui: &mut egui::Ui, cx: &mut ViewCtx, gate: Option<&'static str>) {
+fn unsaved_bar(ui: &mut egui::Ui, cx: &mut ViewCtx, gate: Option<&'static str>, guided: bool) {
     if cx.state.calibration.lost_at_reboot {
         ui.colored_label(YELLOW, LOST_AT_REBOOT_TEXT);
     }
-    let Some(text) = unsaved_text(&cx.state.calibration) else {
+    let text = unsaved_text(&cx.state.calibration);
+    if text.is_none() && !guided {
         return;
-    };
+    }
     let storage = |action: f32| Command::SendCommand {
         command: MavCmd::MAV_CMD_PREFLIGHT_STORAGE,
         params: [action, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     };
     ui.horizontal(|ui| {
-        ui.colored_label(YELLOW, text);
+        if let Some(text) = text {
+            ui.colored_label(YELLOW, text);
+        }
+        if guided {
+            ui.colored_label(YELLOW, super::compass::GUIDED_UNSAVED_TEXT);
+        }
         if actions::button(ui, "Save to flash", gate) {
             cx.commands.push(storage(1.0));
         }
