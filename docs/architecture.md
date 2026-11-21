@@ -30,7 +30,8 @@ does not build or shows up in `cargo tree`.
    `marv-gcs` depends on `eframe`, on `walkers` (the Map tab's tiles; it brings an HTTP client) and on `rfd` (the file dialog); `gcs-link`
    and `marv-cli` never depend on a GUI crate or an HTTP client.
 4. **The simulator is independent.** `gcs-sim` never depends on `gcs-mavlink`; it is written from the
-   MAVLink specification so the two check each other.
+   MAVLink specification so the two check each other. It may depend on `gcs-magcal` (pure maths, no
+   dependency), which gives its magnetometer the Earth's field.
 5. **Protocol logic is sans-IO.** A service is a state machine: messages and the time go in, messages to
    send and events come out. No socket, thread, clock or GUI inside it, so it is tested with plain calls.
 6. **Nothing is specific to one parameter or one message** unless a view is about that message. The
