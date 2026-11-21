@@ -313,8 +313,16 @@ struct Commit {
     read_back: Option<ReadBack>,
 }
 
+/// After a read-back that differed or did not complete: `MAG_CAL_TYPE` 0 is written once more, so that type 2 stands
+/// only for a set that was read back equal.
+struct Reset {
+    why: String,
+    at: Duration,
+}
+
 enum Run {
     Idle,
+    Reset(Box<Reset>),
     Sampling(Box<Sampling>),
     Commit(Box<Commit>),
 }
@@ -446,7 +454,49 @@ impl Compass {
                 }
             }
             Run::Commit(c) => self.advance_commit(c, state, now),
+            Run::Reset(r) => self.advance_reset(r, state, now),
         }
+    }
+
+    fn begin_reset(&mut self, why: String, now: Duration) {
+        self.outbox.push(Command::SetParam {
+            name: "MAG_CAL_TYPE".to_owned(),
+            value: ParamValue::I32(0),
+        });
+        self.run = Run::Reset(Box::new(Reset { why, at: now }));
+    }
+
+    /// Judges the extra write of `MAG_CAL_TYPE` 0 by its echo, as the others.
+    fn advance_reset(&mut self, r: Box<Reset>, state: &VehicleState, now: Duration) {
+        let unverified = |this: &mut Compass, why: &str| {
+            let mut shown = Shown::new(
+                Tone::Bad,
+                format!(
+                    "Writing the calibration failed: {why}. The vehicle may be using an unverified compass calibration; Discard or a reboot restores the saved values."
+                ),
+            );
+            shown.discard = true;
+            this.shown = Some(shown);
+            this.unsaved = None;
+            this.run = Run::Idle;
+        };
+        match state.params.writes.get("MAG_CAL_TYPE") {
+            Some(WriteStatus::Pending { .. }) => {
+                self.run = Run::Reset(r);
+                return;
+            }
+            Some(WriteStatus::Refused { .. } | WriteStatus::Unanswered { .. }) => {
+                return unverified(self, &r.why);
+            }
+            None => {}
+        }
+        if number(&state.params, "MAG_CAL_TYPE") == Some(0.0) {
+            return self.fail(r.why, false);
+        }
+        if now.saturating_sub(r.at) > WRITE_WAIT + WRITE_WAIT {
+            return unverified(self, &r.why);
+        }
+        self.run = Run::Reset(r);
     }
 
     fn fail(&mut self, why: String, first_write: bool) {
@@ -479,7 +529,7 @@ impl Compass {
             match &table.fetch {
                 FetchStatus::Failed(why) => {
                     let why = format!("the read-back failed: {why}");
-                    return self.fail(why, false);
+                    return self.begin_reset(why, now);
                 }
                 FetchStatus::Complete if values >= table.params.len().max(1) as u64 => {
                     let read: Vec<(&str, f32)> = c
@@ -489,14 +539,14 @@ impl Compass {
                         .filter_map(|(n, _)| Some((*n, number(table, n)? as f32)))
                         .collect();
                     return match verify_read_back(&c.success.plan, &read) {
-                        Err(why) => self.fail(format!("the read-back differs: {why}"), false),
+                        Err(why) => self.begin_reset(format!("the read-back differs: {why}"), now),
                         Ok(()) => self.succeed(&c.success, now),
                     };
                 }
                 _ => {}
             }
             if now.saturating_sub(rb.at) > READ_BACK_WAIT {
-                return self.fail("read-back did not complete".to_string(), false);
+                return self.begin_reset("read-back did not complete".to_string(), now);
             }
             self.run = Run::Commit(c);
             return;
@@ -685,6 +735,9 @@ impl Compass {
                     )
                 };
                 ui.colored_label(YELLOW, text);
+            }
+            Run::Reset(_) => {
+                ui.colored_label(YELLOW, "Marking the compass not calibrated (type 0)");
             }
             Run::Idle => {}
         }

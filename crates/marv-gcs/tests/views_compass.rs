@@ -643,7 +643,7 @@ fn a_link_that_drops_during_the_write_stops_the_commit_with_type_0_and_no_save()
 }
 
 #[test]
-fn a_read_back_that_differs_from_the_plan_names_the_parameter_and_offers_no_save() {
+fn a_read_back_that_differs_from_the_plan_names_the_parameter_writes_type_0_and_offers_no_save() {
     // Every write is answered truly; the list then reports MAG_FLD_INC one degree off.
     let rig = Rig::start_with(
         user(),
@@ -655,13 +655,72 @@ fn a_read_back_that_differs_from_the_plan_names_the_parameter_and_offers_no_save
     );
     let mut window = Window::with_commands(rig.session.clone());
     window.click(GUIDED);
-    window.pump_until(60.0, "a differing read-back", |w| {
-        w.shows("the read-back differs: MAG_FLD_INC reads back")
+    window.pump_until(60.0, "type 0 after a differing read-back", |w| {
+        w.shows("marked not calibrated (type 0)")
     });
 
-    assert!(window.shows("marked not calibrated (type 0)"));
+    assert!(window.shows("the read-back differs: MAG_FLD_INC reads back"));
     assert!(window.shows("Discard or a reboot restores"));
-    assert_eq!(window.set_params().len(), 13);
+    let sent = window.set_params();
+    assert_eq!(sent.len(), 14, "{sent:?}");
+    assert!(
+        sent[13].contains("MAG_CAL_TYPE") && sent[13].contains("I32(0)"),
+        "{}",
+        sent[13]
+    );
+    assert_eq!(rig.param("MAG_CAL_TYPE"), Some(SimValue::Int32(0)));
+    assert!(
+        window
+            .harness
+            .query_all_by_label("Save to flash")
+            .next()
+            .is_none()
+    );
+    assert!(
+        window
+            .harness
+            .query_all_by_label("Discard")
+            .next()
+            .is_some()
+    );
+    assert!(!window.shows(SAVED_TEXT));
+}
+
+#[test]
+fn a_read_back_that_never_completes_tries_type_0_and_says_the_calibration_is_unverified() {
+    let rig = Rig::start(user(), |_| {}, &[]);
+    // The link goes silent right after the 13th write was answered: the list request gets no answer.
+    let vehicle = Arc::clone(&rig.vehicle);
+    let watcher = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while Instant::now() < deadline {
+            let mut v = vehicle.lock().unwrap_or_else(PoisonError::into_inner);
+            if v.param_sets_received() >= 13 {
+                v.set_silent(true);
+                return;
+            }
+            drop(v);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let mut window = Window::with_commands(rig.session.clone());
+    window.click(GUIDED);
+    window.pump_until(60.0, "the list request", |w| {
+        w.forwarded
+            .borrow()
+            .iter()
+            .any(|c| c.starts_with("RefreshParams"))
+    });
+    watcher.join().expect("watcher");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !window.shows("may be using an unverified compass calibration") {
+        assert!(Instant::now() < deadline, "no verdict");
+        window.skip(10.0);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(window.shows("read-back did not complete") || window.shows("the read-back failed"));
+    assert!(window.shows("Discard or a reboot restores the saved values"));
+    assert!(!window.shows("marked not calibrated"));
     assert!(
         window
             .harness
