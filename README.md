@@ -113,7 +113,7 @@ Every button above is a MAVLink command to the flight controller (`docs/link-con
 while a command is running every command button is disabled ("a command is running"), except Cancel
 calibration during a calibration. The Devices tab has Calibrate gyro, Calibrate accelerometer (level) and
 the Compass panel (the guided calibration, and the quick best-effort one, which is command 241 with param2 = 1; an accepted calibration is in use at once but saved only by Save to flash, which the Devices tab offers in a bar until it is done), and the Log tab Restart SD; while the quick compass calibration waits or runs it shows "rotate the vehicle through all
-orientations" next to the status line. The last command, in words ("Gyro calibration: 40 %", "Compass
+orientations" next to the status line. The guided calibration must be finished with the Devices tab showing: if the tab is hidden when the result is ready, the commit fails with its message and nothing is written. The last command, in words ("Gyro calibration: 40 %", "Compass
 calibration: accepted", "Reboot: no answer after 3 sends"), is shown under the buttons of the Parameters, Devices and Link tabs and is
 `VehicleState.command`. The simulator answers them as the vehicle will, and the firmware answers them too.
 

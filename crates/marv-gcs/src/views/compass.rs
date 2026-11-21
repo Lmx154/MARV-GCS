@@ -10,7 +10,7 @@
 //!
 //! `Compass::update` runs every frame for every view (so samples are never lost while another tab shows);
 //! `Compass::ui` runs it too, so a view driven by `ui` alone works. Commands are queued in an outbox that `ui`
-//! sends, so a commit stands still while the Devices tab is hidden (the vehicle stays marked type 0, which is safe).
+//! sends, so a commit cannot send while the Devices tab is hidden; when it fails or ends the outbox is dropped, so no write leaves afterwards.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -478,6 +478,7 @@ impl Compass {
             shown.discard = true;
             this.shown = Some(shown);
             this.unsaved = None;
+            this.outbox.clear();
             this.run = Run::Idle;
         };
         match state.params.writes.get("MAG_CAL_TYPE") {
@@ -516,6 +517,7 @@ impl Compass {
         shown.discard = !first_write;
         self.shown = Some(shown);
         self.unsaved = None;
+        self.outbox.clear();
         self.run = Run::Idle;
     }
 
@@ -704,7 +706,7 @@ impl Compass {
             if actions::button(ui, GUIDED_BUTTON, guided_gate) {
                 self.start(state, now);
             }
-            if actions::button(ui, QUICK_BUTTON, gate) {
+            if actions::button(ui, QUICK_BUTTON, guided_gate) {
                 cx.commands.push(Command::SendCommand {
                     command: MavCmd::MAV_CMD_PREFLIGHT_CALIBRATION,
                     params: [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],

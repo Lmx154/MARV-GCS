@@ -31,6 +31,7 @@ use marv_gcs::views::{self, ViewCtx};
 
 /// How much faster than the wall clock the simulator runs.
 const SPEED: u64 = 8;
+const QUICK: &str = "Quick calibration (best effort)";
 const POLL: Duration = Duration::from_millis(10);
 const SAVED_TEXT: &str = "Compass calibrated (guided): in use now, not saved to flash";
 const GUIDED: &str = "Calibrate compass (guided)";
@@ -211,6 +212,7 @@ struct Window {
     harness: Harness<'static>,
     forwarded: Rc<RefCell<Vec<String>>>,
     offset: Rc<Cell<Duration>>,
+    hidden: Rc<Cell<bool>>,
 }
 
 impl Window {
@@ -225,6 +227,8 @@ impl Window {
     ) -> Window {
         let forwarded: Rc<RefCell<Vec<String>>> = Rc::default();
         let offset: Rc<Cell<Duration>> = Rc::default();
+        let hidden: Rc<Cell<bool>> = Rc::default();
+        let h = hidden.clone();
         let started = Instant::now();
         let mut view = views::all()
             .into_iter()
@@ -237,6 +241,9 @@ impl Window {
                 let state = get();
                 let now = Some(started.elapsed() + o.get());
                 view.update(&state, now);
+                if h.get() {
+                    return;
+                }
                 let mut commands: Vec<Command> = Vec::new();
                 let mut cx = ViewCtx {
                     state: &state,
@@ -257,6 +264,7 @@ impl Window {
             harness,
             forwarded,
             offset,
+            hidden,
         }
     }
 
@@ -736,4 +744,32 @@ fn a_read_back_that_never_completes_tries_type_0_and_says_the_calibration_is_unv
             .is_some()
     );
     assert!(!window.shows(SAVED_TEXT));
+}
+
+#[test]
+fn a_run_accepted_while_the_tab_is_hidden_sends_no_write_when_it_is_shown_again() {
+    let (rig, mut window) = good_rig();
+    let before = rig.params();
+    start_and_wait_for_progress(&mut window);
+    window.hidden.set(true);
+    for _ in 0..1500 {
+        std::thread::sleep(POLL);
+        window.harness.run();
+    }
+    window.skip(100.0);
+    window.hidden.set(false);
+    window.harness.run();
+    window.pump_until(10.0, "the failure", |w| w.shows("got no answer"));
+    std::thread::sleep(Duration::from_millis(500));
+    window.harness.run();
+    assert!(window.set_params().is_empty());
+    assert_eq!(rig.params(), before, "no parameter may change");
+}
+
+#[test]
+fn the_quick_button_is_disabled_while_a_guided_run_is_going() {
+    let (_rig, mut window) = good_rig();
+    assert!(!window.disabled(QUICK));
+    start_and_wait_for_progress(&mut window);
+    assert!(window.disabled(QUICK));
 }
