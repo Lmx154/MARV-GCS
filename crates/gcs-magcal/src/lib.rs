@@ -6,13 +6,22 @@
 //! - [`fit`]: PX4's Levenberg-Marquardt sphere fit, then ellipsoid fit, on raw samples in microtesla.
 //! - [`accept`]: the acceptance checks of the decision's section 4, in its order and with its messages, and
 //!   the scaling of the accepted matrix to the model's field strength.
+//! - [`pose`], [`turn`], [`collect`]: the six poses recognised from the accelerometer, the turn progress of each
+//!   pose's ring, and the kept, thinned samples.
+//! - [`session`]: the procedure as a pure state machine that ends in a refusal message or a parameter write plan.
+//! - [`heading`]: the heading check against GPS course, over recorded data.
 //!
 //! Units: microtesla (uT) for every field, degrees for every angle. HIGHRES_IMU carries gauss: convert with
 //! [`undo::gauss_to_ut`] first.
 
 pub mod accept;
+pub mod collect;
 pub mod fit;
+pub mod heading;
 mod linalg;
+pub mod pose;
+pub mod session;
+pub mod turn;
 pub mod undo;
 pub mod wmm;
 
