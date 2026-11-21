@@ -1154,6 +1154,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "gcs-magcal"
+version = "0.1.0"
+
+[[package]]
 name = "gcs-mavlink"
 version = "0.1.0"
 dependencies = [

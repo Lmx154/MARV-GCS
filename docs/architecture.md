@@ -1,6 +1,6 @@
 # Architecture
 
-The ground station is seven crates. The dependency graph enforces the layers, so a rule that is broken
+The ground station is eight crates. The dependency graph enforces the layers, so a rule that is broken
 does not build or shows up in `cargo tree`.
 
 ```
@@ -13,6 +13,8 @@ does not build or shows up in `cargo tree`.
       serial, TCP, UDP  Read / Write pair      never gcs-mavlink
 
       gcs-dflog (reads DataFlash .BIN logs from a file; depends on no other crate and no external crate)
+      gcs-magcal (compass calibration maths: field model, undo, fit, acceptance; depends on no other crate
+                  and no external crate)
 ```
 
 ## Layer rules
@@ -36,8 +38,10 @@ does not build or shows up in `cargo tree`.
    generic field access.
 7. **The log reader is independent.** `gcs-dflog` reads a file, not a link: it depends on no crate of the
    workspace and on no external crate (the applications use it for the Log tab's review section), and has no GUI.
+8. **The compass calibration maths is pure.** `gcs-magcal` is numbers in, numbers out: no I/O, no clock, no link,
+   no GUI; it depends on no crate of the workspace and on no external crate (std only, its linear algebra is its own).
 
-Check: `cargo tree -p gcs-transport | grep -c mavlink` is 0; `cargo tree -p gcs-mavlink | grep -cE 'serialport|egui|eframe'` is 0; `cargo tree -p gcs-sim | grep -c gcs-mavlink` is 0; `cargo tree -p gcs-dflog -e normal | wc -l` is 1 (the crate has no dependency: only its own line is printed); `cargo tree -p gcs-link -e normal | grep -ciE 'eframe|egui|winit|wgpu|glow'` is 0; `cargo tree -p marv-cli -e normal | grep -ciE 'eframe|egui|winit|wgpu|glow'` is 0 (`crates/marv-cli/tests/dependencies.rs` runs the last two).
+Check: `cargo tree -p gcs-transport | grep -c mavlink` is 0; `cargo tree -p gcs-mavlink | grep -cE 'serialport|egui|eframe'` is 0; `cargo tree -p gcs-sim | grep -c gcs-mavlink` is 0; `cargo tree -p gcs-dflog -e normal | wc -l` is 1 (the crate has no dependency: only its own line is printed); `cargo tree -p gcs-magcal -e normal | wc -l` is 1; `cargo tree -p gcs-link -e normal | grep -ciE 'eframe|egui|winit|wgpu|glow'` is 0; `cargo tree -p marv-cli -e normal | grep -ciE 'eframe|egui|winit|wgpu|glow'` is 0 (`crates/marv-cli/tests/dependencies.rs` runs the last two).
 
 ## How to extend (kept true as the code grows; details in `docs/extending.md`)
 
@@ -155,6 +159,20 @@ pub fn Condition::bind(&self, formats: &[Format]) -> Result<BoundCondition, Cond
 pub fn find_with(reader, &BoundCondition, on_progress) -> io::Result<Option<Found>>; // the intervals
 pub fn export_with(reader, &ExportRequest, on_progress) -> Result<Export, ExportError>; // CSV files, one per type
 pub fn flight_report_with(reader /* Read + Seek */, &ReportInputs, on_progress) -> io::Result<Option<FlightReport>>; // health, flights, motor fit, vibration (second pass over the IMU)
+```
+
+### `gcs-magcal`
+
+```rust
+// Units: uT and degrees. Decision `_plan/decision-compass-cal-20261120.md`, link contract section 16.
+pub fn wmm::field(lat_deg, lon_deg, height_m, decimal_year) -> Result<wmm::Field, wmm::WmmError>;  // WMM2025, NOAA's WMM.COF
+pub struct wmm::Field { pub intensity_ut, pub inclination_deg, pub declination_deg, pub horizontal_ut, pub ned_ut: [f64; 3] }
+pub fn undo::gauss_to_ut(gauss: [f32; 3]) -> [f64; 3];                       // HIGHRES_IMU gauss -> uT
+pub struct undo::Calibration { pub offsets, pub diag, pub offdiag }          // MAG_OFF*, MAG_DIAG*, MAG_ODIAGXY/XZ/YZ
+impl Calibration { fn matrix(&self); fn apply(&self, raw) -> m; fn undo(&self) -> Result<Undo, InvalidMatrix>; }
+impl Undo { fn raw(&self, published_ut) -> [f64; 3]; }                       // r = S^-1 m + o
+pub fn fit::fit(samples_ut: &[[f64; 3]], initial_radius_ut: f64) -> fit::Fit; // PX4 LM: sphere, then ellipsoid
+pub fn accept::accept(&accept::Inputs) -> Result<accept::Accepted, accept::Refusal>;  // section 4, in order
 ```
 
 ### `gcs-sim`

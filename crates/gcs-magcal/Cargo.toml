@@ -1,0 +1,9 @@
+[package]
+name = "gcs-magcal"
+description = "The numerical core of the guided compass calibration: WMM2025, the undo of the calibration in force, the ellipsoid fit and the acceptance checks. Pure, std only."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]

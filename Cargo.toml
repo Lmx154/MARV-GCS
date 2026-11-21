@@ -6,6 +6,7 @@ members = [
     "crates/gcs-link",
     "crates/gcs-sim",
     "crates/gcs-dflog",
+    "crates/gcs-magcal",
     "crates/marv-gcs",
     "crates/marv-cli",
 ]
