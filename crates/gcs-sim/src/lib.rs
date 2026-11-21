@@ -13,10 +13,13 @@
 
 pub mod actions;
 pub mod devices;
+pub mod mag;
 pub mod presets;
 pub mod rcmap;
+pub mod script;
 pub mod signals;
 
+mod fwparams;
 mod logs;
 mod params;
 mod server;

@@ -36,14 +36,19 @@ pub const BATTERY_CA: i16 = 120;
 /// RSSI of RC_CHANNELS (0 to 254; 255 is unknown).
 pub const RC_RSSI: u8 = 200;
 
-/// Constant magnetometer reading in mGauss.
+/// Constant magnetometer reading in mGauss (SCALED_IMU, a stream the real firmware does not send).
 const MAG: [i16; 3] = [210, -30, 420];
 /// Number of HIGHRES_IMU instances: the real firmware sends IMU1 only, as `id` 0.
 pub const HIGHRES_IMU_INSTANCES: u8 = 1;
 /// Standard gravity as the main IMUs measure it, in m/s^2 (z axis, board lying still).
 pub const GRAVITY_MS2: f64 = 9.81;
-/// Constant magnetic field in gauss.
-pub const MAG_GAUSS: [f32; 3] = [0.21, -0.03, 0.42];
+/// The magnetic field of a vehicle lying level facing north with the default environment and calibration
+/// ([`crate::mag`]): the World Magnetic Model at the simulator's position, in gauss.
+pub fn mag_gauss() -> [f32; 3] {
+    let env = crate::mag::MagEnvironment::default();
+    let raw = crate::mag::raw_field_ut(&env, &crate::mag::IDENTITY, 0, 0);
+    crate::mag::published_gauss(raw, [0.0; 3], [1.0; 3], [0.0; 3])
+}
 /// Temperature of the sensors that measure it, in degrees Celsius.
 pub const TEMPERATURE_DEGC: f32 = 25.0;
 
@@ -89,8 +94,9 @@ fn imu_motion_si(now_ms: u64, phase: f64) -> [f64; 6] {
 
 /// HIGHRES_IMU as the real firmware sends it: `id` 0 only (IMU1), anything else is `None`. SI units;
 /// `time_usec` is `now_ms * 1000`; acceleration (see `imu_motion_si`: (0, 0, -9.81) m/s^2 plus sines up to
-/// 0.3 m/s^2), rotation (sines of a few mrad/s), temperature 25.0 degC and the magnetic field
-/// (0.21, -0.03, 0.42) gauss in `xmag`, `ymag`, `zmag`; the pressure fields are NaN and their
+/// 0.3 m/s^2), rotation (sines of a few mrad/s), temperature 25.0 degC and the magnetic field of
+/// [`mag_gauss`] in `xmag`, `ymag`, `zmag` (the vehicle replaces it with the model of [`crate::mag`] and its
+/// calibration parameters); the pressure fields are NaN and their
 /// `fields_updated` bits clear.
 pub fn highres_imu(id: u8, now_ms: u64) -> Option<HIGHRES_IMU_DATA> {
     use HighresImuUpdatedFlags as F;
@@ -99,6 +105,7 @@ pub fn highres_imu(id: u8, now_ms: u64) -> Option<HIGHRES_IMU_DATA> {
     }
     let nan = f32::NAN;
     let m = imu_motion_si(now_ms, 0.0);
+    let mag = mag_gauss();
     Some(HIGHRES_IMU_DATA {
         time_usec: now_ms * 1000,
         xacc: m[0] as f32,
@@ -107,9 +114,9 @@ pub fn highres_imu(id: u8, now_ms: u64) -> Option<HIGHRES_IMU_DATA> {
         xgyro: m[3] as f32,
         ygyro: m[4] as f32,
         zgyro: m[5] as f32,
-        xmag: MAG_GAUSS[0],
-        ymag: MAG_GAUSS[1],
-        zmag: MAG_GAUSS[2],
+        xmag: mag[0],
+        ymag: mag[1],
+        zmag: mag[2],
         abs_pressure: nan,
         diff_pressure: nan,
         pressure_alt: nan,
@@ -451,7 +458,20 @@ mod tests {
         assert_close(d.ygyro, 0.003_989_980);
         assert_close(d.zgyro, 0.001_795_416);
         assert_eq!(d.temperature, 25.0);
-        assert_eq!((d.xmag, d.ymag, d.zmag), (0.21, -0.03, 0.42));
+        // The magnetometer is no longer a constant: level facing north it reads the model's field here.
+        let model = gcs_magcal::wmm::field(
+            f64::from(LATITUDE_E7) / 1e7,
+            f64::from(LONGITUDE_E7) / 1e7,
+            f64::from(ALTITUDE_MM) / 1e3,
+            crate::mag::DECIMAL_YEAR,
+        )
+        .unwrap();
+        for (got, want) in [d.xmag, d.ymag, d.zmag].into_iter().zip(model.ned_ut) {
+            assert!(
+                (f64::from(got) - want / 100.0).abs() < 1e-6,
+                "{got} gauss against {want} uT"
+            );
+        }
         assert_eq!(
             nan_fields(&d),
             ["abs_pressure", "diff_pressure", "pressure_alt"]

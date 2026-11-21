@@ -144,7 +144,14 @@ fn highres_imu_on_the_wire_is_imu1_with_the_magnetometer() {
         near(a.xgyro, 0.002_397_13) && near(a.ygyro, 0.003_989_98) && near(a.zgyro, 0.001_795_42)
     );
     assert_eq!(a.temperature, 25.0);
-    assert_eq!((a.xmag, a.ymag, a.zmag), (0.21, -0.03, 0.42));
+    // The magnetometer is no longer a constant: level facing north it reads the model's field here.
+    let model = gcs_magcal::wmm::field(47.3977, 8.5456, 488.0, gcs_sim::mag::DECIMAL_YEAR).unwrap();
+    for (got, want) in [a.xmag, a.ymag, a.zmag].into_iter().zip(model.ned_ut) {
+        assert!(
+            (f64::from(got) - want / 100.0).abs() < 1e-6,
+            "{got} gauss against {want} uT"
+        );
+    }
     assert!(
         [a.abs_pressure, a.diff_pressure, a.pressure_alt]
             .iter()

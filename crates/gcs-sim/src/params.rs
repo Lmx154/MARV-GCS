@@ -106,8 +106,9 @@ impl ParamValue {
 /// The parameters of a default [`SimConfig`](crate::SimConfig): the link contract allows only
 /// INT32 and REAL32, so every integer parameter (a bool or an enum too) is an `Int32`. There is one
 /// read-only parameter and one name of exactly 16 characters. The 44 parameters of the RC block
-/// (`docs/link-contract.md` section 2) follow, then the sensor block (`crate::presets`) comes
-/// last, so no other parameter changes its index.
+/// (`docs/link-contract.md` section 2) follow, then the sensor block (`crate::presets`), then the 22
+/// parameters of indices 70 to 91 (`crate::fwparams`: `GPS_RATE_MS` is index 80, the compass block 81 to 91;
+/// 92 in all), so no other parameter changes its index.
 pub fn default_params() -> Vec<SimParam> {
     let p = |name: &str, value, read_only| SimParam {
         name: name.to_string(),
@@ -131,6 +132,7 @@ pub fn default_params() -> Vec<SimParam> {
     ];
     params.extend(crate::rcmap::rc_params());
     params.extend(crate::presets::preset_params());
+    params.extend(crate::fwparams::fw_params());
     params
 }
 

@@ -20,9 +20,9 @@
 use mavlink::dialects::common::{
     ATTITUDE_DATA, AUTOPILOT_VERSION_DATA, COMMAND_ACK_DATA, ESC_INFO_DATA, ESC_STATUS_DATA,
     GPS_RAW_INT_DATA, HEARTBEAT_DATA, HIGHRES_IMU_DATA, LOG_DATA_DATA, LOG_ENTRY_DATA,
-    MANUAL_CONTROL_DATA, MavMessage, MavProtocolCapability, MavResult, MavSeverity,
-    PARAM_VALUE_DATA, RC_CHANNELS_DATA, SCALED_IMU2_DATA, SCALED_PRESSURE_DATA, STATUSTEXT_DATA,
-    SYS_STATUS_DATA,
+    MANUAL_CONTROL_DATA, MavMessage, MavModeFlag, MavProtocolCapability, MavResult, MavSeverity,
+    MavState, PARAM_VALUE_DATA, RC_CHANNELS_DATA, SCALED_IMU2_DATA, SCALED_PRESSURE_DATA,
+    STATUSTEXT_DATA, SYS_STATUS_DATA,
 };
 use mavlink::types::CharArray;
 use mavlink::{MAVLinkV2MessageRaw, MavHeader, MavlinkVersion, Message, MessageData};
@@ -33,9 +33,11 @@ use crate::logs::{
     self, FRAME_BYTES, HEARTBEAT_LOST_MS, LogDataDrop, Outbox, Queued, SLOT_FRAMES, SLOT_MS,
     SimLog, Transfer,
 };
+use crate::mag::{self, MagEnvironment};
 use crate::params::{ParamEncoding, ParamValue, SimParam, default_params, other_type_params};
 use crate::presets::{self, Verdict};
-use crate::{rcmap, signals};
+use crate::script::CalibrationUser;
+use crate::{fwparams, rcmap, signals};
 
 /// MAVLink 2 start-of-frame marker.
 const STX_V2: u8 = 0xFD;
@@ -100,6 +102,12 @@ pub struct SimConfig {
     pub logs: Vec<SimLog>,
     /// LOG_DATA frames to lose, by offset, to test a ground station's re-requests.
     pub drop_log_data: Vec<LogDataDrop>,
+    /// What the magnetometer is in ([`crate::mag`]): the vehicle's true soft and hard iron, noise, a magnet,
+    /// an anomaly site. The default is a clean sensor.
+    pub mag: MagEnvironment,
+    /// A scripted user who performs the guided compass calibration ([`crate::script`]); `None`: the vehicle
+    /// lies level facing north, with the small motion of [`signals`].
+    pub user: Option<CalibrationUser>,
 }
 
 impl SimConfig {
@@ -175,6 +183,8 @@ impl Default for SimConfig {
             stale_echo_delay_ms: 0,
             logs: logs::default_logs(),
             drop_log_data: Vec::new(),
+            mag: MagEnvironment::default(),
+            user: None,
         }
     }
 }
@@ -255,6 +265,8 @@ pub struct SimVehicle {
     logs_out: Outbox,
     /// Time of the last HEARTBEAT from another system.
     last_heartbeat_ms: Option<u64>,
+    /// Whether HEARTBEAT shows the vehicle armed ([`SimVehicle::set_armed`]).
+    armed: bool,
 }
 
 /// A COMMAND_LONG read from its bytes: the command is a number, not a dialect enum.
@@ -337,7 +349,14 @@ impl SimVehicle {
                 ..Outbox::default()
             },
             last_heartbeat_ms: None,
+            armed: false,
         }
+    }
+
+    /// Arms or disarms the vehicle: HEARTBEAT carries `MAV_MODE_FLAG_SAFETY_ARMED` and state ACTIVE while armed.
+    /// Nothing else changes (a test double, to stop a calibration in the middle).
+    pub fn set_armed(&mut self, armed: bool) {
+        self.armed = armed;
     }
 
     /// Current value of the parameter `name`.
@@ -444,6 +463,27 @@ impl SimVehicle {
             }
             return messages;
         }
+        if message_id == HEARTBEAT_DATA::ID {
+            let mut messages = signals::messages(message_id, now_ms);
+            if self.armed {
+                for message in &mut messages {
+                    if let MavMessage::HEARTBEAT(beat) = message {
+                        beat.base_mode |= MavModeFlag::MAV_MODE_FLAG_SAFETY_ARMED;
+                        beat.system_status = MavState::MAV_STATE_ACTIVE;
+                    }
+                }
+            }
+            return messages;
+        }
+        if message_id == HIGHRES_IMU_DATA::ID {
+            let mut messages = signals::messages(message_id, now_ms);
+            for message in &mut messages {
+                if let MavMessage::HIGHRES_IMU(imu) = message {
+                    self.shape_highres_imu(imu, now_ms);
+                }
+            }
+            return messages;
+        }
         if message_id != MANUAL_CONTROL_DATA::ID {
             return signals::messages(message_id, now_ms);
         }
@@ -452,6 +492,82 @@ impl SimVehicle {
             .map(MavMessage::MANUAL_CONTROL)
             .into_iter()
             .collect()
+    }
+
+    /// The magnetometer of HIGHRES_IMU: the raw field of [`SimConfig::mag`] in the attitude of the scripted
+    /// user (level facing north without one), with the calibration in force applied ([`crate::mag`]). With a
+    /// scripted user the accelerometer and gyro are those of its motion.
+    fn shape_highres_imu(&self, imu: &mut HIGHRES_IMU_DATA, now_ms: u64) {
+        let motion = self.config.user.as_ref().map(|u| u.motion(now_ms));
+        let attitude = motion.as_ref().map_or(mag::IDENTITY, |m| m.body_from_ned);
+        let raw = mag::raw_field_ut(&self.config.mag, &attitude, now_ms, self.config.seed);
+        let f = |name: &str, default: f32| match self.param(name) {
+            Some(ParamValue::Real32(v)) => v,
+            _ => default,
+        };
+        let m = mag::published_gauss(
+            raw,
+            [f("MAG_OFFX", 0.0), f("MAG_OFFY", 0.0), f("MAG_OFFZ", 0.0)],
+            [
+                f("MAG_DIAGX", 1.0),
+                f("MAG_DIAGY", 1.0),
+                f("MAG_DIAGZ", 1.0),
+            ],
+            [
+                f("MAG_ODIAGXY", 0.0),
+                f("MAG_ODIAGXZ", 0.0),
+                f("MAG_ODIAGYZ", 0.0),
+            ],
+        );
+        (imu.xmag, imu.ymag, imu.zmag) = (m[0], m[1], m[2]);
+        if let Some(motion) = motion {
+            (imu.xacc, imu.yacc, imu.zacc) = (
+                motion.accel[0] as f32,
+                motion.accel[1] as f32,
+                motion.accel[2] as f32,
+            );
+            (imu.xgyro, imu.ygyro, imu.zgyro) = (
+                motion.gyro[0] as f32,
+                motion.gyro[1] as f32,
+                motion.gyro[2] as f32,
+            );
+        }
+    }
+
+    /// What an action does to the parameters when it ends. The quick compass calibration (decision section
+    /// 6) is given the raw field, so its offsets are the middle of the raw ellipsoid, which for a user who
+    /// turns the vehicle through every direction is `o_true`; it writes them with S = identity,
+    /// `MAG_CAL_TYPE` 1 and `MAG_FLD_UT` 0. The calibration reset puts `MAG_OFF*` and indices 81 to 89 at
+    /// their defaults.
+    fn finish_action(&mut self, command: u16, params: &[f32; 7]) {
+        let mut writes: Vec<(&str, ParamValue)> = Vec::new();
+        if actions::is_quick_compass(command, params) {
+            let o = self
+                .config
+                .mag
+                .o_true
+                .map(|v| (v as f32).clamp(-200.0, 200.0));
+            writes.extend([
+                ("MAG_OFFX", ParamValue::Real32(o[0])),
+                ("MAG_OFFY", ParamValue::Real32(o[1])),
+                ("MAG_OFFZ", ParamValue::Real32(o[2])),
+                ("MAG_DIAGX", ParamValue::Real32(1.0)),
+                ("MAG_DIAGY", ParamValue::Real32(1.0)),
+                ("MAG_DIAGZ", ParamValue::Real32(1.0)),
+                ("MAG_ODIAGXY", ParamValue::Real32(0.0)),
+                ("MAG_ODIAGXZ", ParamValue::Real32(0.0)),
+                ("MAG_ODIAGYZ", ParamValue::Real32(0.0)),
+                ("MAG_CAL_TYPE", ParamValue::Int32(1)),
+                ("MAG_FLD_UT", ParamValue::Real32(0.0)),
+            ]);
+        } else if actions::is_calibration_reset(command, params) {
+            writes = fwparams::calibration_defaults();
+        }
+        for (name, value) in writes {
+            if let Some(p) = self.config.params.iter_mut().find(|p| p.name == name) {
+                p.value = value;
+            }
+        }
     }
 
     /// Sends the parameters of a PARAM_REQUEST_LIST in index order, one per millisecond.
@@ -653,7 +769,11 @@ impl SimVehicle {
                     let new = param
                         .value
                         .same_type_from_field(d.param_value, self.config.param_encoding);
-                    match presets::judge(&self.config.params, index, new) {
+                    let verdict = match fwparams::judge(&self.config.params, index, new) {
+                        Verdict::Plain => presets::judge(&self.config.params, index, new),
+                        decided => decided,
+                    };
+                    match verdict {
                         Verdict::Plain => changes.push((index, new)),
                         Verdict::Refuse(text) => refusal = Some(text),
                         Verdict::Accept { notice: text } => {
@@ -970,7 +1090,7 @@ impl SimVehicle {
             let Some(due) = action.next_due(now_ms) else {
                 break;
             };
-            let (command, from) = (action.command, action.from);
+            let (command, from, params) = (action.command, action.from, action.params);
             match due {
                 actions::Due::Progress(percent) => {
                     self.push_ack(
@@ -983,6 +1103,7 @@ impl SimVehicle {
                 }
                 actions::Due::Final => {
                     self.action = None;
+                    self.finish_action(command, &params);
                     if !self.config.never_final_ack {
                         self.push_ack(command, MavResult::MAV_RESULT_ACCEPTED, 0, from, out);
                     }

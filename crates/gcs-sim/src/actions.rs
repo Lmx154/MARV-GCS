@@ -31,6 +31,16 @@ pub const ACTION_MS: u64 = 2_000;
 const RESTART: [u8; 7] = [1, 2, 3, 4, 5, 6, 9];
 const SELF_TEST: [u8; 3] = [1, 2, 4];
 
+/// Whether a calibration command is the quick compass calibration (param2 = 1, the others 0).
+pub fn is_quick_compass(command: u16, params: &[f32; 7]) -> bool {
+    command == PREFLIGHT_CALIBRATION && only(params, 1, 1.0)
+}
+
+/// Whether a storage command is the calibration reset (param1 = 3).
+pub fn is_calibration_reset(command: u16, params: &[f32; 7]) -> bool {
+    command == PREFLIGHT_STORAGE && params[0] == 3.0
+}
+
 /// What the vehicle makes of a command and its parameters before it looks whether it is busy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Admission {

@@ -33,5 +33,5 @@ fn every_firmware_parameter_the_simulator_reports_has_an_entry() {
         }
     }
     assert_eq!(params.len(), SIM_ONLY.len() + known);
-    assert_eq!(known, 44 + 13);
+    assert_eq!(known, 44 + 13 + 22);
 }

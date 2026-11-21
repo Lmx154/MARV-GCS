@@ -20,7 +20,7 @@ pub struct ParamInfo {
 }
 
 /// The number of parameters of the firmware (`fw_settings::COUNT`).
-pub const COUNT: usize = 80;
+pub const COUNT: usize = 92;
 
 const fn p(
     name: &'static str,
@@ -314,9 +314,86 @@ macro_rules! rc_channels {
 /// The RC channels' parameters, in the firmware's order.
 pub static RC: [ParamInfo; 40] = rc_channels!("1", "2", "3", "4", "5", "6", "7", "8");
 
-/// Every entry, [`GENERAL`] then [`RC`].
+/// `GPS_RATE_MS` (index 80) and the compass calibration block (indices 81 to 91), `docs/link-contract.md`
+/// section 16 and the firmware's `gnss.rs` and `mag.rs`.
+pub static COMPASS: [ParamInfo; 12] = [
+    p(
+        "GPS_RATE_MS",
+        "GNSS position fix interval.",
+        "ms",
+        "100, 200, 500 or 1000",
+    ),
+    p(
+        "MAG_DIAGX",
+        "Compass soft-iron matrix, diagonal term X: the calibrated field is S (raw - offsets); set by the compass calibration.",
+        "",
+        "0.2 to 5.0",
+    ),
+    p(
+        "MAG_DIAGY",
+        "Compass soft-iron matrix, diagonal term Y: the calibrated field is S (raw - offsets); set by the compass calibration.",
+        "",
+        "0.2 to 5.0",
+    ),
+    p(
+        "MAG_DIAGZ",
+        "Compass soft-iron matrix, diagonal term Z: the calibrated field is S (raw - offsets); set by the compass calibration.",
+        "",
+        "0.2 to 5.0",
+    ),
+    p(
+        "MAG_ODIAGXY",
+        "Compass soft-iron matrix, off-diagonal term XY (the matrix is symmetric); set by the compass calibration.",
+        "",
+        "-1.0 to 1.0",
+    ),
+    p(
+        "MAG_ODIAGXZ",
+        "Compass soft-iron matrix, off-diagonal term XZ (the matrix is symmetric); set by the compass calibration.",
+        "",
+        "-1.0 to 1.0",
+    ),
+    p(
+        "MAG_ODIAGYZ",
+        "Compass soft-iron matrix, off-diagonal term YZ (the matrix is symmetric); set by the compass calibration.",
+        "",
+        "-1.0 to 1.0",
+    ),
+    p(
+        "MAG_CAL_TYPE",
+        "How the compass was calibrated: 0 none or unknown, 1 quick (best effort), 2 guided.",
+        "",
+        "0 to 2",
+    ),
+    p(
+        "MAG_FLD_UT",
+        "Expected field strength at the calibration site, from the World Magnetic Model; 0 means not set.",
+        "uT",
+        "0 to 95 (0 = not set)",
+    ),
+    p(
+        "MAG_FLD_INC",
+        "Expected field inclination at the calibration site, positive down; meaningful only when MAG_FLD_UT is above 0.",
+        "deg",
+        "-90 to 90",
+    ),
+    p(
+        "MAG_HLT_STR",
+        "Compass health tolerance of the field strength, in percent of MAG_FLD_UT.",
+        "%",
+        "1 to 50",
+    ),
+    p(
+        "MAG_HLT_INC",
+        "Compass health tolerance of the field inclination.",
+        "deg",
+        "1 to 45",
+    ),
+];
+
+/// Every entry, [`GENERAL`], [`RC`] then [`COMPASS`].
 pub fn entries() -> impl Iterator<Item = &'static ParamInfo> {
-    GENERAL.iter().chain(RC.iter())
+    GENERAL.iter().chain(RC.iter()).chain(COMPASS.iter())
 }
 
 /// The entry of a parameter, or `None` for a name the table does not know.

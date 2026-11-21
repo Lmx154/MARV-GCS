@@ -12,3 +12,4 @@ path = "src/main.rs"
 
 [dependencies]
 mavlink.workspace = true
+gcs-magcal = { path = "../gcs-magcal" }

@@ -135,9 +135,9 @@ fn read_value(d: &PARAM_VALUE_DATA, encoding: ParamEncoding) -> ParamValue {
         other => panic!("unexpected type {other:?}"),
     }
 }
-
+/// The parameters of a default configuration: the 13 of the first block, the 44 of the RC block, the 13 of the sensor block and the 22 of indices 70 to 91 (`fwparams`). A listing takes 2 ms a parameter.
 /// The parameters of a default configuration: the 13 of the first block, the 44 of the RC block and the 13 of the sensor block.
-const DEFAULT_PARAMS: usize = 13 + 44 + 13;
+const DEFAULT_PARAMS: usize = 13 + 44 + 13 + 22;
 
 fn vehicle_with(encoding: ParamEncoding) -> SimVehicle {
     SimVehicle::new(SimConfig {
@@ -222,7 +222,7 @@ fn with_every_param_type_adds_one_of_each_other_type() {
             param_encoding: encoding,
             ..config.clone()
         });
-        let got = values(&run(&mut vehicle, 0, 160, &request_list(1, 1)));
+        let got = values(&run(&mut vehicle, 0, 220, &request_list(1, 1)));
         assert_eq!(got.len(), DEFAULT_PARAMS + 5);
         for (d, want) in got.iter().zip(&config.params) {
             assert_eq!(name(d), want.name);
@@ -245,7 +245,7 @@ fn with_every_param_type_adds_one_of_each_other_type() {
 #[test]
 fn bytewise_values_decode_back_exactly() {
     let mut vehicle = vehicle_with(ParamEncoding::Bytewise);
-    let bytes = run(&mut vehicle, 0, 160, &request_list(1, 1));
+    let bytes = run(&mut vehicle, 0, 220, &request_list(1, 1));
     let got = values(&bytes);
     let defaults = SimConfig::default().params;
     assert_eq!(got.len(), defaults.len());
@@ -269,7 +269,7 @@ fn bytewise_values_decode_back_exactly() {
 #[test]
 fn ccast_values_are_float_conversions() {
     let mut vehicle = vehicle_with(ParamEncoding::CCast);
-    let bytes = run(&mut vehicle, 0, 160, &request_list(1, 1));
+    let bytes = run(&mut vehicle, 0, 220, &request_list(1, 1));
     let got = values(&bytes);
     let defaults = SimConfig::default().params;
     assert_eq!(got.len(), defaults.len());
@@ -304,7 +304,7 @@ fn param_type_always_states_the_real_type() {
             param_encoding: encoding,
             ..SimConfig::default().with_every_param_type()
         });
-        let got = values(&run(&mut vehicle, 0, 160, &request_list(0, 0)));
+        let got = values(&run(&mut vehicle, 0, 220, &request_list(0, 0)));
         let ty = |n: &str| got.iter().find(|d| name(d) == n).unwrap().param_type;
         for n in [
             "IMU_RATE_HZ",
