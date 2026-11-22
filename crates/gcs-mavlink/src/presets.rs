@@ -2,16 +2,16 @@
 //! section 13). A preset is the station setting several parameters at once, as a verified
 //! combination; the firmware knows no preset.
 //!
-//! One table per sensor (IMU1, IMU2, BARO, MAG): the parameters a preset sets and, for each preset,
+//! One table per sensor (IMU1, IMU2, BARO, MAG, GNSS): the parameters a preset sets and, for each preset,
 //! its values, its summary, and the physical values and 0 to 100 scores of its radar chart axes.
 //! Data only: nothing here maps values to a driver configuration or checks them.
 
 mod tables;
 
-pub use tables::{BARO, IMU1, IMU2, MAG};
+pub use tables::{BARO, GNSS, IMU1, IMU2, MAG};
 
-/// The four sensors in device order (IMU1, IMU2, BARO, MAG).
-pub static SENSORS: [&Sensor; 4] = [&IMU1, &IMU2, &BARO, &MAG];
+/// The five sensors in device order (IMU1, IMU2, BARO, MAG, GNSS).
+pub static SENSORS: [&Sensor; 5] = [&IMU1, &IMU2, &BARO, &MAG, &GNSS];
 
 /// `MARV_DEVICE_IMU1` of the `marv` dialect.
 pub const MARV_DEVICE_IMU1: u8 = 1;
@@ -21,6 +21,8 @@ pub const MARV_DEVICE_IMU2: u8 = 2;
 pub const MARV_DEVICE_BARO: u8 = 3;
 /// `MARV_DEVICE_MAG` of the `marv` dialect.
 pub const MARV_DEVICE_MAG: u8 = 4;
+/// `MARV_DEVICE_GNSS` of the `marv` dialect.
+pub const MARV_DEVICE_GNSS: u8 = 5;
 
 /// A parameter value, typed as the firmware's parameters are.
 #[derive(Clone, Copy, Debug, PartialEq)]

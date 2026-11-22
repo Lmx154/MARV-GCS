@@ -2,7 +2,7 @@ use super::*;
 
 /// `fw_settings::TABLE` of the firmware, in its order. A new firmware parameter is a name to add
 /// here and an entry to add to the table.
-const FIRMWARE_NAMES: [&str; 92] = [
+const FIRMWARE_NAMES: [&str; 93] = [
     "BARO_ODR_HZ",
     "BARO_OSR_P",
     "BARO_OSR_T",
@@ -95,12 +95,13 @@ const FIRMWARE_NAMES: [&str; 92] = [
     "MAG_FLD_INC",
     "MAG_HLT_STR",
     "MAG_HLT_INC",
+    "GPS_GNSS",
 ];
 
 #[test]
 fn the_table_has_exactly_the_firmwares_80_names() {
-    // The name is the original's: the firmware's table has grown to 92 (indices 80 to 91 appended).
-    assert_eq!(COUNT, 92);
+    // The name is the original's: the firmware's table has grown to 93 (indices 80 to 92 appended).
+    assert_eq!(COUNT, 93);
     assert_eq!(FIRMWARE_NAMES.len(), COUNT);
     let mut have: Vec<&str> = entries().map(|i| i.name).collect();
     assert_eq!(have.len(), COUNT);

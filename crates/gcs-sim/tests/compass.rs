@@ -119,9 +119,9 @@ impl Rig {
 }
 
 #[test]
-fn the_table_has_92_parameters_and_the_firmwares_80_to_91() {
+fn the_table_has_93_parameters_and_the_firmwares_80_to_92() {
     let p = default_params();
-    assert_eq!(p.len(), 92);
+    assert_eq!(p.len(), 93);
     // No existing index moved: the first and last of the old blocks.
     assert_eq!(
         (p[0].name.as_str(), p[69].name.as_str()),
@@ -141,6 +141,7 @@ fn the_table_has_92_parameters_and_the_firmwares_80_to_91() {
         (89, "MAG_FLD_INC", F(0.0)),
         (90, "MAG_HLT_STR", F(10.0)),
         (91, "MAG_HLT_INC", F(10.0)),
+        (92, "GPS_GNSS", I(0)),
     ];
     for (i, name, default) in expected {
         assert_eq!(
@@ -217,6 +218,8 @@ fn ranges_are_the_whole_check_and_a_refusal_keeps_the_value() {
 #[test]
 fn gps_rate_ms_takes_100_200_500_1000_only() {
     let mut rig = Rig::new(SimConfig::default());
+    let (_, texts) = rig.write("GPS_GNSS", PlanValue::I32(1));
+    assert!(texts.is_empty(), "{texts:?}");
     for ok in [100, 500, 1000, 200] {
         let (_, texts) = rig.write("GPS_RATE_MS", PlanValue::I32(ok));
         assert!(texts.is_empty(), "{ok}: {texts:?}");
@@ -231,6 +234,33 @@ fn gps_rate_ms_takes_100_200_500_1000_only() {
         let (_, texts) = rig.write("GPS_RATE_MS", PlanValue::I32(bad));
         assert_eq!(texts, ["GPS_RATE_MS: out of range"], "{bad}");
     }
+}
+
+#[test]
+fn gps_gnss_takes_0_to_2_and_a_rate_of_100_needs_it_at_1() {
+    let mut rig = Rig::new(SimConfig::default());
+    let (_, texts) = rig.write("GPS_GNSS", PlanValue::I32(3));
+    assert_eq!(texts, ["GPS_GNSS: out of range"]);
+    // 100 ms is refused at GPS_GNSS 0 and 2, and the text names both values.
+    for gnss in [0, 2] {
+        rig.write("GPS_GNSS", PlanValue::I32(gnss));
+        let (_, texts) = rig.write("GPS_RATE_MS", PlanValue::I32(100));
+        assert_eq!(
+            texts,
+            [format!("GPS_RATE_MS 100 needs GPS_GNSS 1, is {gnss}")]
+        );
+        assert_eq!(rig.v.param("GPS_RATE_MS"), Some(ParamValue::Int32(200)));
+    }
+    rig.write("GPS_GNSS", PlanValue::I32(1));
+    let (_, texts) = rig.write("GPS_RATE_MS", PlanValue::I32(100));
+    assert!(texts.is_empty(), "{texts:?}");
+    // and GPS_GNSS cannot leave 1 while the rate is 100 ms.
+    let (_, texts) = rig.write("GPS_GNSS", PlanValue::I32(2));
+    assert_eq!(texts, ["GPS_GNSS 2: GPS_RATE_MS 100 needs 1"]);
+    assert_eq!(rig.v.param("GPS_GNSS"), Some(ParamValue::Int32(1)));
+    rig.write("GPS_RATE_MS", PlanValue::I32(200));
+    let (_, texts) = rig.write("GPS_GNSS", PlanValue::I32(2));
+    assert!(texts.is_empty(), "{texts:?}");
 }
 
 #[test]
@@ -256,7 +286,7 @@ fn the_calibration_reset_returns_81_to_89_and_the_offsets_to_default_and_keeps_t
     );
     let _ = rig.advance(2_100, &[]);
     let defaults = default_params();
-    for p in &defaults[70..92] {
+    for p in &defaults[70..93] {
         let kept = matches!(
             p.name.as_str(),
             "MAG_HLT_STR" | "MAG_HLT_INC" | "GPS_RATE_MS"

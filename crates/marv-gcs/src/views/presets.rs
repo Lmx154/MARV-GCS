@@ -21,7 +21,8 @@ use eframe::egui::{
 use gcs_mavlink::Command;
 use gcs_mavlink::dialect::MavCmd;
 use gcs_mavlink::presets::{
-    Axis, Kind, MARV_DEVICE_IMU1, MARV_DEVICE_IMU2, Preset, SENSORS, Sensor, Value, preset,
+    Axis, Kind, MARV_DEVICE_BARO, MARV_DEVICE_GNSS, MARV_DEVICE_IMU1, MARV_DEVICE_IMU2,
+    MARV_DEVICE_MAG, Preset, SENSORS, Sensor, Value, preset,
 };
 use gcs_mavlink::services::params::{ParamTable, ParamValue, WriteStatus};
 use gcs_mavlink::{CommandStatus, VehicleState};
@@ -74,8 +75,10 @@ pub fn sensor_name(sensor: &Sensor) -> &'static str {
     match sensor.device {
         MARV_DEVICE_IMU1 => "IMU1",
         MARV_DEVICE_IMU2 => "IMU2",
-        3 => "BARO",
-        _ => "MAG",
+        MARV_DEVICE_BARO => "BARO",
+        MARV_DEVICE_MAG => "MAG",
+        MARV_DEVICE_GNSS => "GNSS",
+        _ => "?",
     }
 }
 
@@ -98,9 +101,9 @@ const COMPARE: Color32 = theme::ACCENT;
 /// The chart's rings, in percent of the radius.
 const RINGS: [u8; 4] = [25, 50, 75, 100];
 
-/// The four cards, in the crate's device order.
+/// The five cards, in the crate's device order.
 pub struct SensorPresets {
-    cards: [SensorPreset; 4],
+    cards: [SensorPreset; 5],
     debug: DebugFlag,
 }
 
@@ -324,6 +327,16 @@ pub fn write_plan(
         }
     }
     down.extend(up);
+    // GNSS: the firmware refuses a rate of 100 ms unless GPS_GNSS is 1, so a faster rate (a lower
+    // interval) is written after the constellation set and a slower one before it.
+    let at = |name: &str| down.iter().position(|(f, _)| *f == name);
+    if let (Some(rate), Some(gnss)) = (at("GPS_RATE_MS"), at("GPS_GNSS")) {
+        let have = table.params.get("GPS_RATE_MS")?.value(table.encoding);
+        let faster = down[rate].1.as_f64() < have.as_f64();
+        if faster != (gnss < rate) {
+            down.swap(rate, gnss);
+        }
+    }
     Some(down)
 }
 

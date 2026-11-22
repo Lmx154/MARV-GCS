@@ -4,10 +4,12 @@
 //! datasheets (`_plan/facts-sensor-presets.md`, which cites them):
 //! BMP581 Table 7 (datasheet text lines 849-865), the highest ODR for each OSR_P and OSR_T;
 //! BMM350 Table 5 (datasheet text lines 712-730), the highest averaging for each ODR.
+//! GNSS is the exception to down-then-up: the firmware refuses a rate of 100 ms unless GPS_GNSS is 1, so
+//! the constellation set is written before a faster rate and after a slower one.
 
 use std::collections::BTreeMap;
 
-use gcs_mavlink::presets::{BARO, MAG, Sensor, Value};
+use gcs_mavlink::presets::{BARO, GNSS, MAG, Sensor, Value};
 use gcs_mavlink::services::params::{Param, ParamTable, ParamType};
 use marv_gcs::views::presets::write_plan;
 
@@ -48,6 +50,13 @@ fn mag_valid(v: &BTreeMap<String, f64>) -> bool {
         8.0
     };
     [1.0, 2.0, 4.0, 8.0].contains(&v["MAG_AVG"]) && v["MAG_AVG"] <= most
+}
+
+/// The firmware's cross rule: a fix interval of 100 ms needs GPS_GNSS 1.
+fn gnss_valid(v: &BTreeMap<String, f64>) -> bool {
+    [100.0, 200.0, 500.0, 1000.0].contains(&v["GPS_RATE_MS"])
+        && [0.0, 1.0, 2.0].contains(&v["GPS_GNSS"])
+        && (v["GPS_RATE_MS"] != 100.0 || v["GPS_GNSS"] == 1.0)
 }
 
 fn values(sensor: &Sensor, id: i32) -> BTreeMap<String, f64> {
@@ -94,7 +103,7 @@ fn table_of(v: &BTreeMap<String, f64>) -> ParamTable {
 
 /// Every ordered pair of presets: the plan from one to the other, every intermediate combination
 /// valid, the end equal to the target, and only the changed fields written.
-fn check(sensor: &Sensor, valid: fn(&BTreeMap<String, f64>) -> bool) -> usize {
+fn check(sensor: &Sensor, valid: fn(&BTreeMap<String, f64>) -> bool, down_first: bool) -> usize {
     let mut intermediates = 0;
     for from in sensor.presets {
         for to in sensor.presets {
@@ -116,7 +125,7 @@ fn check(sensor: &Sensor, valid: fn(&BTreeMap<String, f64>) -> bool) -> usize {
                 let new = value.as_f64();
                 let up = new > now[*name];
                 assert!(
-                    up || !seen_up,
+                    up || !seen_up || !down_first,
                     "{} -> {}: a lowering after a raising",
                     from.name,
                     to.name
@@ -139,12 +148,37 @@ fn check(sensor: &Sensor, valid: fn(&BTreeMap<String, f64>) -> bool) -> usize {
 
 #[test]
 fn every_intermediate_combination_of_every_baro_transition_is_valid() {
-    assert!(check(&BARO, baro_valid) > 0);
+    assert!(check(&BARO, baro_valid, true) > 0);
 }
 
 #[test]
 fn every_intermediate_combination_of_every_mag_transition_is_valid() {
-    assert!(check(&MAG, mag_valid) > 0);
+    assert!(check(&MAG, mag_valid, true) > 0);
+}
+
+#[test]
+fn every_intermediate_combination_of_every_gnss_transition_is_valid() {
+    assert!(check(&GNSS, gnss_valid, false) > 0);
+}
+
+/// The six transitions between the three presets, as the exact writes in order.
+#[test]
+fn the_six_gnss_transitions_write_in_these_orders() {
+    type Writes = &'static [(&'static str, f64)];
+    let expect: [(i32, i32, Writes); 6] = [
+        (1, 2, &[("GPS_GNSS", 1.0), ("GPS_RATE_MS", 100.0)]),
+        (2, 1, &[("GPS_RATE_MS", 200.0), ("GPS_GNSS", 0.0)]),
+        (1, 3, &[("GPS_GNSS", 2.0)]),
+        (3, 1, &[("GPS_GNSS", 0.0)]),
+        (2, 3, &[("GPS_RATE_MS", 200.0), ("GPS_GNSS", 2.0)]),
+        (3, 2, &[("GPS_GNSS", 1.0), ("GPS_RATE_MS", 100.0)]),
+    ];
+    for (from, to, writes) in expect {
+        let target = GNSS.presets.iter().find(|p| p.id == to).unwrap();
+        let plan = write_plan(&table_of(&values(&GNSS, from)), &GNSS, target).expect("plan");
+        let got: Vec<(&str, f64)> = plan.iter().map(|(n, v)| (*n, v.as_f64())).collect();
+        assert_eq!(got, writes, "{from} -> {to}");
+    }
 }
 
 #[test]

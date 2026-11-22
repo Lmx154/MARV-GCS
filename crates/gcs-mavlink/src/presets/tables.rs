@@ -1,6 +1,6 @@
 use super::{
-    Axis, Kind, MARV_DEVICE_BARO, MARV_DEVICE_IMU1, MARV_DEVICE_IMU2, MARV_DEVICE_MAG, Preset,
-    Sensor, Value,
+    Axis, Kind, MARV_DEVICE_BARO, MARV_DEVICE_GNSS, MARV_DEVICE_IMU1, MARV_DEVICE_IMU2,
+    MARV_DEVICE_MAG, Preset, Sensor, Value,
 };
 
 const fn i(v: i32) -> Value {
@@ -69,6 +69,18 @@ const MAG_AXES: &[Axis] = &[
     axis("Fast response", "ms", None, 1000.0, 1.0, Kind::Bound),
     axis("Update rate", "Hz", None, 1.0, 500.0, Kind::Plain),
     axis("Light load", "B/s", None, 10_000.0, 10.0, Kind::Plain),
+];
+
+/// GNSS axes. Update rate: 1 Hz (the slowest fix rate the card's family ever had) to 10 Hz (the fastest
+/// preset). Fast response: BARO and MAG's ends. Light load: UART bytes per second, receiver to board;
+/// x0 is the line's capacity at 115200 8N1 (11 520 B/s), x100 one NAV-PVT frame per second (100 B/s).
+/// Sky coverage: constellations enabled, from one to four (GPS, Galileo, BeiDou B1C, GLONASS; QZSS is
+/// counted with GPS and not on its own).
+const GNSS_AXES: &[Axis] = &[
+    axis("Update rate", "Hz", None, 1.0, 10.0, Kind::Plain),
+    axis("Fast response", "ms", None, 1000.0, 1.0, Kind::Bound),
+    axis("Light load", "B/s", None, 11_520.0, 100.0, Kind::Plain),
+    axis("Sky coverage", "systems", None, 1.0, 4.0, Kind::Plain),
 ];
 
 /// IMU1, ICM-45686.
@@ -257,6 +269,47 @@ pub static MAG: Sensor = Sensor {
             &[95.0, 20.0, 50.0, 1_150.0],
             &[Some(225.0), None, None, None],
             &[51, 57, 63, 31],
+        ),
+    ],
+};
+
+/// GNSS, u-blox SAM-M10Q. Physical values: Update rate = 1000 / GPS_RATE_MS; Fast response =
+/// GPS_RATE_MS (a fix is at most one interval old at the receiver; latency excluded, BOUND); Light load
+/// = 100 B per NAV-PVT frame (6 B header + 92 B payload + 2 B checksum) x rate; Sky coverage = the
+/// constellations of GPS_GNSS (0: GPS, Galileo, BeiDou B1C, QZSS = 4; 1: GPS, Galileo = 2; 2: GPS,
+/// Galileo, GLONASS = 3). The firmware refuses 100 ms unless GPS_GNSS is 1.
+pub static GNSS: Sensor = Sensor {
+    device: MARV_DEVICE_GNSS,
+    fields: &["GPS_RATE_MS", "GPS_GNSS"],
+    default_id: 1,
+    axes: GNSS_AXES,
+    presets: &[
+        preset(
+            1,
+            "Flight",
+            "5 Hz, GPS+Galileo+BeiDou+QZSS",
+            &[i(200), i(0)],
+            &[5.0, 200.0, 500.0, 4.0],
+            &[None, None, None, None],
+            &[70, 23, 66, 100],
+        ),
+        preset(
+            2,
+            "Fast",
+            "10 Hz, GPS+Galileo",
+            &[i(100), i(1)],
+            &[10.0, 100.0, 1_000.0, 2.0],
+            &[None, None, None, None],
+            &[100, 33, 51, 50],
+        ),
+        preset(
+            3,
+            "Max sky",
+            "5 Hz, GPS+Galileo+GLONASS",
+            &[i(200), i(2)],
+            &[5.0, 200.0, 500.0, 3.0],
+            &[None, None, None, None],
+            &[70, 23, 66, 79],
         ),
     ],
 };

@@ -3,18 +3,19 @@
 //! `_plan/datasheets-text/` of the drivers workspace).
 
 use gcs_mavlink::presets::{
-    BARO, IMU1, IMU2, Kind, MAG, MARV_DEVICE_BARO, MARV_DEVICE_IMU1, MARV_DEVICE_IMU2,
-    MARV_DEVICE_MAG, SENSORS, Sensor, Value,
+    BARO, GNSS, IMU1, IMU2, Kind, MAG, MARV_DEVICE_BARO, MARV_DEVICE_GNSS, MARV_DEVICE_IMU1,
+    MARV_DEVICE_IMU2, MARV_DEVICE_MAG, SENSORS, Sensor, Value,
     Value::{F32, I32},
     preset,
 };
 
-fn all() -> [(&'static str, &'static Sensor); 4] {
+fn all() -> [(&'static str, &'static Sensor); 5] {
     [
         ("IMU1", &IMU1),
         ("IMU2", &IMU2),
         ("BARO", &BARO),
         ("MAG", &MAG),
+        ("GNSS", &GNSS),
     ]
 }
 
@@ -41,14 +42,16 @@ fn devices_and_fields() {
     assert_eq!(IMU2.device, MARV_DEVICE_IMU2);
     assert_eq!(BARO.device, MARV_DEVICE_BARO);
     assert_eq!(MAG.device, MARV_DEVICE_MAG);
+    assert_eq!(GNSS.device, MARV_DEVICE_GNSS);
     assert_eq!(
         [
             MARV_DEVICE_IMU1,
             MARV_DEVICE_IMU2,
             MARV_DEVICE_BARO,
-            MARV_DEVICE_MAG
+            MARV_DEVICE_MAG,
+            MARV_DEVICE_GNSS
         ],
-        [1, 2, 3, 4]
+        [1, 2, 3, 4, 5]
     );
     assert_eq!(IMU1.fields, ["IMU1_ACC_FS", "IMU1_GYR_FS", "IMU1_ODR_HZ"]);
     assert_eq!(IMU2.fields, ["IMU2_ACC_FS", "IMU2_GYR_FS", "IMU2_ODR_HZ"]);
@@ -63,11 +66,12 @@ fn devices_and_fields() {
         ]
     );
     assert_eq!(MAG.fields, ["MAG_ODR_HZ", "MAG_AVG"]);
+    assert_eq!(GNSS.fields, ["GPS_RATE_MS", "GPS_GNSS"]);
 }
 
 #[test]
-fn sensors_list_is_the_four_in_device_order() {
-    assert_eq!(SENSORS.len(), 4);
+fn sensors_list_is_the_five_in_device_order() {
+    assert_eq!(SENSORS.len(), 5);
     let devices: Vec<u8> = SENSORS.iter().map(|s| s.device).collect();
     assert_eq!(
         devices,
@@ -75,7 +79,8 @@ fn sensors_list_is_the_four_in_device_order() {
             MARV_DEVICE_IMU1,
             MARV_DEVICE_IMU2,
             MARV_DEVICE_BARO,
-            MARV_DEVICE_MAG
+            MARV_DEVICE_MAG,
+            MARV_DEVICE_GNSS
         ]
     );
     for (listed, (_, s)) in SENSORS.iter().zip(all()) {
@@ -87,7 +92,12 @@ fn sensors_list_is_the_four_in_device_order() {
 fn ids_are_contiguous_from_one_and_default_is_one() {
     for (name, s) in all() {
         let ids: Vec<i32> = s.presets.iter().map(|p| p.id).collect();
-        assert_eq!(ids, [1, 2, 3, 4], "{name} ids");
+        let want: &[i32] = if s.device == MARV_DEVICE_GNSS {
+            &[1, 2, 3]
+        } else {
+            &[1, 2, 3, 4]
+        };
+        assert_eq!(ids, want, "{name} ids");
         assert_eq!(s.default_id, 1, "{name} default id");
         assert!(preset(s, s.default_id).is_some(), "{name} default exists");
     }
@@ -101,6 +111,10 @@ fn lookup_by_id() {
         }
         assert!(preset(s, 0).is_none(), "{name} Custom has no preset");
         assert!(preset(s, 5).is_none(), "{name} id 5");
+        assert!(
+            preset(s, 4).is_some() != (s.device == MARV_DEVICE_GNSS),
+            "{name} id 4"
+        );
         assert!(preset(s, -1).is_none(), "{name} id -1");
     }
 }
@@ -185,6 +199,15 @@ fn axes_names_units_ends_and_kinds() {
             ("Light load", "B/s", None, 10_000.0, 10.0, Plain),
         ],
     );
+    expect(
+        &GNSS,
+        &[
+            ("Update rate", "Hz", None, 1.0, 10.0, Plain),
+            ("Fast response", "ms", None, 1000.0, 1.0, Bound),
+            ("Light load", "B/s", None, 11_520.0, 100.0, Plain),
+            ("Sky coverage", "systems", None, 1.0, 4.0, Plain),
+        ],
+    );
 }
 
 // ---- golden ids, names, values (ids and names never change meaning: invariant I10) -----------
@@ -192,7 +215,7 @@ fn axes_names_units_ends_and_kinds() {
 #[test]
 fn golden_ids_names_values_summaries() {
     type Row = (i32, &'static str, &'static str, &'static [Value]);
-    let golden: [(&Sensor, &[Row]); 4] = [
+    let golden: [(&Sensor, &[Row]); 5] = [
         (
             &IMU1,
             &[
@@ -299,6 +322,24 @@ fn golden_ids_names_values_summaries() {
                 ),
             ],
         ),
+        (
+            &GNSS,
+            &[
+                (
+                    1,
+                    "Flight",
+                    "5 Hz, GPS+Galileo+BeiDou+QZSS",
+                    &[I32(200), I32(0)],
+                ),
+                (2, "Fast", "10 Hz, GPS+Galileo", &[I32(100), I32(1)]),
+                (
+                    3,
+                    "Max sky",
+                    "5 Hz, GPS+Galileo+GLONASS",
+                    &[I32(200), I32(2)],
+                ),
+            ],
+        ),
     ];
     for (s, rows) in golden {
         assert_eq!(s.presets.len(), rows.len());
@@ -347,7 +388,7 @@ fn value_types_match_the_firmware_parameters() {
 /// defaults).
 #[test]
 fn preset_one_equals_the_firmware_field_defaults() {
-    let defaults: [(&Sensor, &[(&str, i32)]); 4] = [
+    let defaults: [(&Sensor, &[(&str, i32)]); 5] = [
         (
             &IMU1,
             &[
@@ -375,6 +416,7 @@ fn preset_one_equals_the_firmware_field_defaults() {
             ],
         ),
         (&MAG, &[("MAG_ODR_HZ", 100), ("MAG_AVG", 2)]),
+        (&GNSS, &[("GPS_RATE_MS", 200), ("GPS_GNSS", 0)]),
     ];
     for (s, d) in defaults {
         let p = preset(s, s.default_id).unwrap();
@@ -590,12 +632,41 @@ fn mag(p: &gcs_mavlink::presets::Preset) -> Computed {
     }
 }
 
+fn gnss(p: &gcs_mavlink::presets::Preset) -> Computed {
+    let v = ints(p.values);
+    let (interval, set) = (f64::from(v[0]), v[1]);
+    let rate = 1000.0 / interval;
+    // A fix is at most one interval old at the receiver (latency excluded).
+    let delay = interval;
+    // One NAV-PVT frame is 6 B header + 92 B payload + 2 B checksum (u-blox M10 interface description).
+    let load = rate * (6.0 + 92.0 + 2.0);
+    // GPS_GNSS 0: GPS, Galileo, BeiDou B1C, QZSS (QZSS counted with GPS: 4 systems); 1: GPS, Galileo;
+    // 2: GPS, Galileo, GLONASS.
+    let systems = match set {
+        0 => 4.0,
+        1 => 2.0,
+        2 => 3.0,
+        _ => panic!("GPS_GNSS {set}"),
+    };
+    Computed {
+        physical: vec![rate, delay, load, systems],
+        physical2: vec![None; 4],
+        scores: vec![
+            score(fraction(rate, 1.0, 10.0)),
+            score(fraction(delay, 1000.0, 1.0)),
+            score(fraction(load, 11_520.0, 100.0)),
+            score(fraction(systems, 1.0, 4.0)),
+        ],
+    }
+}
+
 fn compute(device: u8, p: &gcs_mavlink::presets::Preset) -> Computed {
     match device {
         MARV_DEVICE_IMU1 => imu(&ICM, p),
         MARV_DEVICE_IMU2 => imu(&LSM, p),
         MARV_DEVICE_BARO => baro(p),
         MARV_DEVICE_MAG => mag(p),
+        MARV_DEVICE_GNSS => gnss(p),
         _ => unreachable!(),
     }
 }
@@ -640,10 +711,10 @@ fn every_physical_value_and_score_is_recomputed() {
 /// The scores of the design's section 2 (independent script), preset by preset.
 #[test]
 fn scores_equal_the_design_section_two() {
-    let design: [(&Sensor, [&[u8]; 4]); 4] = [
+    let design: [(&Sensor, &[&[u8]]); 5] = [
         (
             &IMU1,
-            [
+            &[
                 &[75, 80, 48, 59, 38],
                 &[25, 20, 49, 59, 38],
                 &[100, 100, 43, 59, 38],
@@ -652,7 +723,7 @@ fn scores_equal_the_design_section_two() {
         ),
         (
             &IMU2,
-            [
+            &[
                 // amended 2026-11-17: 27 bytes measured (Light load 32 and 42, was 36 and 46)
                 &[75, 80, 51, 59, 32],
                 &[25, 40, 51, 59, 32],
@@ -662,7 +733,7 @@ fn scores_equal_the_design_section_two() {
         ),
         (
             &BARO,
-            [
+            &[
                 &[34, 65, 63, 40],
                 &[26, 73, 74, 30],
                 &[62, 28, 52, 50],
@@ -671,17 +742,27 @@ fn scores_equal_the_design_section_two() {
         ),
         (
             &MAG,
-            [
+            &[
                 &[36, 77, 74, 21],
                 &[36, 77, 85, 11],
                 &[44, 67, 74, 21],
                 &[51, 57, 63, 31],
             ],
         ),
+        (
+            &GNSS,
+            &[
+                // Update rate, Fast response, Light load, Sky coverage (independent: ln fractions of the ends)
+                &[70, 23, 66, 100],
+                &[100, 33, 51, 50],
+                &[70, 23, 66, 79],
+            ],
+        ),
     ];
     for (s, rows) in design {
-        for (p, row) in s.presets.iter().zip(rows) {
-            assert_eq!(p.scores, row, "{} {}", s.fields[0], p.id);
+        assert_eq!(s.presets.len(), rows.len());
+        for (p, row) in s.presets.iter().zip(rows.iter()) {
+            assert_eq!(p.scores, *row, "{} {}", s.fields[0], p.id);
         }
     }
 }

@@ -135,9 +135,9 @@ fn read_value(d: &PARAM_VALUE_DATA, encoding: ParamEncoding) -> ParamValue {
         other => panic!("unexpected type {other:?}"),
     }
 }
-/// The parameters of a default configuration: the 13 of the first block, the 44 of the RC block, the 13 of the sensor block and the 22 of indices 70 to 91 (`fwparams`). A listing takes 2 ms a parameter.
+/// The parameters of a default configuration: the 13 of the first block, the 44 of the RC block, the 13 of the sensor block and the 23 of indices 70 to 92 (`fwparams`). A listing takes 2 ms a parameter.
 /// The parameters of a default configuration: the 13 of the first block, the 44 of the RC block and the 13 of the sensor block.
-const DEFAULT_PARAMS: usize = 13 + 44 + 13 + 22;
+const DEFAULT_PARAMS: usize = 13 + 44 + 13 + 23;
 
 fn vehicle_with(encoding: ParamEncoding) -> SimVehicle {
     SimVehicle::new(SimConfig {

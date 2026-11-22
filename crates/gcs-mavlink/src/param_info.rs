@@ -20,7 +20,7 @@ pub struct ParamInfo {
 }
 
 /// The number of parameters of the firmware (`fw_settings::COUNT`).
-pub const COUNT: usize = 92;
+pub const COUNT: usize = 93;
 
 const fn p(
     name: &'static str,
@@ -314,9 +314,9 @@ macro_rules! rc_channels {
 /// The RC channels' parameters, in the firmware's order.
 pub static RC: [ParamInfo; 40] = rc_channels!("1", "2", "3", "4", "5", "6", "7", "8");
 
-/// `GPS_RATE_MS` (index 80) and the compass calibration block (indices 81 to 91), `docs/link-contract.md`
+/// `GPS_RATE_MS` (index 80), the compass calibration block (indices 81 to 91) and `GPS_GNSS` (index 92), `docs/link-contract.md`
 /// section 16 and the firmware's `gnss.rs` and `mag.rs`.
-pub static COMPASS: [ParamInfo; 12] = [
+pub static COMPASS: [ParamInfo; 13] = [
     p(
         "GPS_RATE_MS",
         "GNSS position fix interval.",
@@ -388,6 +388,12 @@ pub static COMPASS: [ParamInfo; 12] = [
         "Compass health tolerance of the field inclination.",
         "deg",
         "1 to 45",
+    ),
+    p(
+        "GPS_GNSS",
+        "GNSS constellation set: 0 GPS+Galileo+BeiDou B1C+QZSS, 1 GPS+Galileo, 2 GPS+Galileo+GLONASS. 100 ms fix interval needs 1.",
+        "",
+        "0 to 2",
     ),
 ];
 

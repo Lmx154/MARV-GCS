@@ -844,7 +844,12 @@ The station sends a spin once and does not re-send it when no answer comes; a st
 ### 16. Compass calibration (amendment 2026-11-20, `_plan/decision-compass-cal-20261120.md`)
 **Parameters.** 11 parameters appended after index 79, so no existing index moves; with index 80 (`GPS_RATE_MS`, I32,
 default 200, allowed 100, 200, 500, 1000, firmware branch `gnss-presets`; its section is not written here) the count
-goes to 92. Indices 81-89 are "calibration" parameters: command 245 with param1 = 3 returns each of them to its default.
+goes to 92. Amendment 2026-11-22 (u-blox SAM-M10Q, firmware branch `gnss-m10`, `_plan/decision-gnss-m10-20261122.md`):
+index 92 `GPS_GNSS` (I32, default 0, range 0..2, Live: the receiver is re-configured on the write, no reboot; 0 = GPS +
+Galileo + BeiDou B1C + QZSS, 1 = GPS + Galileo, 2 = GPS + Galileo + GLONASS) takes the count to 93. The firmware refuses
+a `GPS_RATE_MS` faster than the constellation set allows: 100 ms only with `GPS_GNSS` 1, with a text that names both
+values. The index of `GPS_GNSS` here is the station's and simulator's assumption (appended last) until the firmware's
+table is final. Indices 81-89 are "calibration" parameters: command 245 with param1 = 3 returns each of them to its default.
 All are Live (applied at once, saved only by 245 param1 = 1).
 
 | Index | Name | Type, unit | Default | Range | Reset by calibration reset |
@@ -931,10 +936,13 @@ the next id. Nothing is added to the link: parameter metadata stays "Not now" (s
 What a preset changes. IMU presets vary only the accelerometer range, the gyro range and the output data rate (both
 sensors of a chip at one rate); everything else is as before in every preset (internal clock, INT1 latched data-ready,
 single-sample reads, no FIFO, chip filters off). BARO presets: rate, pressure and temperature oversampling, pressure and
-temperature IIR. MAG presets: rate and averaging. None for GNSS and BATT.
+temperature IIR. MAG presets: rate and averaging. GNSS presets (amendment 2026-11-22, owner's choice "Rate +
+constellations"; it lifts the 2026-11-17 rule that no preset sets the constellations): the fix interval `GPS_RATE_MS`
+and the constellation set `GPS_GNSS`. None for BATT.
 
 The chart (radar). Axes, more is better on every axis. IMU1 and IMU2 (pentagon): Accel range, Gyro range, Low noise,
-Bandwidth, Light load. BARO and MAG (diamond): Low noise, Fast response, Update rate, Light load.
+Bandwidth, Light load. BARO and MAG (diamond): Low noise, Fast response, Update rate, Light load. GNSS (diamond):
+Update rate, Fast response, Light load, Sky coverage.
 
 Score of an axis: `s = round_half_up(100 * clamp(ln(x / x0) / ln(x100 / x0), 0, 1))`, a log scale between two fixed
 ends x0 (score 0) and x100 (score 100), the same ends for both IMUs. IMU Low noise is the mean of two fractions:
@@ -1010,10 +1018,32 @@ MAG, BMM350 (normal mode, all axes, data-ready pulsed).
 | 3 | Low noise | 100 | 4 | 44 (134 nT, 318 z) | 67 (<= 10 ms) | 74 | 21 (2 300 B/s) |
 | 4 | Ultra low noise | 50 | 8 | 51 (95 nT, 225 z) | 57 (<= 20 ms) | 63 | 31 (1 150 B/s) |
 
+GNSS (device 5, u-blox SAM-M10Q; fields `GPS_RATE_MS`, `GPS_GNSS`; default preset 1 = the firmware defaults 200 / 0).
+Physical values: Update rate = 1000 / `GPS_RATE_MS`, Hz. Fast response = `GPS_RATE_MS`, ms, BOUND (a fix is at most one
+interval old at the receiver; latency excluded). Light load = 100 B per NAV-PVT frame (6 B header + 92 B payload + 2 B
+checksum, u-blox M10 interface description) x rate, B/s, receiver to board. Sky coverage = the number of constellations
+enabled (QZSS counted with GPS, not on its own): 4, 2, 3.
+
+| Sensor | Axis | Quantity x | x0 (0) | x100 (100) |
+|---|---|---|---|---|
+| GNSS | Update rate | fixes per second | 1 | 10 |
+| GNSS | Fast response | interval, ms | 1000 | 1 |
+| GNSS | Light load | UART bytes per second | 11 520 (115200 8N1) | 100 (one frame per second) |
+| GNSS | Sky coverage | constellations | 1 | 4 |
+
+| Id | Name | GPS_RATE_MS | GPS_GNSS | Update rate | Fast response (BOUND) | Light load | Sky coverage |
+|---|---|---|---|---|---|---|---|
+| 1 | Flight (default) | 200 | 0 | 70 (5 Hz) | 23 (<= 200 ms) | 66 (500 B/s) | 100 (4) |
+| 2 | Fast | 100 | 1 | 100 (10 Hz) | 33 (<= 100 ms) | 51 (1 000 B/s) | 50 (2) |
+| 3 | Max sky | 200 | 2 | 70 (5 Hz) | 23 (<= 200 ms) | 66 (500 B/s) | 79 (3) |
+
+GNSS summaries: "5 Hz, GPS+Galileo+BeiDou+QZSS", "10 Hz, GPS+Galileo", "5 Hz, GPS+Galileo+GLONASS". GNSS has three
+presets (ids 1 to 3); the other sensors have four.
+
 Summaries for the cards (crate `summary`): IMU "+-16 g, +-2000 dps, 800 Hz" etc.; BARO "50 Hz, x16/x2, no filter"; MAG
 "100 Hz, average of 2".
 
-The station (Devices tab, a "Sensor presets" section above the health table; four cards IMU1, IMU2, BARO, MAG)
+The station (Devices tab, a "Sensor presets" section above the health table; five cards IMU1, IMU2, BARO, MAG, GNSS)
 - Each card: the preset picker (names from the table), the chart, the summary line, the physical value of every axis
   with its unit and its MODEL or BOUND tag, one status line. Cards show on Operate when the parameter list is present,
   otherwise "parameters not loaded".
@@ -1025,7 +1055,12 @@ The station (Devices tab, a "Sensor presets" section above the health table; fou
   highest ODR falls as OSR_P or OSR_T rises) and BMM350 Table 5 (the highest averaging falls as ODR rises) only
   forbid raising an OSR or an averaging above what the ODR allows, or raising an ODR above what the OSR allows; the
   IIR and the IMU fields are unconstrained. Lowering an ODR, an OSR or an averaging therefore never makes a valid
-  combination invalid, and the first group never does; the second group ends on a valid combination.
+  combination invalid, and the first group never does; the second group ends on a valid combination. GNSS is the one
+  exception, because its fields are tied: the firmware refuses 100 ms unless `GPS_GNSS` is 1. The card therefore writes
+  `GPS_GNSS` before a faster rate (a lower `GPS_RATE_MS`) and after a slower one: Flight to Fast writes `GPS_GNSS` 1
+  then `GPS_RATE_MS` 100; Fast to Flight writes `GPS_RATE_MS` 200 then `GPS_GNSS` 0; Max sky to Fast writes `GPS_GNSS`
+  1 then `GPS_RATE_MS` 100; Fast to Max sky writes `GPS_RATE_MS` 200 then `GPS_GNSS` 2; Flight and Max sky differ in
+  `GPS_GNSS` only. Every intermediate combination is valid. BARO, MAG and GNSS show "Applied in RAM; not saved".
 - The card judges the result from each write's echo (the vehicle's PARAM_VALUE after the write; the vehicle answers
   every PARAM_SET with exactly one, section 2) compared with the table. Every write answered and every field equal:
   BARO and MAG show "Applied in RAM; not saved", and Save to flash (command 245 with param1 = 1) as on the Radio tab.
@@ -1046,4 +1081,5 @@ The station (Devices tab, a "Sensor presets" section above the health table; fou
 - Operate and Configure: Apply, Save, Save and reboot and the Custom edits are Configure controls, shown disabled with
   the reason on Operate (section 9); Apply is also disabled while a calibration runs.
 
-The simulator (`gcs-sim`) has the six IMU parameters (Reboot class, the "applies after reboot" text) and the BARO and MAG fields at the Flight / Balanced values, range-checked only (a test double); it does not use the table.
+The simulator (`gcs-sim`) enforces the GNSS cross rule (`GPS_RATE_MS` 100 needs `GPS_GNSS` 1, in both directions, with a
+text that names both values) and has the six IMU parameters (Reboot class, the "applies after reboot" text) and the BARO and MAG fields at the Flight / Balanced values, range-checked only (a test double); it does not use the table.

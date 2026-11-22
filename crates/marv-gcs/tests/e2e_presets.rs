@@ -15,7 +15,7 @@ use eframe::egui;
 use eframe::egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use gcs_mavlink::presets::{BARO, IMU1, SENSORS, Value, preset};
+use gcs_mavlink::presets::{BARO, GNSS, IMU1, SENSORS, Value, preset};
 use gcs_mavlink::services::params::FetchStatus;
 use gcs_mavlink::{Access, Command, LinkStatus, Session, SessionConfig, VehicleState};
 use gcs_sim::{ParamValue, SimConfig, SimVehicle};
@@ -360,4 +360,51 @@ fn imu1_smooth_is_pending_until_save_and_reboot_which_sends_245_then_246() {
     assert!(commands[1].contains("[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]"));
     // The simulator does not reboot: the stored values are as they were.
     assert_eq!(rig.param("IMU1_ODR_HZ"), Some(ParamValue::Int32(400)));
+}
+
+/// GNSS Fast and back: the simulator enforces the firmware's rule that 100 ms needs GPS_GNSS 1, so the
+/// writes only succeed in the order the card sends them (the constellation set first for the faster
+/// rate, the rate first for the slower one).
+#[test]
+fn gnss_fast_and_flight_are_applied_in_an_order_the_cross_rule_accepts() {
+    let rig = Rig::start();
+    let mut window = Window::open(rig.session.clone());
+    for (name, id) in [("Fast", 2), ("Flight", 1)] {
+        window
+            .harness
+            .get_all_by_role(Role::ComboBox)
+            .nth(4)
+            .expect("the GNSS drop-down")
+            .click();
+        window.harness.run();
+        window
+            .harness
+            .get_all_by_role_and_label(Role::Button, name)
+            .next()
+            .expect(name)
+            .click();
+        window.harness.run();
+        window.forwarded.borrow_mut().clear();
+        window.click_nth("Apply", 4);
+        let sent = window.forwarded.borrow().clone();
+        let order: [&str; 2] = if id == 2 {
+            ["GPS_GNSS", "GPS_RATE_MS"]
+        } else {
+            ["GPS_RATE_MS", "GPS_GNSS"]
+        };
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        for (s, field) in sent.iter().zip(order) {
+            assert!(s.starts_with("SetParam") && s.contains(field), "{s}");
+        }
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while !window.shows(NOT_SAVED) {
+            assert!(Instant::now() < deadline, "{name}: never shown as applied");
+            std::thread::sleep(POLL);
+            window.harness.run();
+        }
+        let chosen = preset(&GNSS, id).expect("preset");
+        for (field, want) in GNSS.fields.iter().zip(chosen.values) {
+            assert_eq!(stored(&rig, field), *want, "{name} {field}");
+        }
+    }
 }

@@ -131,7 +131,7 @@ impl Rig {
         self.harness.query_all_by_label_contains(text).count()
     }
 
-    /// The `n`th node with this exact label (cards in order IMU1, IMU2, BARO, MAG).
+    /// The `n`th node with this exact label (cards in order IMU1, IMU2, BARO, MAG, GNSS).
     fn nth<'a>(&'a self, label: &'a str, n: usize) -> egui_kittest::Node<'a> {
         self.harness
             .get_all_by_label(label)
@@ -192,16 +192,22 @@ fn name_of(sensor: &Sensor, id: i32) -> &'static str {
 const BARO_CARD: usize = 2;
 
 #[test]
-fn four_cards_show_the_crates_names_summaries_and_physical_values() {
+fn five_cards_show_the_crates_names_summaries_and_physical_values() {
     let rig = Rig::new(Access::Configure, loaded());
     for (i, sensor) in SENSORS.iter().enumerate() {
         assert_eq!(rig.shown(i), name_of(sensor, 1), "card {i}");
         assert!(rig.has(preset(sensor, 1).unwrap().summary), "card {i}");
     }
-    for title in ["IMU1 preset", "IMU2 preset", "BARO preset", "MAG preset"] {
+    for title in [
+        "IMU1 preset",
+        "IMU2 preset",
+        "BARO preset",
+        "MAG preset",
+        "GNSS preset",
+    ] {
         assert!(rig.has(title), "{title}");
     }
-    assert_eq!(rig.harness.get_all_by_role(Role::ComboBox).count(), 4);
+    assert_eq!(rig.harness.get_all_by_role(Role::ComboBox).count(), 5);
     // IMU: the accelerometer's second value and the model tag; BARO: the altitude.
     assert!(rig.has("Low noise: 0.078 dps, 1.61 mg (model)"));
     assert!(rig.has("Accel range: 16 g"));
@@ -666,7 +672,7 @@ fn debug_on(rig: &mut Rig) {
 #[test]
 fn custom_is_offered_only_while_the_debug_switch_is_on_and_the_switch_starts_off() {
     let mut rig = Rig::new(Access::Configure, loaded());
-    for card in 0..4 {
+    for card in 0..SENSORS.len() {
         rig.combo(card).click();
         rig.harness.run();
         assert!(
@@ -677,7 +683,7 @@ fn custom_is_offered_only_while_the_debug_switch_is_on_and_the_switch_starts_off
         rig.harness.run();
     }
     debug_on(&mut rig);
-    for card in 0..4 {
+    for card in 0..SENSORS.len() {
         rig.combo(card).click();
         rig.harness.run();
         assert!(
@@ -702,8 +708,8 @@ fn choosing_custom_debug_shows_the_field_editors_and_sends_nothing() {
     assert!(rig.commands.borrow().is_empty());
     assert_eq!(
         rig.harness.get_all_by_label("Apply").count(),
-        3,
-        "the other three cards have their Apply; the card of Custom has none"
+        4,
+        "the other four cards have their Apply; the card of Custom has none"
     );
     for field in BARO.fields {
         assert!(rig.has(&format!("value of {field}")), "{field}");
@@ -856,7 +862,7 @@ fn custom_is_shown_read_only_with_the_picker_usable_and_an_unloaded_list_says_so
     assert_eq!(writes_of(&rig), [("MAG_AVG".to_string(), 2.0)]);
     drop(rig);
     let rig = Rig::new(Access::Configure, ParamTable::default());
-    assert_eq!(rig.count(NOT_LOADED_TEXT), 4);
+    assert_eq!(rig.count(NOT_LOADED_TEXT), 5);
     assert!(rig.harness.query_by_label("Apply").is_none());
 }
 
@@ -938,7 +944,7 @@ fn numbers_are_shown_with_a_few_digits_and_no_trailing_zeros() {
 #[test]
 fn the_parameters_tab_shows_governed_fields_read_only_with_a_note_until_the_debug_switch_is_on() {
     let mut pair = pair(loaded());
-    for title in ["BARO (5)", "IMU1 (3)", "IMU2 (3)", "MAG (2)"] {
+    for title in ["BARO (5)", "IMU1 (3)", "IMU2 (3)", "MAG (2)", "GPS (2)"] {
         if let Some(header) = pair.params.query_by_label(title) {
             header.click();
             pair.params.run();
@@ -962,8 +968,8 @@ fn the_parameters_tab_shows_governed_fields_read_only_with_a_note_until_the_debu
         pair.params
             .query_all_by_label_contains(SET_IN_DEVICES_TEXT)
             .count()
-            >= 13,
-        "the note beside each of the 13 fields"
+            >= 15,
+        "the note beside each of the 15 fields"
     );
     pair.devices.get_by_label(DEBUG_TEXT).click();
     pair.devices.run();
