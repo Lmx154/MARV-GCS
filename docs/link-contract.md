@@ -845,11 +845,10 @@ The station sends a spin once and does not re-send it when no answer comes; a st
 **Parameters.** 11 parameters appended after index 79, so no existing index moves; with index 80 (`GPS_RATE_MS`, I32,
 default 200, allowed 100, 200, 500, 1000, firmware branch `gnss-presets`; its section is not written here) the count
 goes to 92. Amendment 2026-11-22 (u-blox SAM-M10Q, firmware branch `gnss-m10`, `_plan/decision-gnss-m10-20261122.md`):
-index 92 `GPS_GNSS` (I32, default 0, range 0..2, Live: the receiver is re-configured on the write, no reboot; 0 = GPS +
+index 92 `GPS_GNSS` (I32, default 0, range 0..2, Configure: the receiver is re-configured on the write, no reboot; 0 = GPS +
 Galileo + BeiDou B1C + QZSS, 1 = GPS + Galileo, 2 = GPS + Galileo + GLONASS) takes the count to 93. The firmware refuses
 a `GPS_RATE_MS` faster than the constellation set allows: 100 ms only with `GPS_GNSS` 1, with a text that names both
-values. The index of `GPS_GNSS` here is the station's and simulator's assumption (appended last) until the firmware's
-table is final. Indices 81-89 are "calibration" parameters: command 245 with param1 = 3 returns each of them to its default.
+values. Index 92 matches the firmware (gnss-m10 16b782e). Indices 81-89 are "calibration" parameters: command 245 with param1 = 3 returns each of them to its default.
 All are Live (applied at once, saved only by 245 param1 = 1).
 
 | Index | Name | Type, unit | Default | Range | Reset by calibration reset |
