@@ -24,6 +24,8 @@ Identity and heartbeat
 - Vehicle: system 1, component 1. Ground station: system 255, component 190.
 - Vehicle HEARTBEAT at 1 Hz, not changeable: type GENERIC, autopilot GENERIC, base_mode 0, custom_mode 0,
   system_status set by the firmware (BOOT, then STANDBY), mavlink_version 3.
+  Amendment 2026-11-23 (approved, not built: stage 2): custom_mode carries the vehicle's effective mode, section 10;
+  0 stays the value of every firmware before it.
 - Ground station HEARTBEAT at 1 Hz: type GCS, autopilot INVALID, base_mode 0, status ACTIVE. The first is
   sent at once after the port is open and configured.
 - Each end calls the other lost after 5.0 s without its HEARTBEAT. A transport error is lost at once.
@@ -366,7 +368,9 @@ REAL32 sets echoed, rates within 5 %, a `.tlog` written, and the ELF has no `Mav
 - The numbers of the mission service (section 17; `_plan/decision-mavlink-mode-20261123.md`, section 4), proposed
   2026-11-23 and built to these defaults until he decides: 16 waypoints (4, a number he has already approved, if he
   wants no new one); timeout 1500 ms with 5 retries; one reply slot per 40 ms on the radio link and per 5 ms on USB.
-  Also awaiting him: the amendment of section 9 that makes the mission commands Operate-class.
+  Also awaiting him: the amendment of section 9 that makes the mission commands Operate-class. Decided 2026-11-23
+  (the decision's sections 8 and 10): all approved, the section 9 amendment too; 16 waypoints plus a return item, and
+  the lowest and highest height as parameters, 5 m and 50 m by default (section 17, Amendment A).
 
 ## 8. Device diagnostics: `MARV_DEVICE_STATUS`
 
@@ -472,7 +476,8 @@ sessions pass every command.
 
 Classes.
 - Configure-class: every parameter write (`Command::SetParam`); and sending a MAVLink command to the vehicle
-  (`Command::SendCommand`: ALL of them, an unknown `MAV_CMD` id counts as Configure, so storage actions,
+  (`Command::SendCommand`: ALL of them but the four flight commands of the last bullet below, an unknown `MAV_CMD` id
+  counts as Configure, so storage actions,
   calibration, device actions (restart, self-test) and reboot are all Configure; section 10); and the three
   commands of log download (`Command::ListLogs`, `Command::DownloadLog`, `Command::CancelLogDownload`; section
   11), because the vehicle offers log download on its USB link only and the station must not ask for it on a
@@ -480,8 +485,9 @@ Classes.
 - Operate-class: everything that only reads or only concerns the station: the heartbeat (a service, not a
   command), a parameter list request (`Command::RefreshParams`), log recording
   (`Command::StartLog`, `Command::StopLog`, `Command::StartSessionLog`, `Command::StopSessionLog`), link management (connect, disconnect, replay).
-- Mission commands, amendment proposed 2026-11-23, pending the owner's approval (`_plan/decision-mavlink-mode-20261123.md`,
-  sections 1 C and 5; built to it meanwhile under his standing permission): the three commands of the mission service
+- Mission commands, amendment 2026-11-23 (`_plan/decision-mavlink-mode-20261123.md`, sections 1 C and 5), approved by
+  the owner: "1. Yes" (its section 8) to "Missions may be uploaded, read and cleared over the backpack link" (its
+  question 1). Built: the three commands of the mission service
   (`Command::UploadMission`, `Command::DownloadMission`, `Command::ClearMission`; section 17) are Operate-class, so they
   are allowed on a UDP session, and their controls are enabled on Operate and Configure alike. Reason: the owner wants
   the waypoints made on the map tab sent to the vehicle, and in the field the laptop reaches the vehicle through the
@@ -489,7 +495,19 @@ Classes.
   vehicle refuses it while armed, keeps the list in RAM only (gone at the next boot), does nothing autonomous with it
   in this stage, and the station proves every result by reading the list back. No other rule changes: every
   parameter write and every `Command::SendCommand` stay Configure-class; the mission messages are not MAVLink
-  commands (`COMMAND_LONG`).
+  commands (`COMMAND_LONG`). With Amendment A of section 17 built (approved, not built) the vehicle also takes a list
+  while armed and flies it in AUTO: an upload in flight redirects the vehicle, as the owner asked ("We must be able to
+  abort the mission whenever and redirect the drone"); the class does not change.
+- Flight commands, amendment 2026-11-23 (the decision's section 9, A10), approved by the owner: "6. yes" (its section
+  10) to "Start, Pause, Land and Abort work over the WiFi backpack link" (its question Q-A6). Approved, not built. The
+  four flight commands of section 10 are Operate-class, so they are allowed on a UDP session and their controls are
+  enabled on Operate and Configure alike: Start (`MAV_CMD_MISSION_START`), Pause (`MAV_CMD_DO_PAUSE_CONTINUE` with
+  param1 0), Abort and Land (`MAV_CMD_DO_SET_MODE` with param1 1 and custom mode HOLD or LAND). Only these: the same
+  commands with other parameters, and every other `MAV_CMD`, stay Configure-class. Whether the station gives them
+  `Command` variants of their own or classes `Command::SendCommand` by its id and parameters is the station's (packet
+  H4); the class match stays exhaustive. Reason: in the field the laptop reaches the vehicle only through the backpack;
+  none of the four arms, disarms or kills, and the vehicle refuses each of them while a CRSF report is fresh (section
+  10).
 
 Services that run by themselves are not commands and are not gated. They only read: the capability
 request (`MAV_CMD_REQUEST_MESSAGE` for `AUTOPILOT_VERSION`) at connect, the repair reads of a list that is
@@ -518,7 +536,8 @@ say which role the session has.
 Written before the code (the design of 2026-11-13, `decision-foundation-20261113.md`, sections 5 and 8). The
 station sends a MAVLink command only when the user presses a button; it never sends one by itself (the
 capability request of section 9 is a read, not a command of this section). Every `Command::SendCommand`
-is Configure-class: on an Operate session it writes 0 bytes and is recorded in `link.refused`.
+is Configure-class: on an Operate session it writes 0 bytes and is recorded in `link.refused` (except the four flight
+commands at the end of this section, section 9).
 
 What the vehicle answers (binding for the station and for the simulator)
 - A `COMMAND_LONG` it does not know: `COMMAND_ACK` UNSUPPORTED. Refused by its parameters: DENIED (a
@@ -596,7 +615,69 @@ device or action not listed: DENIED; any other command except 512 (`MAV_CMD_REQU
 configuration, off by default: drop the first N `COMMAND_LONG`s that are not `MAV_CMD_REQUEST_MESSAGE`, and
 never send the final ACK. The simulator reads and writes 42430 by hand, as it does `MARV_DEVICE_STATUS`.
 
-Not in this feature: `COMMAND_INT`, a queue of commands, arming, flight commands, automatic commands.
+Not in this feature: `COMMAND_INT`, a queue of commands, arming, flight commands (until the amendment below), automatic
+commands.
+
+Flight commands and the effective mode (amendment 2026-11-23; `_plan/decision-mavlink-mode-20261123.md` of
+`MARV-V2-drivers`, section 9: A1, A9, A10 and its state table; approved by the owner, its section 10, with A2' and
+A10' there). APPROVED, NOT BUILT. Built today (firmware 72de0d4): the vehicle
+answers 300, 193 and 176 UNSUPPORTED (section 2) and sends custom_mode 0. The codes below come with stage 2, the states
+and the commands with packet H2 (stage 3, `FS_HOLD_EN` 1); the station's buttons and `gcs-sim` with packet H4. It binds
+the firmware, the station and `gcs-sim`.
+
+The effective mode, in HEARTBEAT `custom_mode` (a value, not a bitfield), on every link:
+
+| Code | Mode | The vehicle (the decision's state table) |
+|---|---|---|
+| 0 | not reported | every firmware before stage 2, and `gcs-sim` today: the one value section 2 assigned, kept; the station shows no mode |
+| 1 | PILOT | a fresh CRSF report and the pilot latch set: today's flight modes |
+| 2 | TAKEOVER | a fresh CRSF report in HOLD, AUTO, RETURN or LAND: the ladder as if ch6 were High, centred sticks, real sticks and ch6 ignored; it stays TAKEOVER until a report has shown switch6 High and a later one shows it not High (A2'), which gives PILOT |
+| 3 | HOLD | hands-off Position hold, centred sticks |
+| 4 | AUTO | flying the stored list (section 17) |
+| 5 | RETURN | climbing to the return height, then a straight leg home |
+| 6 | LAND | descending to touchdown, then disarm |
+| 7 | STOP | disarmed, motors stopped |
+
+Codes 8 and above are not assigned (a station shows "unknown" and the number). With `FS_HOLD_EN` 0 only PILOT and STOP
+are sent.
+
+The commands: `COMMAND_LONG`, on the radio link (on the station's side the UDP link through the backpack, section 9);
+parameters not named are 0.
+
+| Button | Command | Parameters | Taken in | Then |
+|---|---|---|---|---|
+| Start | 300 `MAV_CMD_MISSION_START` | all 0; the vehicle ignores them | HOLD, with every Start condition below | AUTO: from the kept place, else from `seq` 0 |
+| Pause | 193 `MAV_CMD_DO_PAUSE_CONTINUE` | param1 0 | AUTO; RETURN | HOLD; from AUTO the place is kept |
+| Abort | 176 `MAV_CMD_DO_SET_MODE` | param1 1 (`MAV_MODE_FLAG_CUSTOM_MODE_ENABLED`), param2 3 (HOLD) | AUTO; RETURN; LAND on T3 only | HOLD, the place dropped |
+| Land | 176 `MAV_CMD_DO_SET_MODE` | param1 1, param2 6 (LAND) | HOLD; AUTO; RETURN | LAND |
+
+What the vehicle answers
+- One `COMMAND_ACK` at once, addressed to the sender as every ACK: ACCEPTED when it takes the command (the state changes
+  at the step it is taken), otherwise DENIED. Never IN_PROGRESS, TEMPORARILY_REJECTED or FAILED.
+- DENIED, for each of the four, when any of these holds:
+  1. a CRSF stick report is fresh (younger than 1.0 s, the gate's rule): in PILOT and TAKEOVER always;
+  2. the vehicle is in a state the table does not give for that command: PILOT, TAKEOVER and STOP for all four, and
+     every state with `FS_HOLD_EN` 0. The cases where the vehicle is already in the command's result (Start in AUTO,
+     Pause or Abort in HOLD, Land in LAND) are an open point (section 17);
+  3. the parameters differ from the table: Pause with param1 other than 0 (continue is not served: Start resumes);
+     `MAV_CMD_DO_SET_MODE` with param1 other than 1, or param2 other than 3 or 6.
+- Start is DENIED, also in HOLD, unless all of these hold (A10, A9):
+  1. the station is present on the radio link: a station HEARTBEAT received on the radio link within the last 5.0 s
+     (the decision's section 1 B; a USB heartbeat does not count, A1);
+  2. a list with waypoints is stored: `count` 2 or more (`count` 1 is the return item alone; section 17);
+  3. home is set (A6: its height at the arming step, its position at the first armed step with a position, before
+     take-off; cleared at disarm);
+  4. the vehicle and every stored waypoint are at most 1000 m horizontally from home (A9; a waypoint at 1000.5 m or a
+     vehicle at 1001 m is refused). Checked at every Start and nowhere else: not at upload, not in flight;
+  5. position tier T3 (A3: the position is covered);
+  6. the heading monitor reports OK (`nav-eskf`:1774; designed separately);
+  7. the battery is not critical;
+  8. the last CRSF report before the sticks were lost had the mode switch in Position (switch6 High; arm on holds by
+     construction) (A10').
+- No command arms, disarms or kills, whatever its parameters. The one kill stays the arm switch on CRSF (A2).
+
+The station sends them as every command above (one outstanding, three sends 1.5 s apart, the ACK rule); the first
+ACCEPTED or DENIED ends one. It shows the effective mode from the HEARTBEAT, not from the ACK.
 
 ## 11. Log download
 
@@ -1110,10 +1191,14 @@ text that names both values) and has the six IMU parameters (Reboot class, the "
 ## 17. Missions
 
 Proposed 2026-11-23 (`_plan/decision-mavlink-mode-20261123.md` of `MARV-V2-drivers`: section 1 C, section 3 stage 1,
-sections 4 and 5). PROPOSED: built to these defaults under the owner's standing permission, awaiting his approval; the
-numbers are listed in section 7. It binds the vehicle (the firmware), the station (`gcs-mavlink`, the map tab,
+sections 4 and 5). Approved by the owner 2026-11-23 (its section 8: "1. Yes", "2. Yes", and "Yes" to 1500 ms / 5
+retries and the 40 ms / 5 ms reply slots), except two rules that Amendment A below replaces: the refusal while armed and
+the unused `z` (his "3. No"). BUILT: every paragraph from here to "Amendment A" (stage 1: firmware 72de0d4, the station,
+`gcs-sim`). APPROVED, NOT BUILT: the paragraphs under "Amendment A" (the decision's section 9, approved in its section
+10). It binds the vehicle (the firmware), the station (`gcs-mavlink`, the map tab,
 `marv-cli`) and the station's simulated vehicle (`gcs-sim`); each is built from this text alone. Scope (stage 1):
-upload, read back, clear and store a list of waypoints. Nothing here flies a list. It is MAVLink's mission protocol
+upload, read back, clear and store a list of waypoints. Nothing here flies a list (Amendment A: a list flies in AUTO).
+It is MAVLink's mission protocol
 (`MM` = https://mavlink.io/en/services/mission.html, read 2026-11-23) cut down to the subset below, with the messages
 of `common` unchanged: no dialect change, no new MARV message. `CX` = `definitions/common.xml` of `marv-dialect`
 (sha256 f157929c...). Where `MM` leaves a point open, the rule here settles it.
@@ -1466,3 +1551,146 @@ Worked example 2: a refused 17-point upload. The vehicle holds the three points 
 3. The upload ends refused ("the vehicle holds at most 16 waypoints"). The station reads back: MISSION_REQUEST_LIST,
    MISSION_COUNT `count` 3 with `opaque_id` 2579742025, the three items of example 1, MISSION_ACK
    MAV_MISSION_ACCEPTED. Verdict: failed, and the vehicle's list is unchanged.
+
+Amendment A: the return item, the height limits and the flown list (2026-11-23; the decision's section 9, A4 to A6, A9,
+I6 and I7; approved by the owner in its section 10). APPROVED, NOT BUILT. Firmware 72de0d4 and the station at this
+revision do the paragraphs above. Packet H1 builds the vehicle's checks below (`fw-core`; the armed refusal stays),
+packet H2 lifts the armed refusal, packet H4 builds the station's side and `gcs-sim`. Each paragraph below replaces, once
+built, the one above that it names; the rest of this section holds unchanged. Mixing the two revisions fails closed: a
+vehicle of stage 1 refuses the return item (`command` not 16: MAV_MISSION_UNSUPPORTED), and a vehicle with this
+amendment refuses a list of stage 1 (its last item is not `command` 20: MAV_MISSION_INVALID). Worked examples 1 and 2
+are stage 1; example 3 is this amendment.
+
+The return item
+- The last item of every non-empty upload, `seq` n - 1, is the return item: `command` 20
+  (`MAV_CMD_NAV_RETURN_TO_LAUNCH`), `frame` 3 or 6, `x` 0, `y` 0, `z` = the return height in m above home; `current` 0,
+  `autocontinue` 1, `param1` to `param4` 0.0 (ignored), `mission_type` 0. The owner: "This should be a mission input.
+  it may differ from mission to mission."
+- Deviation from `CX`: MAV_CMD_NAV_RETURN_TO_LAUNCH has every parameter "Empty" (`CX`:1171-1179); this contract puts the
+  return height in its `z`.
+- The vehicle never flies it as a leg: after the last waypoint AUTO goes to HOLD at its height, the place dropped (A6).
+  Its `z` is used only by RETURN: the height flown home is the larger of it and the present height, latched at entry
+  (A7). With no list stored (after a clear or a boot) RETURN flies at the present height (A5; the owner's "2. yes" to
+  Q-A2).
+
+Count (replaces "Capacity")
+- `count` = n = the number of waypoints + 1. A `count` of 1 to 17 is an upload: up to 16 waypoints at `seq` 0 to n - 2,
+  then the return item. `count` 1 is the return item alone: it sets the return height, and Start is refused (section 10).
+  A `count` of 18 or more: MAV_MISSION_NO_SPACE. A `count` of 0 still clears the list, as above. The station does not
+  check the count itself.
+
+Height (replaces the `z` row of the field table and the rule "never used")
+- Frames 3 and 6 both mean `z` in m above home (A6). Home's height is the steering estimate's height at the arming step,
+  so a list stored on the ground gives heights above the place of the next arming.
+- Every `z`, of the waypoints and of the return item, must be finite and within [`GDN_ALT_MIN`, `GDN_ALT_MAX`], both
+  included; otherwise MAV_MISSION_INVALID_PARAM7. The vehicle checks it at upload only, when it checks that item (rule
+  4), against the parameters' values in force then (A5). It does not check it again at commit, at Start or in flight.
+  It stores the 4 bytes as before and flies them as heights (A6). What a stored list becomes when a limit parameter is
+  changed afterwards is an open point (below).
+- The two parameters, proposed names (the owner: "lowest 5 meters highest 50 meters (make these parameters)"); group
+  `GDN`, with `GDN_SRC` and `GDN_RADIUS`; appended after `GDN_SRC` when built, so no index moves (section 2):
+
+  | Name | Type, unit | Default | Range | Class | Device | Meaning |
+  |---|---|---|---|---|---|---|
+  | `GDN_ALT_MIN` | F32, m | 5.0 | open point | Live | 0 (system) | the lowest `z` above home of a waypoint or the return item |
+  | `GDN_ALT_MAX` | F32, m | 50.0 | open point | Live | 0 (system) | the highest `z` above home of a waypoint or the return item |
+
+  The 5 m floor covers the barometer's sink at speed (2.7 m measured at 6.8 m/s, A6), with 2.3 m to spare.
+
+Checks (replaces rule 3's MISSION_COUNT checks and rule 4's MISSION_ITEM_INT checks after the `seq` check)
+- MISSION_COUNT, in this order: `mission_type` not 0: MAV_MISSION_UNSUPPORTED; armed (until H2): MAV_MISSION_ERROR;
+  `count` above 17: MAV_MISSION_NO_SPACE. `count` 0 and `count` 1 to 17 as above.
+- MISSION_ITEM_INT `seq` k of n, in this order:
+  1. `mission_type` not 0: MAV_MISSION_UNSUPPORTED;
+  2. armed (until H2): MAV_MISSION_ERROR;
+  3. `command`: at k = n - 1, not 20: MAV_MISSION_INVALID; at any other k, 20: MAV_MISSION_INVALID, and neither 16 nor
+     20: MAV_MISSION_UNSUPPORTED;
+  4. `frame` not 3 or 6: MAV_MISSION_UNSUPPORTED_FRAME;
+  5. `x`: a waypoint's out of range, or the return item's not 0: MAV_MISSION_INVALID_PARAM5_X;
+  6. `y`: a waypoint's out of range, or the return item's not 0: MAV_MISSION_INVALID_PARAM6_Y;
+  7. `z` not finite, below `GDN_ALT_MIN` or above `GDN_ALT_MAX`: MAV_MISSION_INVALID_PARAM7.
+  An item that passes is stored in staging as before; the commit on item n - 1 is unchanged.
+- Results, in place of the matching rows of the table above (the other rows hold):
+
+  | Case | `type` |
+  |---|---|
+  | Armed (until H2): MISSION_COUNT, MISSION_CLEAR_ALL, or an item of an upload | MAV_MISSION_ERROR (1) |
+  | `count` above 17 | MAV_MISSION_NO_SPACE (4) |
+  | A waypoint's `command` neither 16 nor 20 | MAV_MISSION_UNSUPPORTED (3) |
+  | The last item's `command` not 20, or `command` 20 at any other `seq` | MAV_MISSION_INVALID (5) |
+  | A waypoint's latitude out of range, or the return item's `x` not 0 | MAV_MISSION_INVALID_PARAM5_X (10) |
+  | A waypoint's longitude out of range, or the return item's `y` not 0 | MAV_MISSION_INVALID_PARAM6_Y (11) |
+  | `z` not finite, or outside [`GDN_ALT_MIN`, `GDN_ALT_MAX`] | MAV_MISSION_INVALID_PARAM7 (12) |
+
+Storage and download (replaces "Storage" and the vehicle's download column)
+- Up to 17 items of 12 bytes (204 bytes), in RAM only as before; the return item's `x` and `y` are 0 by rule.
+- In a download MISSION_ITEM_INT `seq` n - 1 goes with `command` 20, `frame` 3, `x` 0, `y` 0, `z` the stored 4 bytes,
+  `current` 0, `autocontinue` 1, `param1` to `param4` 0.0, `mission_type` 0; every other `seq` as before (`command`
+  16, `frame` 3).
+- The station's verdict compares it like any item (`command` 20 at `seq` n - 1, 16 elsewhere) and shows the return
+  height.
+
+Plan id (replaces "Bytes covered")
+- The same algorithm, over all n items, the return item included: 12 x n bytes, `seq` 0 to n - 1, each `x`, `y`, `z`
+  little-endian as before (the return item: 8 bytes of 0, then its `z`). The empty list's plan id is still 0. Test
+  vector: example 3.
+
+The station's file (adds to "Waypoints and the station's file")
+- Row 0 the home placeholder, rows 1 to n - 1 the waypoints, row n the return item: frame 3, command 20, latitude and
+  longitude 0, altitude = the return height. Row i is still sent as `seq` i - 1. For three waypoints and a return
+  height of 20 m, the last row (fields separated by tabs, as every row):
+  ```
+  4	0	3	20	0	0	0	0	0.00000000	0.00000000	20	1
+  ```
+- The station sends n = the number of waypoints + 1 items; its own checks before sending are as above (finite values);
+  the height limits are the vehicle's to check.
+
+Armed (A4; packet H2; replaces "armed: MAV_MISSION_ERROR" in rules 3 and 4)
+- MISSION_COUNT, MISSION_CLEAR_ALL and the items of an upload are no longer refused while armed: an upload in flight
+  redirects the vehicle. The flight core takes only a whole committed list (staging, the atomic commit, then the
+  whole-set triple buffer), at its next step; a partly received list never flies (I6).
+- A new plan id (an accepted upload or a clear): in AUTO, HOLD with the place dropped; in HOLD, the place dropped, so
+  Start begins at `seq` 0; in RETURN and LAND nothing changes (the return height was latched at entry); in PILOT and
+  TAKEOVER the shadow guidance starts over.
+
+Worked example 3: the three points of example 1 with a return height of 20.0 m, uploaded to a vehicle with this
+amendment and the default limits (5.0 and 50.0). The sequence is example 1's with `count` 4; `seq` 3 is the return item.
+
+| `seq` | `command` | `x` | `y` | `z` (m) |
+|---|---|---|---|---|
+| 0 | 16 | 100000000 | -300000000 | 10.0 |
+| 1 | 16 | 100010000 | -300000000 | 12.5 |
+| 2 | 16 | 100010000 | -299990000 | 15.0 |
+| 3 | 20 | 0 | 0 | 20.0 |
+
+48 bytes covered:
+```
+00 E1 F5 05  00 5D 1E EE  00 00 20 41
+10 08 F6 05  00 5D 1E EE  00 00 48 41
+10 08 F6 05  10 84 1E EE  00 00 70 41
+00 00 00 00  00 00 00 00  00 00 A0 41
+```
+CRC-32 = 0x1862F4A2 = plan id: MISSION_ACK and the read-back's MISSION_COUNT carry `opaque_id` 409138338 (on the wire
+A2 F4 62 18). Computed with Python's `zlib.crc32` and with a bitwise copy of the algorithm above (both agree; the same
+script gives example 1's 0x99C3BD49). With a return item `z` of 4.0 instead, the upload ends at `seq` 3 with
+MAV_MISSION_INVALID_PARAM7 and the vehicle's list is unchanged.
+
+Open points (each would otherwise be guessed by the firmware, the station or `gcs-sim`)
+1. A limit parameter changed after a list is stored: the list stays and flies, Start refuses it, or the change clears
+   it (A5 checks only at upload).
+2. The ranges of `GDN_ALT_MIN` and `GDN_ALT_MAX`, and what a write that makes the lowest above the highest gets.
+3. `count` 0: kept here as a clear (A5 gives 1 to 17 for an upload and says nothing of 0).
+4. A command whose result is the present state (Start in AUTO, Pause or Abort in HOLD, Land in LAND): ACCEPTED or
+   DENIED; it matters because the station sends again after 1.5 s when an ACK is lost; and whether Abort in HOLD drops
+   a place kept by Pause.
+5. The four flight commands arriving on USB (A10 says the radio link): taken, DENIED, or UNSUPPORTED.
+6. The reason for a DENIED flight command: a STATUSTEXT naming the first failed condition (as section 10 does for a
+   refusal by parameters), or nothing.
+7. BLIND (tier T1, U-1): reported as LAND (6) or with a code of its own.
+8. HEARTBEAT base_mode: stays 0, or sets MAV_MODE_FLAG_CUSTOM_MODE_ENABLED (1) and MAV_MODE_FLAG_SAFETY_ARMED (128)
+   once `custom_mode` carries the mode (the station must also show armed, the decision's section 1 D).
+9. What Start reads for "heading monitor OK" and "battery not critical" until the monitor and BATT exist (deny, or
+   skip).
+10. The station's files of stage 1 (no return row) and where the map tab takes the return height (a default, or none).
+11. `gcs-sim`: how it reaches HOLD without CRSF, and which Start conditions (home, T3, heading, battery, switch6 in the
+    last CRSF report) it models or sets by configuration.
