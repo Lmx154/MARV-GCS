@@ -121,6 +121,14 @@ Parameters
   | 79 | `LED_BRIGHT` | I32 | 1 | 0..3 | Live | 0 (system) | status LED brightness: 0 off, 1 dim, 2 medium, 3 bright |
 
   The group `MOT` is under "ESC" in the station's tree. Saved only on command 245 param1 = 1, like every parameter.
+- The mission source parameter (amendment proposed 2026-11-23, pending the owner's approval;
+  `_plan/decision-mavlink-mode-20261123.md`, section 1 C; firmware `crates/fw-settings/src/flight.rs`, `GDN_SRC_AT`): 1
+  parameter appended as the last, so the count goes from 119 to 120. Indices 93 to 118 (guidance and gain parameters)
+  are not listed in this contract.
+
+  | Index | Name | Type | Default | Range | Class | Device | Meaning |
+  |---|---|---|---|---|---|---|---|
+  | 119 | `GDN_SRC` | I32 | 0 | 0..1 | Live | 0 (system) | where the shadow guidance takes its targets: 0 the `GDN_*` parameters, 1 the committed mission of section 17 (up to 16 waypoints; the radius stays `GDN_RADIUS`) |
 - Amendments by the lead after review (2026-11-12). (1) Withdrawn 2026-11-15: a different echo used to be
   retried (a stale copy of the old value in flight would read as a refusal); the vehicle answers every PARAM_SET
   with exactly one PARAM_VALUE, so a differing one after the send is the refusal. (2) A write waits
@@ -177,7 +185,9 @@ reads fields through), so it knows `MARV_TEST`: it checks its checksum and shows
 `docs/extending.md`.
 
 Log download (LOG_REQUEST_LIST, LOG_ENTRY, LOG_REQUEST_DATA, LOG_DATA, LOG_REQUEST_END) is on the vehicle's USB
-link only; the contract for it is section 11.
+link only; the contract for it is section 11. Missions (MISSION_REQUEST_LIST, MISSION_COUNT, MISSION_CLEAR_ALL,
+MISSION_ACK, MISSION_REQUEST_INT, MISSION_ITEM_INT) are on both of the vehicle's links, USB and radio; the contract for
+them is section 17.
 
 The station shows ATTITUDE in its HUD when the vehicle sends it; the real firmware does not send it yet (an
 estimator is being designed), and the simulator sends it at 10 Hz as a test double.
@@ -1147,7 +1157,7 @@ neither checked nor stored. Waypoint fields of MISSION_ITEM_INT:
 | Field | Station sends (upload) | Vehicle accepts | Vehicle sends (download) | Station accepts |
 |---|---|---|---|---|
 | `seq` | the seq requested | the expected seq only (others: below) | the seq requested | the expected seq only |
-| `frame` | 3 (`MAV_FRAME_GLOBAL_RELATIVE_ALT`) | 3 or 6 (`MAV_FRAME_GLOBAL_RELATIVE_ALT_INT`, the same frame: `MM`), stored as 3; else refused | 3 | compared (read-back) |
+| `frame` | 3 (`MAV_FRAME_GLOBAL_RELATIVE_ALT`) | 3 or 6 (`MAV_FRAME_GLOBAL_RELATIVE_ALT_INT`, the same frame: `MM`); else refused | 3, whichever of 3 or 6 was uploaded (the frame is not stored, below) | compared (read-back) |
 | `command` | 16 (`MAV_CMD_NAV_WAYPOINT`) | 16; else refused | 16 | compared |
 | `current` | 0 | ignored | 0 | ignored |
 | `autocontinue` | 1 | ignored | 1 | ignored |
@@ -1164,7 +1174,7 @@ The other messages:
   list.
 - MISSION_REQUEST_LIST and MISSION_CLEAR_ALL: `mission_type` 0. MISSION_REQUEST_INT: `seq`, `mission_type` 0.
 - MISSION_ACK from the vehicle: `type` from the table of results below; `mission_type` = that of the message it
-  answers (0 when the vehicle gives up by itself); `opaque_id` = the new plan id when it accepts an upload (0 for an
+  answers, for every `type`, MAV_MISSION_DENIED included (0 when the vehicle gives up by itself); `opaque_id` = the new plan id when it accepts an upload (0 for an
   upload of count 0), 0 in every other MISSION_ACK, an accepted clear included.
 - MISSION_ACK from the station: `type` MAV_MISSION_ACCEPTED (end of a download), MAV_MISSION_OPERATION_CANCELLED (it
   gives up) or MAV_MISSION_INVALID_SEQUENCE (below); `mission_type` 0; `opaque_id` 0 (`CX`: "0 on download").
@@ -1231,8 +1241,8 @@ What the vehicle does with each mission message that passed the addressing check
      station sends its last item again, below). Any other: MISSION_ACK MAV_MISSION_ERROR.
    - MISSION_REQUEST_INT: MISSION_ACK MAV_MISSION_ERROR. MISSION_ACK: ignored.
    The vehicle remembers the last upload that ended at an item (accepted, or refused at an item): its owner, that
-   item's `seq` and the MISSION_ACK it sent. It forgets it when it handles any start message, when that owner's link
-   goes down, and at reboot.
+   item's `seq` and the MISSION_ACK it sent. It forgets it when it handles any start message from anyone, accepted or
+   refused, when that owner's link goes down, and at reboot.
 4. In the owner's upload, expecting `seq` k:
    - MISSION_ITEM_INT, in this order: `seq` not k (a repeat or out of order): dropped without any other check, and
      MISSION_REQUEST_INT `seq` k is sent again (`MM`: "the out-of-sequence item is dropped"; not an error);
@@ -1280,7 +1290,8 @@ Upload of n = 1 to 16 waypoints (`MM`, "Upload a Plan to the Vehicle"):
 6. S takes the ACK and reads the list back (the verdict, below).
 
 Clear (`MM`, "Clear Plan"):
-1. S sends MISSION_CLEAR_ALL (or MISSION_COUNT with `count` 0); its timer starts.
+1. S sends MISSION_CLEAR_ALL for `Command::ClearMission`, or MISSION_COUNT with `count` 0 for `Command::UploadMission`
+   of an empty list; its timer starts.
 2. V empties the list and sends MISSION_ACK MAV_MISSION_ACCEPTED, `opaque_id` 0.
 3. S reads the list back.
 
@@ -1292,28 +1303,46 @@ Download (`MM`, "Download a Plan from the Vehicle"):
 5. S, with every item in (with n = 0 at once after step 2), sends MISSION_ACK MAV_MISSION_ACCEPTED.
 6. V ends the download on that ACK.
 
+What the station sends (checked before anything goes out)
+- A list of 1 to 65535 waypoints is sent as it is, also above 16: the vehicle decides and refuses with
+  MAV_MISSION_NO_SPACE (example 2). A list of more than 65535 waypoints (`count` is a uint16) is refused by the station
+  itself.
+- Every waypoint is checked before anything is sent: latitude and longitude must be finite and, converted as above,
+  inside the vehicle's ranges (`x` -900000000 to 900000000, `y` -1800000000 to 1800000000, both included); the altitude
+  must be finite. Any failure refuses the whole operation in the station: nothing is sent, no read-back is made, and the
+  reason names the row (the same test as `Waypoint::is_valid` in `crates/marv-gcs/src/missions.rs`).
+
 What the station does with the vehicle's messages
 - In an upload: it answers every MISSION_REQUEST_INT with `seq` below n at once with MISSION_ITEM_INT of that `seq`,
-  every time it is asked. A MISSION_REQUEST_INT with `seq` n or above: it sends MISSION_ACK
-  MAV_MISSION_INVALID_SEQUENCE and the upload fails. A MISSION_ACK MAV_MISSION_ACCEPTED ends the upload only after the
-  station has sent item n - 1 (for n = 0: after MISSION_COUNT) and only when its `opaque_id` equals the plan id the
-  station computed; any other ACCEPTED is ignored (a late copy of an earlier answer). A MISSION_ACK of any other
-  `type` ends the upload as refused with that `type`.
+  every time it is asked. A MISSION_REQUEST_INT with `seq` n or above (in an upload of `count` 0, every
+  MISSION_REQUEST_INT): it sends MISSION_ACK MAV_MISSION_INVALID_SEQUENCE and the upload fails. A MISSION_ACK
+  MAV_MISSION_ACCEPTED ends the upload only after the station has sent item n - 1 (for n = 0: after MISSION_COUNT) and
+  only when its `opaque_id` equals the plan id the station computed (0 for n = 0); any other ACCEPTED is ignored (a late
+  copy of an earlier answer). A MISSION_ACK of any other `type` ends the upload as refused with that `type`.
 - In a download: it takes MISSION_ITEM_INT `seq` k when it asked for k; an item of another `seq` is dropped and
   MISSION_REQUEST_INT `seq` k is sent again at once (`MM`: "the expected item should be re-requested by the GCS"). A
   second MISSION_COUNT in the same download is ignored. A MISSION_ACK MAV_MISSION_ACCEPTED is ignored (the vehicle sends
-  none in a download, so it is a late copy); any other `type` ends the download as failed with that `type`.
-- In a clear: MISSION_ACK MAV_MISSION_ACCEPTED with `opaque_id` 0 ends it accepted; any other `type` ends it refused.
+  none in a download, so it is a late copy); any other `type` ends the download as failed with that `type`. The station
+  sets no cap on the vehicle's `count`: it asks for every `seq` below it, also above 16, and the verdict compares.
+- In a clear: MISSION_ACK MAV_MISSION_ACCEPTED with `opaque_id` 0 ends it accepted; an ACCEPTED with any other
+  `opaque_id` is ignored (a late copy of an upload's answer; the empty list's plan id is 0); any other `type` ends it
+  refused.
 - Every mission message that belongs to no operation of the station is ignored. The station runs one mission
   operation at a time; a second command meanwhile is refused and nothing is sent.
 
 Timeouts and retries (`MM`, "Timeouts and Retries": 1500 ms, 5 retries; `MM`'s 250 ms for plan items is not used here:
 1500 ms holds for every message)
-- A retry is the same message sent again 1500 ms after its previous send when its response has not arrived. At most 5
-  retries (6 sends of that message); 1500 ms after the sixth send without the response, the sender gives up. The count
-  starts at 0 for every new message.
-- A request sent again because a wrong item arrived (a re-request) restarts that request's 1500 ms timer and is not
-  counted as a retry.
+- Hand-over: the vehicle hands a message to its link's reply slot (below); the station sends at once, so for the
+  station hand-over and send are the same moment. Every timer of either side starts at the hand-over, whatever then
+  happens to the message (sent, replaced or dropped in the slot).
+- A retry is the same message handed over again when 1500 ms have passed since its last hand-over without its
+  response. At most 5 retries (6 hand-overs of that message); 1500 ms after the sixth without the response, the sender
+  gives up.
+- A new message starts with a retry count of 0 and its own timer. Every message a side sends in answer to a request is
+  a new message: in particular the station's MISSION_ITEM_INT `seq` n - 1 sent again because the vehicle asked for it
+  again starts a new count of 6 hand-overs (9000 ms in all).
+- A re-request (a request sent again because a wrong item arrived) is a hand-over: it restarts that request's 1500 ms
+  timer and leaves its retry count as it was (neither counted nor reset).
 
 | Who | Retries | Response that stops it | On giving up |
 |---|---|---|---|
@@ -1330,23 +1359,28 @@ Timeouts and retries (`MM`, "Timeouts and Retries": 1500 ms, 5 retries; `MM`'s 2
 - After sending an item other than the last, the station waits for the vehicle: when 9000 ms (6 x 1500 ms, the
   vehicle's whole retry span) pass without a MISSION_REQUEST_INT or a MISSION_ACK that it takes, it gives up as in the
   table.
-- In a download the vehicle asks for nothing: when 9000 ms pass without a mission message from the owner, it ends the
-  download and sends MISSION_ACK MAV_MISSION_OPERATION_CANCELLED to the owner.
+- In a download the vehicle asks for nothing: when 9000 ms pass after the last mission message from the owner that
+  passed the addressing check (the starting MISSION_REQUEST_LIST, every MISSION_REQUEST_INT, a dropped
+  MISSION_ITEM_INT, any other), it ends the download and sends MISSION_ACK MAV_MISSION_OPERATION_CANCELLED to the
+  owner. Its own sends do not count.
+- A frame dropped by the addressing check refreshes no timer of either side.
 - A side that receives MISSION_ACK MAV_MISSION_OPERATION_CANCELLED from the other ends the operation (`MM`, "Canceling
   Operations").
 
 Reply pacing
-- The vehicle sends its mission messages through one reply slot per link: at most one mission message per 40 ms on
-  the radio link (the radio node's 40 ms parameter-list interval, `_plan/decision-rc-link-20261113.md`:159) and per
-  5 ms on USB (the log download slot, the firmware's `src/logdl.rs`:37). On
-  the radio link the slot is a stream of the radio node, so the radio's flow control lengthens its interval as it
-  does every stream's, by at most 2040 ms (`_plan/decision-rc-link-20261113.md`:155-158); the timers do not change
-  for it.
+- The vehicle sends its mission messages through one reply slot per link, with an interval of 40 ms on the radio link
+  (the radio node's 40 ms parameter-list interval, `_plan/decision-rc-link-20261113.md`:159) and 5 ms on USB (the log
+  download slot, the firmware's `src/logdl.rs`:37). On the radio link the slot is a stream of the radio node, so the
+  radio's flow control lengthens its interval as it does every stream's, by at most 2040 ms
+  (`_plan/decision-rc-link-20261113.md`:155-158); the timers do not change for it.
+- When a handed-over message goes out is bounded, not fixed: two mission messages on one link go out at least one
+  interval apart, and a handed-over message that is not replaced or dropped goes out no later than one interval after
+  its hand-over or after the previous mission message on that link, whichever is later. Sending at once when the slot
+  is idle and sending at the first tick of a fixed grid after the hand-over are both legal. No side may depend on the
+  choice: every rule here holds for any timing inside these bounds.
 - A slot holds one waiting message. A new message to the same destination (system, component) replaces the one
   waiting; a new message to another destination is dropped while one waits (its receiver's retry recovers it). A
   re-request equal to the message waiting therefore adds nothing.
-- The vehicle's timers start when it hands the message to the slot, whether that message is then sent, replaced or
-  dropped.
 - The station sends at once, without pacing.
 
 Link down
@@ -1358,25 +1392,35 @@ Link down
   sent and no read-back is made (as log download, section 11).
 
 The station's verdict
-- After an upload or a clear ends in any way except "link lost" (accepted, refused, given up), the station reads the
-  list back with one download, at once.
-- An upload or a clear is done only when all three hold: the vehicle accepted it (MISSION_ACK MAV_MISSION_ACCEPTED with
-  the plan id the station computed, 0 for a clear); the read-back's `count` equals n; and the read-back's items equal
-  what was sent, `seq` by `seq` (`frame` 3, `command` 16, `x`, `y`, and `z` compared as 4 bytes), with its
-  `opaque_id` equal to the station's plan id. Anything else is a failure, shown with its reason (the refusal's `type`,
-  "no answer", "link lost", the first `seq` that differs, or a different plan id), and the read-back list is shown as
-  what the vehicle holds.
+- After an upload or a clear ends in any way other than "link lost" or the station's own refusal before sending
+  (above), that is accepted, refused by the vehicle, or given up, the station reads the list back with one download,
+  at once.
+- An upload or a clear is done only when all hold: the vehicle accepted it (MISSION_ACK MAV_MISSION_ACCEPTED with the
+  plan id the station computed, 0 for a clear); the read-back completed; its `count` equals n; its items equal what was
+  sent, `seq` by `seq` (`frame` 3, `command` 16, `x`, `y`, and `z` compared as 4 bytes); and its `opaque_id` equals the
+  station's plan id. Otherwise it failed, and the read-back list, when one completed, is shown as what the vehicle
+  holds.
+- The reason shown is the first of these that applies:
+  1. "link lost", at any point, the read-back included;
+  2. the upload or the clear failed: the vehicle's refusal `type`, "no answer" (given up), or the station's own
+     MAV_MISSION_INVALID_SEQUENCE;
+  3. the read-back failed: its refusal `type` or "no answer";
+  4. the count differs: "the vehicle holds m waypoints, n were sent";
+  5. the first `seq` whose item differs;
+  6. the plan id differs.
 - A download asked for by itself shows the vehicle's list and plan id: complete or failed, no other verdict.
 
 The station's commands are `Command::UploadMission`, `Command::DownloadMission` and `Command::ClearMission`
 (Operate-class, section 9); `marv-cli mission upload FILE`, `mission download` and `mission clear` use them (exit
 statuses: the README). The simulator (`gcs-sim`) serves this section as the vehicle does, written from this text, with
-a reply slot of 5 ms on its link; it is never armed; its configuration can drop chosen mission frames in either
-direction.
+a reply slot of 5 ms on its link. It runs disarmed: its armed refusals are exercised only by tests calling its library,
+with no configuration switch and nothing on the link that arms it. Its configuration can drop chosen mission frames in
+either direction.
 
 Worked example 1: a three-point upload with one MISSION_ITEM_INT lost, then the read-back. On the radio link, the
-vehicle's list empty before (plan id 0). Times in ms, approximate: the vehicle's slot at multiples of 40 ms, the
-link's own delay left out. Made-up points in the open ocean:
+vehicle's list empty before (plan id 0). Times in ms, approximate, and only one legal timing among others (reply
+pacing, above): the vehicle's slot on a fixed grid at multiples of 40 ms, the link's own delay left out.
+Made-up points in the open ocean:
 
 | `seq` | latitude | longitude | `x` | `y` | `z` (m) |
 |---|---|---|---|---|---|
