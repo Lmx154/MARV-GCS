@@ -99,7 +99,7 @@ pub fn observations(rep: &SpanReport, st: &Settings) -> Vec<String> {
                     format!(" (P term {:.4} N.m)", hf.rms_p)
                 };
                 o.push(format!(
-                    "{name}: D torque above {} Hz is {:.4} N.m rms{ratio} (hover-like, {} segments of {} samples)",
+                    "{name}: D torque above {} Hz is {:.4} N.m rms{ratio} (whole airborne time, {} segments of {} samples)",
                     st.get(Id::HfSplit),
                     hf.rms_d,
                     hf.segments,
@@ -150,7 +150,7 @@ pub fn observations(rep: &SpanReport, st: &Settings) -> Vec<String> {
                     .collect::<Vec<_>>()
                     .join(", ");
                 o.push(format!(
-                    "gyro {name}: dominant peak {:.1} Hz ({:.4} rad/s rms in the band), {}",
+                    "gyro {name}: dominant peak {:.1} Hz ({:.4} rad/s rms in the band, whole airborne time), {}",
                     p.hz,
                     p.rms,
                     if near.is_empty() {

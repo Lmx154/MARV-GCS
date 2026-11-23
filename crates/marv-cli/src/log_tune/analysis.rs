@@ -111,7 +111,10 @@ pub struct HfStats {
 pub struct Terms {
     pub hover: Option<TermStats>,
     pub events: Option<TermStats>,
+    /// Over all the airborne, gap-free data of the span.
     pub hf: Result<HfStats, String>,
+    /// Over the hover-like runs only, when they hold enough segments.
+    pub hf_hover: Option<HfStats>,
     /// Steps and largest |P + I + D - demanded torque| where DMD was accepted and not saturated.
     pub sum_check: Option<(usize, f64)>,
     /// Least-squares slope of P on (target - achieved) over the airborne steps, and the steps used.
@@ -187,7 +190,10 @@ pub struct SpanReport {
     pub chunks: usize,
     pub saturation: Option<Saturation>,
     pub axes: [AxisReport; 3],
+    /// Over all the airborne, gap-free data of the span.
     pub noise: Result<Noise, String>,
+    /// Over the hover-like runs only, when they hold enough segments.
+    pub noise_hover: Option<Noise>,
     pub observations: Vec<String>,
 }
 
@@ -315,6 +321,7 @@ fn analyze_span(
         saturation: None,
         axes: [empty_axis(), empty_axis(), empty_axis()],
         noise: Err("no airborne step records with a usable spacing".to_string()),
+        noise_hover: None,
         observations: Vec::new(),
     };
     // Steps of the span inside the window.
@@ -361,6 +368,7 @@ fn analyze_span(
             rep.notch_on_frac = Some(on.iter().sum::<f64>() / on.len() as f64);
         }
 
+        let airborne: Vec<(usize, usize)> = chunks.iter().map(|c| (c.lo, c.hi)).collect();
         let both = data.has_pidt && data.has_ntch;
         let band = st.get(Id::QuietBand);
         let hover = if data.has_pidt {
@@ -402,6 +410,7 @@ fn analyze_span(
                 ar.terms = Some(terms_of(
                     steps,
                     &chunks,
+                    &airborne,
                     &hover,
                     &event_steps[axis],
                     axis,
@@ -415,13 +424,14 @@ fn analyze_span(
                 ar.sat_axis_frac = Some(sat.bits[axis]);
             }
         }
-        rep.noise = if data.has_ntch && data.has_pidt {
-            noise_of(steps, &hover, fs, st)
-        } else if data.has_ntch {
-            Err("needs PIDT: the hover-like spans are found from the rate target".to_string())
+        rep.noise = if data.has_ntch {
+            noise_of(steps, &airborne, fs, st, "airborne")
         } else {
             Err("needs NTCH".to_string())
         };
+        if data.has_ntch && data.has_pidt {
+            rep.noise_hover = noise_of(steps, &hover, fs, st, "hover-like").ok();
+        }
     }
     rep.observations = super::observe::observations(&rep, st);
     rep
@@ -839,30 +849,28 @@ fn term_stats(steps: &Steps, ranges: &[(usize, usize)], axis: usize, fs: f64) ->
     })
 }
 
-fn terms_of(
+fn hf_of(
     steps: &Steps,
-    chunks: &[Chunk],
-    hover: &[(usize, usize)],
-    events: &[(usize, usize)],
+    ranges: &[(usize, usize)],
     axis: usize,
     fs: f64,
     st: &Settings,
-) -> Terms {
-    let ev: Vec<(usize, usize)> = events.iter().map(|(a, b)| (*a, *b + 1)).collect();
-    // The D and P torque above the split, over the hover-like runs long enough for a segment.
+    what: &str,
+) -> Result<HfStats, String> {
+    // The D and P torque above the split: Welch (Hann, 50 % overlap, mean removed per segment) over the ranges.
     let nperseg = st.count(Id::NoiseSeg);
     let (mut wd, mut wp) = (
         Welch::new(nperseg, fs, Detrend::Constant),
         Welch::new(nperseg, fs, Detrend::Constant),
     );
     let mut longest = 0usize;
-    for (a, b) in hover {
+    for (a, b) in ranges {
         longest = longest.max(b - a);
         wd.add(&col(&steps.d[axis][*a..*b]), None);
         wp.add(&col(&steps.p[axis][*a..*b]), None);
     }
     let min_seg = st.count(Id::NoiseMinSegments);
-    let hf = match (wd.finish(fs), wp.finish(fs)) {
+    match (wd.finish(fs), wp.finish(fs)) {
         (Some(d), Some(p)) if d.nseg >= min_seg => Ok(HfStats {
             seconds: d.nseg as f64 * (nperseg as f64 / 2.0) / fs + nperseg as f64 / 2.0 / fs,
             segments: d.nseg,
@@ -870,13 +878,29 @@ fn terms_of(
             rms_p: dsp::rms_above(&p.sxx, p.df, st.get(Id::HfSplit)),
         }),
         _ => Err(format!(
-            "insufficient hover-like data: {} segment{} of NOISE_SEG = {nperseg} samples ({:.2} s) in the hover-like runs (longest {:.2} s), NOISE_MIN_SEGMENTS = {min_seg}",
+            "insufficient {what} data: {} segment{} of NOISE_SEG = {nperseg} samples ({:.2} s) in the {what} runs (longest {:.2} s), NOISE_MIN_SEGMENTS = {min_seg}",
             wd.segments(),
             if wd.segments() == 1 { "" } else { "s" },
             nperseg as f64 / fs,
             longest as f64 / fs
         )),
-    };
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn terms_of(
+    steps: &Steps,
+    chunks: &[Chunk],
+    airborne: &[(usize, usize)],
+    hover: &[(usize, usize)],
+    events: &[(usize, usize)],
+    axis: usize,
+    fs: f64,
+    st: &Settings,
+) -> Terms {
+    let ev: Vec<(usize, usize)> = events.iter().map(|(a, b)| (*a, *b + 1)).collect();
+    let hf = hf_of(steps, airborne, axis, fs, st, "airborne");
+    let hf_hover = hf_of(steps, hover, axis, fs, st, "hover-like").ok();
     // P + I + D against the demanded torque, and the gain P implies.
     let (mut sum_n, mut sum_max) = (0usize, 0.0f64);
     let (mut sxe, mut see, mut kn) = (0.0, 0.0, 0usize);
@@ -905,6 +929,7 @@ fn terms_of(
         hover: term_stats(steps, hover, axis, fs),
         events: term_stats(steps, &ev, axis, fs),
         hf,
+        hf_hover,
         sum_check: (sum_n > 0).then_some((sum_n, sum_max)),
         implied_kp: (kn > 0 && see > 0.0).then(|| (sxe / see, kn)),
     }
@@ -914,12 +939,13 @@ fn fold(f: f64, fs: f64) -> f64 {
     (f - fs * (f / fs).round()).abs()
 }
 
-/// Section 6: the dominant peaks of the achieved rate over the hover-like runs, against the rotor fundamentals.
+/// Section 6: the dominant peaks of the achieved rate over the given runs, against the rotor fundamentals.
 fn noise_of(
     steps: &Steps,
     hover: &[(usize, usize)],
     fs: f64,
     st: &Settings,
+    what: &str,
 ) -> Result<Noise, String> {
     let nperseg = st.count(Id::NoiseSeg);
     let mut w: Vec<Welch> = (0..3)
@@ -936,7 +962,7 @@ fn noise_of(
     let spectra: Option<Vec<_>> = w.iter().map(|x| x.finish(fs)).collect();
     let Some(spectra) = spectra.filter(|v| v[0].nseg >= min_seg) else {
         return Err(format!(
-            "insufficient hover-like data: {} segment{} of NOISE_SEG = {nperseg} samples ({:.2} s) in the hover-like runs (longest {:.2} s), NOISE_MIN_SEGMENTS = {min_seg}",
+            "insufficient {what} data: {} segment{} of NOISE_SEG = {nperseg} samples ({:.2} s) in the {what} runs (longest {:.2} s), NOISE_MIN_SEGMENTS = {min_seg}",
             w[0].segments(),
             if w[0].segments() == 1 { "" } else { "s" },
             nperseg as f64 / fs,

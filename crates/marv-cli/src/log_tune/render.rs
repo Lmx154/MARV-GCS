@@ -5,7 +5,8 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 
 use super::analysis::{
-    AXES, AxisReport, F3, Frf, FrfResult, Noise, SAT_BITS, SpanReport, TermStats, Terms, TuneReport,
+    AXES, AxisReport, F3, Frf, FrfResult, HfStats, Noise, SAT_BITS, SpanReport, TermStats, Terms,
+    TuneReport,
 };
 use super::events::Stat;
 use super::settings::{Id, Settings};
@@ -465,7 +466,7 @@ fn span_text(s: &mut String, sp: &SpanReport, r: &TuneReport, st: &Settings) {
     // 6
     let _ = writeln!(
         s,
-        "\n6. Gyro noise (NTCH G over the hover-like runs) against the rotor fundamentals (NTCH F0..F3)"
+        "\n6. Gyro noise (NTCH G over the whole airborne time; the hover-like runs too when long enough) against the rotor fundamentals (NTCH F0..F3)"
     );
     match &sp.noise {
         Err(why) => {
@@ -479,7 +480,13 @@ fn span_text(s: &mut String, sp: &SpanReport, r: &TuneReport, st: &Settings) {
                 }
             );
         }
-        Ok(n) => noise_text(s, n, st),
+        Ok(n) => {
+            noise_text(s, n, st, "whole airborne time");
+            if let Some(h) = &sp.noise_hover {
+                let _ = writeln!(s, "  the same over the hover-like runs only:");
+                noise_text(s, h, st, "hover-like");
+            }
+        }
     }
     let _ = writeln!(
         s,
@@ -569,24 +576,26 @@ fn terms_text(s: &mut String, name: &str, t: &Terms, ax: &AxisReport, st: &Setti
         "    {}",
         term_line("during events (the excursions)", &t.events)
     );
+    let hf_line = |h: &HfStats, what: &str| {
+        format!(
+            "D torque above {} Hz: {:.4} N.m rms; P term above {} Hz: {:.4} N.m rms; D over P {} ({what}, {} segments of {} samples, about {:.0} s)",
+            st.get(Id::HfSplit),
+            h.rms_d,
+            st.get(Id::HfSplit),
+            h.rms_p,
+            if h.rms_p > 0.0 {
+                format!("{:.1}", h.rms_d / h.rms_p)
+            } else {
+                "undefined (P is 0)".to_string()
+            },
+            h.segments,
+            st.count(Id::NoiseSeg),
+            h.seconds
+        )
+    };
     match &t.hf {
         Ok(h) => {
-            let _ = writeln!(
-                s,
-                "    D torque above {} Hz: {:.4} N.m rms; P term above {} Hz: {:.4} N.m rms; D over P {} (hover-like, {} segments of {} samples, about {:.0} s)",
-                st.get(Id::HfSplit),
-                h.rms_d,
-                st.get(Id::HfSplit),
-                h.rms_p,
-                if h.rms_p > 0.0 {
-                    format!("{:.1}", h.rms_d / h.rms_p)
-                } else {
-                    "undefined (P is 0)".to_string()
-                },
-                h.segments,
-                st.count(Id::NoiseSeg),
-                h.seconds
-            );
+            let _ = writeln!(s, "    {}", hf_line(h, "whole airborne time"));
         }
         Err(why) => {
             let _ = writeln!(
@@ -595,6 +604,9 @@ fn terms_text(s: &mut String, name: &str, t: &Terms, ax: &AxisReport, st: &Setti
                 st.get(Id::HfSplit)
             );
         }
+    }
+    if let Some(h) = &t.hf_hover {
+        let _ = writeln!(s, "    {}", hf_line(h, "hover-like"));
     }
     if let Some(f) = ax.sat_axis_frac {
         let _ = writeln!(
@@ -617,10 +629,10 @@ fn terms_text(s: &mut String, name: &str, t: &Terms, ax: &AxisReport, st: &Setti
     }
 }
 
-fn noise_text(s: &mut String, n: &Noise, st: &Settings) {
+fn noise_text(s: &mut String, n: &Noise, st: &Settings, what: &str) {
     let _ = writeln!(
         s,
-        "  hover-like data used: {} segments of {} samples (about {:.0} s), bin {:.3} Hz; peaks: the {} highest local maxima from {} Hz, at least {} Hz apart; rms = the band of +-{} bins",
+        "  {what} data used: {} segments of {} samples (about {:.0} s), bin {:.3} Hz; peaks: the {} highest local maxima from {} Hz, at least {} Hz apart; rms = the band of +-{} bins",
         n.segments,
         st.count(Id::NoiseSeg),
         n.seconds,
@@ -645,7 +657,7 @@ fn noise_text(s: &mut String, n: &Noise, st: &Settings) {
         };
         let _ = writeln!(
             s,
-            "  {}: valid in {:.1} % of the hover-like steps; {range}",
+            "  {}: valid in {:.1} % of the {what} steps; {range}",
             super::render::line_name(r.line),
             100.0 * r.valid_frac
         );
@@ -778,7 +790,12 @@ fn span_json(sp: &SpanReport, r: &TuneReport) -> Value {
         "needs_newer_firmware": needs,
         "axes": AXES.iter().enumerate().map(|(a, n)| axis_json(n, &sp.axes[a])).collect::<Vec<_>>(),
         "noise": match &sp.noise {
-            Ok(n) => noise_json(n),
+            Ok(n) => {
+                let mut v = noise_json(n);
+                v["basis"] = json!("whole airborne time");
+                v["hover_like"] = sp.noise_hover.as_ref().map_or(Value::Null, noise_json);
+                v
+            }
             Err(why) => json!({"made": false, "reason": why}),
         },
         "observations": sp.observations,
@@ -846,6 +863,7 @@ fn axis_json(name: &str, ax: &AxisReport) -> Value {
                 Ok(h) => json!({"made": true, "rms_d_nm": h.rms_d, "rms_p_nm": h.rms_p, "segments": h.segments}),
                 Err(why) => json!({"made": false, "reason": why}),
             },
+            "above_split_hover_like": t.hf_hover.as_ref().map(|h| json!({"rms_d_nm": h.rms_d, "rms_p_nm": h.rms_p, "segments": h.segments})),
             "sum_check": t.sum_check.map(|(n, m)| json!({"steps": n, "max_abs_nm": m})),
             "implied_kp": t.implied_kp.map(|(k, n)| json!({"value": k, "steps": n})),
             "demand_saturated_fraction": jn(ax.sat_axis_frac),

@@ -166,6 +166,9 @@ fn drive(
 struct Options {
     tuning: bool,
     tone: bool,
+    /// Roll and pitch targets a square wave of 2 s period from 2 s on (never hover-like), and the gyro only the
+    /// tone: no noise, no plant response.
+    manoeuvre: bool,
 }
 
 fn synthetic(o: &Options) -> Vec<u8> {
@@ -219,12 +222,27 @@ fn synthetic(o: &Options) -> Vec<u8> {
         } else {
             0.0
         };
-        let tar = [roll_r[k], pitch_r[k], 0.0];
-        let g = [
-            roll_y[k] + NOISE * rng.normal() + tone,
-            pitch_y[k] + NOISE * rng.normal() + tone,
-            NOISE * rng.normal() + tone,
-        ];
+        let square = if t >= 2.0 && (t as usize).is_multiple_of(2) {
+            0.8
+        } else if t >= 2.0 {
+            -0.8
+        } else {
+            0.0
+        };
+        let tar = if o.manoeuvre {
+            [square, -square, 0.0]
+        } else {
+            [roll_r[k], pitch_r[k], 0.0]
+        };
+        let g = if o.manoeuvre {
+            [tone; 3]
+        } else {
+            [
+                roll_y[k] + NOISE * rng.normal() + tone,
+                pitch_y[k] + NOISE * rng.normal() + tone,
+                NOISE * rng.normal() + tone,
+            ]
+        };
         let airborne = t >= 2.0;
         let mode = if t < 70.0 { 1 } else { 3 };
         let mut p = [0f32; 3];
@@ -292,6 +310,7 @@ fn flight() -> &'static Value {
             &synthetic(&Options {
                 tuning: true,
                 tone: true,
+                manoeuvre: false,
             }),
         );
         tune_json(&path, "")
@@ -406,6 +425,7 @@ fn an_axis_with_a_zero_target_says_insufficient_excitation() {
         &synthetic(&Options {
             tuning: true,
             tone: false,
+            manoeuvre: false,
         }),
     );
     let out = run(&format!("log tune {}", path.display()));
@@ -464,6 +484,7 @@ fn without_the_tone_no_peak_is_related_to_a_rotor() {
         &synthetic(&Options {
             tuning: true,
             tone: false,
+            manoeuvre: false,
         }),
     );
     let doc = tune_json(&path, "");
@@ -556,6 +577,7 @@ fn from_and_to_limit_the_analysis() {
         &synthetic(&Options {
             tuning: true,
             tone: true,
+            manoeuvre: false,
         }),
     );
     // Only the roll events: pitch has none inside 0..60 s.
@@ -578,6 +600,7 @@ fn a_log_without_the_new_records_gets_its_context_and_says_what_needs_newer_firm
         &synthetic(&Options {
             tuning: false,
             tone: true,
+            manoeuvre: false,
         }),
     );
     let out = run(&format!("log tune {}", path.display()));
@@ -647,6 +670,7 @@ fn the_header_prints_every_constant_and_a_flag_changes_it() {
         &synthetic(&Options {
             tuning: false,
             tone: false,
+            manoeuvre: false,
         }),
     );
     let out = run(&format!(
@@ -734,4 +758,89 @@ fn a_missing_file_fails_with_a_message() {
         "{}",
         out.err
     );
+}
+
+#[test]
+fn continuous_manoeuvring_still_gives_the_noise_figures_over_the_whole_airborne_time() {
+    let dir = TempDir::new("tune-manoeuvre");
+    let path = write(
+        &dir,
+        "manoeuvre.BIN",
+        &synthetic(&Options {
+            tuning: true,
+            tone: true,
+            manoeuvre: true,
+        }),
+    );
+    let doc = tune_json(&path, "");
+    let span = &doc["spans"][0];
+    let noise = &span["noise"];
+    assert_eq!(noise["made"], true, "{noise}");
+    assert_eq!(noise["basis"], "whole airborne time");
+    assert!(noise["hover_like"].is_null(), "no hover-like run: {noise}");
+    let bin = num(&noise["bin_hz"]);
+    // The gyro: 0.02 at TONE_HZ and 0.01 at twice it, so rms sqrt(0.02^2/2 + 0.01^2/2) above 50 Hz.
+    let want_g = (0.02f64.powi(2) / 2.0 + 0.01f64.powi(2) / 2.0).sqrt();
+    for axis in 0..3 {
+        let a = &noise["axes"][axis];
+        let top = &a["peaks"][0];
+        assert!((num(&top["hz"]) - TONE_HZ).abs() <= bin, "{top}");
+        assert!(
+            (num(&top["rms"]) - 0.02 / 2f64.sqrt()).abs() < 0.0015,
+            "{top}"
+        );
+        assert!(
+            (num(&a["rms_above_split"]) - want_g).abs() < 0.03 * want_g,
+            "{a}"
+        );
+        assert!(
+            top["rotor_matches"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["harmonic"] == 1),
+            "{top}"
+        );
+    }
+    // The D torque of roll: the sampled derivative of the tone, amplitude kd * a * 2 sin(pi f / fs) * fs.
+    let amp = |kd: f64, a: f64, f: f64| kd * a * 2.0 * (std::f64::consts::PI * f / FS).sin() * FS;
+    let want_d =
+        ((amp(0.00746, 0.02, TONE_HZ).powi(2) + amp(0.00746, 0.01, 2.0 * TONE_HZ).powi(2)) / 2.0)
+            .sqrt();
+    let hf = &span["axes"][0]["terms"]["above_split"];
+    assert_eq!(hf["made"], true, "{hf}");
+    assert!(
+        (num(&hf["rms_d_nm"]) - want_d).abs() < 0.03 * want_d,
+        "{hf} want {want_d}"
+    );
+    assert!(span["axes"][0]["terms"]["above_split_hover_like"].is_null());
+}
+
+#[test]
+fn a_long_hover_gives_the_whole_airborne_and_the_hover_like_lines() {
+    let flight = &flight()["spans"][0];
+    let noise = &flight["noise"];
+    assert_eq!(noise["basis"], "whole airborne time");
+    assert!(noise["hover_like"]["made"] == true, "{noise}");
+    let t = &flight["axes"][0]["terms"];
+    assert_eq!(t["above_split"]["made"], true);
+    assert!(num(&t["above_split_hover_like"]["rms_d_nm"]) > 0.0);
+    assert!(
+        num(&t["above_split"]["segments"]) > num(&t["above_split_hover_like"]["segments"]),
+        "{t}"
+    );
+    let dir = TempDir::new("tune-hover-text");
+    let path = write(
+        &dir,
+        "flight.BIN",
+        &synthetic(&Options {
+            tuning: true,
+            tone: true,
+            manoeuvre: false,
+        }),
+    );
+    let out = run(&format!("log tune {}", path.display()));
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(out.out.contains("whole airborne time"), "{}", out.out);
+    assert!(out.out.contains("hover-like, "), "{}", out.out);
 }

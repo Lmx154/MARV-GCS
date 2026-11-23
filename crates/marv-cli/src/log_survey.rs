@@ -57,6 +57,9 @@ struct Data {
     gps_unix_s: Option<i64>,
 }
 
+/// The GPS record's HDop column (0.01 units) at its largest value, 327.67: the receiver gave none.
+const HDOP_NOT_AVAILABLE: f64 = 327.0;
+
 fn read(path: &Path, channel: u8) -> Result<Data, String> {
     let mut reader = Reader::open(path).map_err(|e| e.to_string())?;
     let column = format!("C{channel}");
@@ -271,9 +274,12 @@ pub fn run(command: &SurveyCommand, out: &mut dyn Write, err: &mut dyn Write) ->
         let hdop = used
             .iter()
             .map(|f| f.hdop)
+            .filter(|h| *h < HDOP_NOT_AVAILABLE)
             .fold(f64::NEG_INFINITY, f64::max);
         if hdop.is_finite() {
             line.push_str(&format!(", hdop {hdop:.2} at most"));
+        } else if used.iter().any(|f| f.hdop >= HDOP_NOT_AVAILABLE) {
+            line.push_str(", hdop n/a");
         }
         match points.last() {
             Some((_, previous)) => {

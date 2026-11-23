@@ -56,7 +56,7 @@ fn rcin(t_us: u64, c9: u16) -> Vec<u8> {
     r
 }
 
-fn gps(t_us: u64, status: u8, lat: f64, lon: f64) -> Vec<u8> {
+fn gps_hdop(t_us: u64, status: u8, lat: f64, lon: f64, hdop: i16) -> Vec<u8> {
     let mut r = vec![0xA3, 0x95, GPS];
     r.extend(t_us.to_le_bytes());
     r.push(0); // I
@@ -64,7 +64,7 @@ fn gps(t_us: u64, status: u8, lat: f64, lon: f64) -> Vec<u8> {
     r.extend(3_600_000u32.to_le_bytes()); // GMS: one hour into the week
     r.extend(2400u16.to_le_bytes()); // GWk: the week of 2026-01-04
     r.push(11); // NSats
-    r.extend(120i16.to_le_bytes()); // HDop 1.20
+    r.extend(hdop.to_le_bytes()); // HDop, 0.01 units
     r.extend(((lat * 1e7).round() as i32).to_le_bytes());
     r.extend(((lon * 1e7).round() as i32).to_le_bytes());
     r.extend(1000i32.to_le_bytes());
@@ -105,6 +105,10 @@ fn press(i: usize, start_s: f64, samples: u32, status: u8) -> Press {
 /// RCIN at 10 Hz and GPS at 5 Hz for `seconds`; channel 9 low (1000) except in the presses (2000); in the window
 /// of a press (0.3 s each side) the fixes are at its place with one wild fix among them.
 fn log(presses: &[Press], seconds: u64) -> Vec<u8> {
+    log_hdop(presses, seconds, 120)
+}
+
+fn log_hdop(presses: &[Press], seconds: u64, hdop: i16) -> Vec<u8> {
     let mut f = header();
     let us = |s: f64| (s * 1e6).round() as u64;
     let window = |p: &Press| {
@@ -126,12 +130,12 @@ fn log(presses: &[Press], seconds: u64) -> Vec<u8> {
             let (a, b) = window(p);
             t >= a && t <= b
         }) {
-            Some(p) => f.extend(gps(t, p.status, p.lat, p.lon)),
-            None => f.extend(gps(t, 3, DECOY.0, DECOY.1)),
+            Some(p) => f.extend(gps_hdop(t, p.status, p.lat, p.lon, hdop)),
+            None => f.extend(gps_hdop(t, 3, DECOY.0, DECOY.1, hdop)),
         }
     }
     for p in presses {
-        f.extend(gps(us(p.start_s) + 50_000, p.status, 3.5, 7.5)); // the wild fix
+        f.extend(gps_hdop(us(p.start_s) + 50_000, p.status, 3.5, 7.5, hdop)); // the wild fix
     }
     f
 }
@@ -171,6 +175,19 @@ fn list(ran: &Ran, name: &str) -> Vec<gcs_mavlink::services::missions::MissionPo
 
 fn e7(x: f64) -> i32 {
     (x * 1e7).round() as i32
+}
+
+#[test]
+fn an_hdop_that_is_not_available_prints_n_a() {
+    let dir = TempDir::new("survey-hdop");
+    let ran = survey(
+        &dir,
+        &log_hdop(&[press(0, 10.0, 6, 3)], 20, i16::MAX),
+        "--name na",
+    );
+    assert_eq!(ran.code, 0, "{}", ran.err);
+    assert!(ran.out.contains("hdop n/a"), "{}", ran.out);
+    assert!(!ran.out.contains("327"), "{}", ran.out);
 }
 
 #[test]
