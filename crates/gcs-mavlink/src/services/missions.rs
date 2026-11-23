@@ -52,6 +52,20 @@ pub fn degrees_to_e7(degrees: f64) -> Option<i32> {
         .then_some(scaled as i32)
 }
 
+/// Why the station itself refuses a waypoint before anything is sent: the vehicle's ranges of `x` and `y` (both
+/// ends included) and a finite `z` (section 17, "What the station sends").
+fn point_problem(point: &MissionPoint) -> Option<&'static str> {
+    if !(-900_000_000..=900_000_000).contains(&point.lat_e7) {
+        Some("latitude out of range")
+    } else if !(-1_800_000_000..=1_800_000_000).contains(&point.lon_e7) {
+        Some("longitude out of range")
+    } else if !point.z.is_finite() {
+        Some("altitude is not finite")
+    } else {
+        None
+    }
+}
+
 /// The IEEE CRC-32: reflected polynomial 0xEDB88320, initial value and final XOR 0xFFFFFFFF.
 fn crc32(bytes: &[u8]) -> u32 {
     let mut crc = u32::MAX;
@@ -132,6 +146,9 @@ pub enum MissionFailure {
     NoVehicle,
     /// Not started: the list has more waypoints than a `MISSION_COUNT` can say.
     CountTooLarge,
+    /// Not started: waypoint `seq` of the list is out of the vehicle's ranges or has a non-finite altitude; nothing
+    /// was sent and no read-back is made.
+    InvalidWaypoint { seq: u16, problem: &'static str },
     /// The vehicle's MISSION_ACK with this `type`.
     Refused(MavMissionResult),
     /// Timed out: no answer after every send ("no answer"). The station sent MISSION_ACK CANCELLED.
@@ -154,6 +171,9 @@ impl fmt::Display for MissionFailure {
         match self {
             MissionFailure::NoVehicle => f.write_str("the vehicle is not connected"),
             MissionFailure::CountTooLarge => f.write_str("too many waypoints to send"),
+            MissionFailure::InvalidWaypoint { seq, problem } => {
+                write!(f, "waypoint {seq}: {problem}; nothing was sent")
+            }
             MissionFailure::Refused(result) => {
                 write!(f, "refused: {}", result_meaning(*result))
             }
@@ -397,11 +417,21 @@ impl Missions {
         state.ended = None;
         let target = Self::target(cx);
         let count = u16::try_from(plan.len());
-        let (Some(target), Ok(count)) = (target, count) else {
+        let invalid = plan
+            .iter()
+            .enumerate()
+            .find_map(|(at, point)| Some((at, point_problem(point)?)));
+        let (Some(target), Ok(count), None) = (target, count, invalid) else {
             let reason = if target.is_none() {
                 MissionFailure::NoVehicle
-            } else {
+            } else if count.is_err() {
                 MissionFailure::CountTooLarge
+            } else {
+                let (at, problem) = invalid.unwrap_or_default();
+                MissionFailure::InvalidWaypoint {
+                    seq: u16::try_from(at).unwrap_or(u16::MAX),
+                    problem,
+                }
             };
             cx.state.missions.status = MissionStatus::Failed {
                 reason,

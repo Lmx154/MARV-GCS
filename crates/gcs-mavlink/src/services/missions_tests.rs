@@ -848,29 +848,38 @@ fn a_refused_upload_is_not_done_even_when_the_vehicle_holds_the_list() {
 }
 
 #[test]
-fn a_latitude_or_longitude_out_of_range_is_refused_by_the_vehicle_not_the_station() {
-    for (lat, lon, code) in [
-        (900_000_001, 0, R::MAV_MISSION_INVALID_PARAM5_X),
-        (-900_000_001, 0, R::MAV_MISSION_INVALID_PARAM5_X),
-        (0, 1_800_000_001, R::MAV_MISSION_INVALID_PARAM6_Y),
-        (0, -1_800_000_001, R::MAV_MISSION_INVALID_PARAM6_Y),
+fn a_waypoint_out_of_the_vehicles_ranges_or_with_a_non_finite_altitude_is_refused_by_the_station() {
+    // Section 17, "What the station sends": the whole operation is refused, nothing is sent, no read-back is made.
+    let at = |lat_e7, lon_e7, z| MissionPoint { lat_e7, lon_e7, z };
+    for (bad, problem) in [
+        (at(900_000_001, 0, 1.0), "latitude out of range"),
+        (at(-900_000_001, 0, 1.0), "latitude out of range"),
+        (at(0, 1_800_000_001, 1.0), "longitude out of range"),
+        (at(0, -1_800_000_001, 1.0), "longitude out of range"),
+        (at(0, 0, f32::NAN), "altitude is not finite"),
+        (at(0, 0, f32::INFINITY), "altitude is not finite"),
+        (at(0, 0, f32::NEG_INFINITY), "altitude is not finite"),
     ] {
         let mut rig = Rig::new();
-        let mut vehicle = Vehicle::default();
-        let bad = MissionPoint {
-            lat_e7: lat,
-            lon_e7: lon,
-            z: 1.0,
-        };
-        rig.upload(&[example()[0], bad], 0);
-        rig.run(&mut vehicle, 1);
-        // The station sent both items: it checks nothing itself.
-        assert_eq!(rig.times("ITEM 1").len(), 1, "{lat} {lon}");
+        rig.upload(&[example()[0], bad, at(i32::MAX, 0, 1.0)], 7);
+        assert!(rig.log.is_empty(), "{bad:?}: nothing is sent");
+        let (reason, phase) = rig.failed();
         assert_eq!(
-            rig.failed(),
-            (MissionFailure::Refused(code), MissionPhase::Transfer)
+            reason,
+            MissionFailure::InvalidWaypoint { seq: 1, problem },
+            "{bad:?}: the first bad waypoint is named"
         );
-        assert!(vehicle.list.is_empty());
+        assert_eq!(phase, MissionPhase::Transfer);
+        assert_eq!(rig.state.missions.runs, 1);
+        assert_eq!(rig.state.missions.ended, Some(Duration::from_millis(7)));
+        assert!(rig.state.missions.vehicle.is_none(), "no read-back");
+        assert!(
+            reason.to_string().contains("waypoint 1") && reason.to_string().contains(problem),
+            "{reason}"
+        );
+        // A failed start leaves no operation running.
+        rig.download(10);
+        assert_eq!(rig.sent(), vec![s_list()]);
     }
 }
 

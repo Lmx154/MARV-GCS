@@ -7,6 +7,9 @@ use std::time::{Duration, Instant};
 
 use gcs_mavlink::services::logs::{DownloadStatus, ListStatus, LogList};
 use gcs_mavlink::services::messages::{FieldValue, MessageEntry, flags_text};
+use gcs_mavlink::services::missions::{
+    MissionFailure, MissionPhase, MissionPoint, MissionStatus, MissionsState, result_meaning,
+};
 use gcs_mavlink::services::params::FetchStatus;
 use gcs_mavlink::services::texts::TextEntry;
 use gcs_mavlink::tlog::LogSink;
@@ -20,6 +23,7 @@ use crate::args::{
     Invocation, mav_command,
 };
 use crate::exit;
+use crate::waypoints;
 
 const POLL: Duration = Duration::from_millis(10);
 /// How long `param set` waits for the vehicle's reason after it saw the refusal.
@@ -40,6 +44,10 @@ const LOGS_GET_BYTES_PER_S: u64 = 5_000;
 const PROGRESS_EVERY: Duration = Duration::from_millis(500);
 /// The buffer between the log's frames and the file.
 const FILE_BUFFER: usize = 256 * 1024;
+/// A backstop for a mission operation. The service ends it by itself (6 sends of 1.5 s, an item wait of 9 s, then
+/// the same for the read-back), but a link that loses many frames makes every item cost several retries (16
+/// waypoints with every other frame lost both ways take over 200 s), so this is never the usual end.
+const MISSION_DEADLINE: Duration = Duration::from_secs(900);
 const DEVICE_MESSAGE: &str = "MARV_DEVICE_STATUS";
 /// The last texts `status` shows.
 const STATUS_TEXTS: usize = 3;
@@ -109,6 +117,21 @@ fn run_command(
     out: &mut dyn Write,
     echo: &mut Echo,
 ) -> Outcome {
+    let upload = match &invocation.command {
+        Command::MissionUpload(path) => Some(read_waypoints(path)?),
+        _ => None,
+    };
+    if let Command::MissionDownload {
+        file: Some(path),
+        force: false,
+    } = &invocation.command
+        && path.exists()
+    {
+        return Err(Fail::new(
+            exit::FAILED,
+            format!("{} exists (--force overwrites it)", path.display()),
+        ));
+    }
     wait_for_vehicle(session, invocation.timeout, echo)?;
     let duration = |default| invocation.duration.unwrap_or(default);
     match &invocation.command {
@@ -156,6 +179,61 @@ fn run_command(
             output,
             force,
         } => logs_get(session, *number, output.as_deref(), *force, out, echo),
+        Command::MissionUpload(_) => {
+            let points = upload.unwrap_or_default();
+            let state = mission_run(
+                session,
+                SessionCommand::UploadMission {
+                    items: points.clone(),
+                },
+                echo,
+            )?;
+            mission_verdict("upload", &state)?;
+            writeln!(
+                out,
+                "verified\t{} waypoints\tplan id {:#010X}",
+                points.len(),
+                state.vehicle.as_ref().map_or(0, |v| v.plan_id)
+            )?;
+            Ok(())
+        }
+        Command::MissionClear => {
+            let state = mission_run(session, SessionCommand::ClearMission, echo)?;
+            mission_verdict("clear", &state)?;
+            writeln!(
+                out,
+                "verified\t0 waypoints\tplan id {:#010X}",
+                state.vehicle.as_ref().map_or(0, |v| v.plan_id)
+            )?;
+            Ok(())
+        }
+        Command::MissionDownload { file, force } => {
+            let state = mission_run(session, SessionCommand::DownloadMission, echo)?;
+            mission_verdict("download", &state)?;
+            let Some(list) = state.vehicle.as_ref() else {
+                return Err(Fail::new(exit::FAILED, "mission download: no list arrived"));
+            };
+            for (seq, point) in list.items.iter().enumerate() {
+                writeln!(
+                    out,
+                    "{seq}\t{}\t{}\t{}",
+                    waypoints::degrees(point.lat_e7),
+                    waypoints::degrees(point.lon_e7),
+                    point.z
+                )?;
+            }
+            writeln!(
+                out,
+                "{} waypoints\tplan id {:#010X}",
+                list.items.len(),
+                list.plan_id
+            )?;
+            if let Some(path) = file {
+                write_waypoints(path, &list.items, *force)?;
+                writeln!(out, "written\t{}", path.display())?;
+            }
+            Ok(())
+        }
         command => {
             let Some((label, mav, params)) = mav_command(command) else {
                 return Err(Fail::new(exit::FAILED, "internal error: no such command"));
@@ -176,6 +254,102 @@ fn run_command(
             follow_command(session, &label, out, echo)
         }
     }
+}
+
+/// The waypoints of a `.waypoints` file, ready to send.
+fn read_waypoints(path: &Path) -> Result<Vec<MissionPoint>, Fail> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| Fail::new(exit::FAILED, format!("cannot read {}: {e}", path.display())))?;
+    waypoints::parse(&text)
+        .map_err(|why| Fail::new(exit::FAILED, format!("{}: {why}", path.display())))
+}
+
+/// Writes the list as a `.waypoints` file the map tab opens; an existing file only with `force`.
+fn write_waypoints(path: &Path, points: &[MissionPoint], force: bool) -> Outcome {
+    let mut options = OpenOptions::new();
+    options.write(true);
+    if force {
+        options.create(true).truncate(true);
+    } else {
+        options.create_new(true);
+    }
+    let mut file = options.open(path).map_err(|e| {
+        Fail::new(
+            exit::FAILED,
+            format!("cannot create {}: {e}", path.display()),
+        )
+    })?;
+    file.write_all(waypoints::to_wpl(points).as_bytes())
+        .map_err(|e| {
+            Fail::new(
+                exit::FAILED,
+                format!("cannot write {}: {e}", path.display()),
+            )
+        })
+}
+
+/// Sends a mission command and waits for the service to end it (for an upload or a clear: the read-back
+/// included). Returns the service's state at its end.
+fn mission_run(
+    session: &Session,
+    command: SessionCommand,
+    echo: &mut Echo,
+) -> Result<MissionsState, Fail> {
+    let before = session.state().missions.runs;
+    send(session, command)?;
+    let ended = wait_with(
+        MISSION_DEADLINE,
+        || {
+            let state = session.state();
+            if state.missions.runs == before {
+                return None;
+            }
+            matches!(
+                state.missions.status,
+                MissionStatus::Verified | MissionStatus::Complete | MissionStatus::Failed { .. }
+            )
+            .then(|| state.missions.clone())
+        },
+        &mut || echo.pump(session),
+    );
+    ended.ok_or_else(|| Fail::new(exit::FAILED, "the mission operation did not end in time"))
+}
+
+/// `Ok` when the operation is verified (an upload or a clear) or complete (a download); else the failure with
+/// the vehicle's refusal, code and meaning, and what the vehicle holds when the read-back says.
+fn mission_verdict(what: &str, state: &MissionsState) -> Outcome {
+    let MissionStatus::Failed { reason, phase } = &state.status else {
+        return Ok(());
+    };
+    let why = match reason {
+        MissionFailure::Refused(result) => {
+            format!(
+                "refused by the vehicle: {result:?} ({}): {}",
+                *result as u32,
+                result_meaning(*result)
+            )
+        }
+        other => other.to_string(),
+    };
+    let stage = match phase {
+        MissionPhase::Transfer => "",
+        MissionPhase::ReadBack => " (read-back)",
+    };
+    let holds = state.vehicle.as_ref().map_or(String::new(), |v| {
+        format!(
+            "; the vehicle holds {} waypoints, plan id {:#010X}",
+            v.items.len(),
+            v.plan_id
+        )
+    });
+    let code = match reason {
+        MissionFailure::LinkLost | MissionFailure::NoVehicle => exit::NO_VEHICLE,
+        _ => exit::FAILED,
+    };
+    Err(Fail::new(
+        code,
+        format!("mission {what} failed{stage}: {why}{holds}"),
+    ))
 }
 
 /// Polls `check` every 10 ms until it returns `Some` or `deadline` has passed. Bounded.

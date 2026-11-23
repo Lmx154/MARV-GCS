@@ -34,6 +34,11 @@ Commands:
   record <FILE> [--for <s>]        record the link to a .tlog (default 60 s)
   logs list                        the logs on the vehicle's card: NUMBER<TAB>SIZE, then last<TAB>N (USB or TCP only)
   logs get <N> [-o FILE] [--force] download log N (default file NNNNNNNN.BIN here; an existing file is kept without --force)
+  mission upload <file.waypoints>  send the waypoints of a QGC WPL 110 file (row 0, the home placeholder, is skipped), read the
+                                   list back and print `verified`, the count and the plan id (hex), or why not (exit 1)
+  mission download [<out.waypoints>]  the vehicle's list: one line per waypoint, then the count and the plan id; with a
+                                   file name also writes it as a .waypoints file (an existing file is kept without --force)
+  mission clear                    empty the vehicle's list and read it back; prints `verified`, 0 waypoints, plan id 0x00000000
   session export <file.tlog>       a recording into a session folder (CSV per message, session.json, a copy of the .tlog);
                                    no vehicle and no --connect; --name (default the file's name), --out (default
                                    <the file's directory>/sessions); an existing folder is never overwritten
@@ -62,7 +67,7 @@ Options:
   --level-range <min> <max>  log report: the ends of the motor command range; the closing block prints the
                          motor line's speed at both
   --json <file>          log report: also write the report as JSON
-  --force                let logs get overwrite an existing file
+  --force                let logs get and mission download overwrite an existing file
   --help                 this text
 
 Exit status: 0 success; 1 the command failed or the vehicle did not accept it;
@@ -124,6 +129,13 @@ pub enum Command {
         output: Option<PathBuf>,
         force: bool,
     },
+    MissionUpload(PathBuf),
+    MissionDownload {
+        /// Where to write the list as a `.waypoints` file; `None`: print only.
+        file: Option<PathBuf>,
+        force: bool,
+    },
+    MissionClear,
 }
 
 /// The commands that need no link.
@@ -253,8 +265,11 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             *file = output;
             *forced = force;
         }
+        Command::MissionDownload { force: forced, .. } if output.is_none() => *forced = force,
         _ if output.is_some() => return Err("-o only applies to logs get".to_string()),
-        _ if force => return Err("--force only applies to logs get".to_string()),
+        _ if force => {
+            return Err("--force only applies to logs get and mission download".to_string());
+        }
         _ => {}
     }
     match &command {
@@ -536,6 +551,32 @@ fn command(words: &[&str], yes: bool) -> Result<(Command, bool), String> {
             ["get", _, extra, ..] => Err(format!("unexpected argument {extra:?}")),
             [] => Err("logs needs list or get".to_string()),
             [other, ..] => Err(format!("unknown logs command {other:?}: list or get")),
+        },
+        "mission" => match rest {
+            ["upload", file] => Ok((Command::MissionUpload(PathBuf::from(file)), false)),
+            ["upload"] => Err("mission upload needs a FILE.waypoints".to_string()),
+            ["upload", _, extra, ..] => Err(format!("unexpected argument {extra:?}")),
+            ["download"] => Ok((
+                Command::MissionDownload {
+                    file: None,
+                    force: false,
+                },
+                false,
+            )),
+            ["download", file] => Ok((
+                Command::MissionDownload {
+                    file: Some(PathBuf::from(file)),
+                    force: false,
+                },
+                false,
+            )),
+            ["download", _, extra, ..] => Err(format!("unexpected argument {extra:?}")),
+            ["clear"] => Ok((Command::MissionClear, false)),
+            ["clear", extra, ..] => Err(format!("unexpected argument {extra:?}")),
+            [] => Err("mission needs upload, download or clear".to_string()),
+            [other, ..] => Err(format!(
+                "unknown mission command {other:?}: upload, download or clear"
+            )),
         },
         "session" => Err(
             "session works on files: marv-cli session export|list, without --connect".to_string(),

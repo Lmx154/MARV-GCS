@@ -10,6 +10,7 @@ pub mod args;
 pub mod commands;
 pub mod log_report;
 pub mod session;
+pub mod waypoints;
 
 /// The exit statuses.
 pub mod exit {

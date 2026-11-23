@@ -414,3 +414,43 @@ fn the_log_report_parses_and_needs_its_inputs() {
     assert!(error("log erase").contains("unknown log command"));
     assert!(USAGE.contains("log report"));
 }
+
+#[test]
+fn the_mission_commands_parse() {
+    assert_eq!(
+        command("mission upload plan.waypoints"),
+        Command::MissionUpload(PathBuf::from("plan.waypoints"))
+    );
+    assert_eq!(
+        command("mission download"),
+        Command::MissionDownload {
+            file: None,
+            force: false
+        }
+    );
+    assert_eq!(
+        command("mission download --force out.waypoints"),
+        Command::MissionDownload {
+            file: Some(PathBuf::from("out.waypoints")),
+            force: true
+        }
+    );
+    assert_eq!(command("mission clear"), Command::MissionClear);
+    assert!(USAGE.contains("mission upload") && USAGE.contains("mission download"));
+}
+
+#[test]
+fn the_mission_errors() {
+    let e = |words: &str| error(&format!("--connect tcp:127.0.0.1:5760 {words}"));
+    assert!(e("mission").contains("upload, download or clear"));
+    assert!(e("mission fly").contains("unknown mission command"));
+    assert!(e("mission upload").contains("needs a FILE.waypoints"));
+    assert!(e("mission upload a b").contains("unexpected argument"));
+    assert!(e("mission download a b").contains("unexpected argument"));
+    assert!(e("mission clear now").contains("unexpected argument"));
+    assert!(
+        e("mission upload a --force").contains("only applies to logs get and mission download")
+    );
+    assert!(e("mission download -o a").contains("only applies to logs get"));
+    assert!(e("mission clear --for 3").contains("only applies to"));
+}

@@ -12,6 +12,8 @@ use gcs_sim::{SimConfig, SimVehicle};
 
 pub struct Rig {
     pub addr: String,
+    /// The simulated vehicle, for a test that arms it.
+    pub vehicle: Arc<Mutex<SimVehicle>>,
     stop: Arc<AtomicBool>,
     server: Option<JoinHandle<()>>,
 }
@@ -28,10 +30,12 @@ impl Rig {
         let stop = Arc::new(AtomicBool::new(false));
         let server = {
             let stop = Arc::clone(&stop);
+            let vehicle = Arc::clone(&vehicle);
             std::thread::spawn(move || gcs_sim::serve_tcp(listener, vehicle, stop))
         };
         Rig {
             addr,
+            vehicle,
             stop,
             server: Some(server),
         }
