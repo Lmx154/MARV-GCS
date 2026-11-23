@@ -13,6 +13,7 @@ Usage: marv-cli --connect <endpoint> [--timeout <s>] <command> [args]
        marv-cli session export <file.tlog> [--name <name>] [--out <dir>]
        marv-cli session list [<dir>]
        marv-cli log report <file.BIN> --mass-kg <kg> --kf <N/(rad/s)^2> [--poles <n>] [--accel-lpf-hz <Hz>]... [--level-range <min> <max>] [--json <file>]
+       marv-cli log tune <file.BIN> [--json] [--from <s>] [--to <s>] [--<constant> <value>]...
 
 Endpoint: serial:PATH[:BAUD], tcp:HOST:PORT or udp:ADDR:PORT. serial and tcp are
 configure links; udp is operate-only (every command that writes is refused).
@@ -50,6 +51,16 @@ Commands:
                                    (repeatable) adds a low-passed 1 g window share to the vibration section;
                                    --json also writes the report as JSON (an existing file is never overwritten).
                                    No position is read or printed.
+  log tune <file.BIN>              the post-flight tuning analysis of a log with the PIDT and NTCH records, per armed span
+                                   that was airborne: context (modes, gains in force, notch, log health), the stick-driven
+                                   events found in the rate target, the response of the achieved rate to the target
+                                   (delay, rise, overshoot, settling), the frequency response where coherent, the
+                                   P, I, D terms, the gyro noise against the rotor frequencies, and the measured facts
+                                   in words. It proposes no gain. A log without the records gets its context and the
+                                   lines saying what needs newer firmware. No --connect, no vehicle; no position is read.
+                                   --json prints the same content as JSON on stdout instead of text; --from and --to
+                                   (log seconds) limit the analysis; every threshold and window is a named constant
+                                   printed in the header and overridable by a flag of its name (the header lists them).
 
 Options:
   --connect <endpoint>   where the vehicle is (required)
@@ -67,7 +78,9 @@ Options:
   --level-range <min> <max>  log report: the ends of the motor command range; the closing block prints the
                          motor line's speed at both
   --json <file>          log report: also write the report as JSON
+  --json                 log tune: print the analysis as JSON on stdout instead of text (a flag, no file)
   --force                let logs get and mission download overwrite an existing file
+  --from <s>, --to <s>   log tune: only the part of the log between these log times (TimeUS seconds)
   --help                 this text
 
 Exit status: 0 success; 1 the command failed or the vehicle did not accept it;
@@ -167,6 +180,16 @@ pub enum LogCommand {
     },
 }
 
+/// `log tune FILE [--json] [--from S] [--to S] [--<constant> V]...`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TuneCommand {
+    pub file: PathBuf,
+    pub json: bool,
+    pub from_s: Option<f64>,
+    pub to_s: Option<f64>,
+    pub settings: crate::log_tune::Settings,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Invocation {
     pub endpoint: Endpoint,
@@ -184,6 +207,8 @@ pub enum Parsed {
     Session(SessionCommand),
     /// `log ...`: works on a file, with no `--connect`.
     Log(LogCommand),
+    /// `log tune ...`: the tuning analysis of a log file.
+    LogTune(TuneCommand),
 }
 
 /// The `MARV_DEVICE` ids by name (docs/link-contract.md, section 8).
@@ -314,6 +339,9 @@ fn positive(option: &str, text: &str) -> Result<f64, String> {
 
 /// `log report <file> --mass-kg M --kf K [--poles N] [--accel-lpf-hz F]... [--level-range MIN MAX] [--json FILE]`.
 fn log(args: &[String]) -> Result<Parsed, String> {
+    if args.first().map(String::as_str) == Some("tune") {
+        return tune(&args[1..]);
+    }
     let (mut mass, mut kf, mut poles, mut json) = (None, None, None, None);
     let mut lpf = Vec::new();
     let mut level_range = None;
@@ -367,6 +395,58 @@ fn log(args: &[String]) -> Result<Parsed, String> {
         ["report", _, extra, ..] => Err(format!("unexpected argument {extra:?}")),
         [] => Err("log needs report".to_string()),
         [other, ..] => Err(format!("unknown log command {other:?}: report")),
+    }
+}
+
+/// `log tune <file> [--json] [--from S] [--to S] [--<constant> V]...`: the constants are the flags of
+/// `log_tune::Settings`.
+fn tune(args: &[String]) -> Result<Parsed, String> {
+    let mut settings = crate::log_tune::Settings::default();
+    let (mut json, mut from_s, mut to_s) = (false, None, None);
+    let mut words: Vec<&str> = Vec::new();
+    let mut iter = args.iter();
+    let log_second = |option: &str, text: &str| match text.parse::<f64>() {
+        Ok(x) if x.is_finite() && x >= 0.0 => Ok(x),
+        _ => Err(format!(
+            "{option} needs a number of seconds from 0, not {text:?}"
+        )),
+    };
+    while let Some(arg) = iter.next() {
+        let mut value = |option: &str| {
+            iter.next()
+                .map(String::as_str)
+                .ok_or_else(|| format!("{option} needs a value"))
+        };
+        match arg.as_str() {
+            "--help" | "-h" => return Ok(Parsed::Help),
+            "--json" => json = true,
+            "--from" => from_s = Some(log_second("--from", value("--from")?)?),
+            "--to" => to_s = Some(log_second("--to", value("--to")?)?),
+            option if option.starts_with("--") => {
+                let flag = &option[2..];
+                if !crate::log_tune::Settings::is_flag(flag) {
+                    return Err(format!("unknown option {option}"));
+                }
+                settings.set_flag(flag, value(option)?)?;
+            }
+            word => words.push(word),
+        }
+    }
+    if let (Some(f), Some(t)) = (from_s, to_s)
+        && f >= t
+    {
+        return Err(format!("--from needs a time before --to, not {f} and {t}"));
+    }
+    match words.as_slice() {
+        [file] => Ok(Parsed::LogTune(TuneCommand {
+            file: PathBuf::from(file),
+            json,
+            from_s,
+            to_s,
+            settings,
+        })),
+        [] => Err("log tune needs a FILE.BIN".to_string()),
+        [_, extra, ..] => Err(format!("unexpected argument {extra:?}")),
     }
 }
 
