@@ -993,6 +993,66 @@ mod access {
         rig.vehicle.stop();
     }
 
+    /// Mission messages (list request, count, clear) that the vehicle fake received.
+    fn mission_requests(rig: &Rig) -> usize {
+        count(rig, |m| {
+            matches!(
+                m,
+                Message::MISSION_REQUEST_LIST(_)
+                    | Message::MISSION_COUNT(_)
+                    | Message::MISSION_CLEAR_ALL(_)
+            )
+        })
+    }
+
+    #[test]
+    fn an_operate_session_sends_the_three_mission_commands() {
+        // One session each: the vehicle fake never answers, so an operation stays running.
+        type Case = (fn() -> Command, fn(&Message) -> bool);
+        let cases: [Case; 3] = [
+            (
+                || Command::DownloadMission,
+                |m| matches!(m, Message::MISSION_REQUEST_LIST(_)),
+            ),
+            (
+                || Command::ClearMission,
+                |m| matches!(m, Message::MISSION_CLEAR_ALL(_)),
+            ),
+            (
+                || Command::UploadMission { items: Vec::new() },
+                |m| matches!(m, Message::MISSION_COUNT(_)),
+            ),
+        ];
+        for (command, sent) in cases {
+            let mut rig = rig_access(Access::Operate);
+            rig.session.send(command());
+            assert!(
+                wait_until(LIMIT, || count(&rig, sent) >= 1),
+                "the command did not go out"
+            );
+            assert_eq!(rig.session.state().link.refused, None);
+            rig.vehicle.stop();
+        }
+    }
+
+    #[test]
+    fn negative_control_mission_commands_pass_and_a_configure_command_is_still_refused() {
+        let mut rig = rig_access(Access::Operate);
+        rig.session.send(Command::DownloadMission);
+        assert!(wait_until(LIMIT, || mission_requests(&rig) >= 1));
+        rig.session.send(save_to_flash());
+        std::thread::sleep(QUIET);
+        assert_eq!(storage_commands(&rig), 0);
+        assert_eq!(
+            rig.session.state().link.refused,
+            Some(Refused {
+                command: "SendCommand",
+                count: 1
+            })
+        );
+        rig.vehicle.stop();
+    }
+
     #[test]
     fn a_configure_session_sends_the_command() {
         let mut rig = rig_access(Access::Configure);
@@ -1048,9 +1108,12 @@ mod access {
             Command::CancelLogDownload => 7,
             Command::StartSessionLog { .. } => 8,
             Command::StopSessionLog => 9,
+            Command::UploadMission { .. } => 10,
+            Command::DownloadMission => 11,
+            Command::ClearMission => 12,
         }
     }
-    const COUNT: usize = 10;
+    const COUNT: usize = 13;
 
     #[test]
     fn every_command_has_its_class_in_the_table() {
@@ -1091,6 +1154,13 @@ mod access {
                 "StartSessionLog",
             ),
             (Command::StopSessionLog, Access::Operate, "StopSessionLog"),
+            (
+                Command::UploadMission { items: Vec::new() },
+                Access::Operate,
+                "UploadMission",
+            ),
+            (Command::DownloadMission, Access::Operate, "DownloadMission"),
+            (Command::ClearMission, Access::Operate, "ClearMission"),
         ];
         let mut seen = [false; COUNT];
         for (command, access, name) in &rows {

@@ -55,4 +55,20 @@ mod tests {
             assert_eq!(access_of(&endpoint), access, "{text}");
         }
     }
+
+    #[test]
+    fn the_mission_commands_are_allowed_on_every_link_and_a_configure_command_is_not_on_udp() {
+        use gcs_mavlink::Command;
+        let udp: Endpoint = "udp:0.0.0.0:14550".parse().expect("endpoint");
+        let operate = access_of(&udp);
+        assert_eq!(operate, Access::Operate);
+        for command in [
+            Command::UploadMission { items: Vec::new() },
+            Command::DownloadMission,
+            Command::ClearMission,
+        ] {
+            assert!(operate.allows(command.access()), "{}", command.name());
+        }
+        assert!(!operate.allows(Command::CancelLogDownload.access()));
+    }
 }

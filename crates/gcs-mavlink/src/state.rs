@@ -6,6 +6,7 @@ use crate::RxStats;
 use crate::dialect::MavCmd;
 use crate::services::logs::LogsState;
 use crate::services::messages::MessageStore;
+use crate::services::missions::{MissionPoint, MissionsState};
 use crate::services::params::{ParamTable, ParamValue};
 use crate::services::texts::TextLog;
 use crate::tlog::{LogSink, LogState, SessionLogState};
@@ -22,6 +23,8 @@ pub struct VehicleState {
     pub session_log: SessionLogState,
     /// The vehicle's logs: the last listing and the current or last download.
     pub logs: LogsState,
+    /// The mission service: the current or last upload, download or clear.
+    pub missions: MissionsState,
     /// The current or last MAVLink command the user sent; `None` before the first.
     pub command: Option<CommandRecord>,
     /// The calibrations the vehicle applies in RAM and has not saved to flash.
@@ -248,6 +251,15 @@ pub enum Command {
     },
     /// Abandon the running download and tell the vehicle to stop sending.
     CancelLogDownload,
+    /// Send this waypoint list to the vehicle and read it back (docs/link-contract.md section 17). An empty
+    /// list clears. The outcome shows in `VehicleState.missions`.
+    UploadMission {
+        items: Vec<MissionPoint>,
+    },
+    /// Read the vehicle's list. The outcome shows in `VehicleState.missions`.
+    DownloadMission,
+    /// Empty the vehicle's list and read it back. The outcome shows in `VehicleState.missions`.
+    ClearMission,
 }
 
 impl Command {
@@ -268,6 +280,10 @@ impl Command {
             Command::ListLogs => Access::Configure,
             Command::DownloadLog { .. } => Access::Configure,
             Command::CancelLogDownload => Access::Configure,
+            // A mission write changes no setting of the vehicle (section 9, the mission amendment).
+            Command::UploadMission { .. } => Access::Operate,
+            Command::DownloadMission => Access::Operate,
+            Command::ClearMission => Access::Operate,
         }
     }
 
@@ -284,6 +300,9 @@ impl Command {
             Command::ListLogs => "ListLogs",
             Command::DownloadLog { .. } => "DownloadLog",
             Command::CancelLogDownload => "CancelLogDownload",
+            Command::UploadMission { .. } => "UploadMission",
+            Command::DownloadMission => "DownloadMission",
+            Command::ClearMission => "ClearMission",
         }
     }
 }

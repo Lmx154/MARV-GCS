@@ -9,6 +9,7 @@ pub mod commands;
 pub mod heartbeat;
 pub mod logs;
 pub mod messages;
+pub mod missions;
 pub mod params;
 pub mod texts;
 
@@ -42,6 +43,7 @@ pub fn default_services(config: &SessionConfig) -> Vec<Box<dyn Service>> {
         Box::new(commands::Commands::new(config)),
         Box::new(logs::Logs::new()),
         Box::new(messages::Messages::new()),
+        Box::new(missions::Missions::new(config)),
         Box::new(params::Params::new(config)),
         Box::new(texts::Texts::new()),
         Box::new(crate::tlog::Recorder::new()),
