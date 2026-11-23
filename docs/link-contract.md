@@ -476,7 +476,7 @@ sessions pass every command.
 
 Classes.
 - Configure-class: every parameter write (`Command::SetParam`); and sending a MAVLink command to the vehicle
-  (`Command::SendCommand`: ALL of them but the four flight commands of the last bullet below, an unknown `MAV_CMD` id
+  (`Command::SendCommand`: ALL of them but the five flight commands of the last bullet below, an unknown `MAV_CMD` id
   counts as Configure, so storage actions,
   calibration, device actions (restart, self-test) and reboot are all Configure; section 10); and the three
   commands of log download (`Command::ListLogs`, `Command::DownloadLog`, `Command::CancelLogDownload`; section
@@ -500,14 +500,18 @@ Classes.
   abort the mission whenever and redirect the drone"); the class does not change.
 - Flight commands, amendment 2026-11-23 (the decision's section 9, A10), approved by the owner: "6. yes" (its section
   10) to "Start, Pause, Land and Abort work over the WiFi backpack link" (its question Q-A6). Approved, not built. The
-  four flight commands of section 10 are Operate-class, so they are allowed on a UDP session and their controls are
-  enabled on Operate and Configure alike: Start (`MAV_CMD_MISSION_START`), Pause (`MAV_CMD_DO_PAUSE_CONTINUE` with
-  param1 0), Abort and Land (`MAV_CMD_DO_SET_MODE` with param1 1 and custom mode HOLD or LAND). Only these: the same
+  flight commands of section 10 are Operate-class (five since Amendment C, below), so they are allowed on a UDP session
+  and their controls are enabled on Operate and Configure alike: Start (`MAV_CMD_MISSION_START`), Pause
+  (`MAV_CMD_DO_PAUSE_CONTINUE` with param1 0), Abort and Land (`MAV_CMD_DO_SET_MODE` with param1 1 and custom mode HOLD
+  or LAND), and Return (`MAV_CMD_NAV_RETURN_TO_LAUNCH`, params 1-7 all 0). Only these: the same
   commands with other parameters, and every other `MAV_CMD`, stay Configure-class. Whether the station gives them
   `Command` variants of their own or classes `Command::SendCommand` by its id and parameters is the station's (packet
   H4); the class match stays exhaustive. Reason: in the field the laptop reaches the vehicle only through the backpack;
-  none of the four arms, disarms or kills, and the vehicle refuses each of them while a CRSF report is fresh (section
+  none of the five arms, disarms or kills, and the vehicle refuses each of them while a CRSF report is fresh (section
   10).
+- Return, Amendment C (`_plan/decision-mavlink-mode-20261123.md`, sections 12 and 13: C3), approved, not built: the owner
+  said "ok that is fine" to the lead's summary naming "a fifth station button Return". It joins the Operate-class
+  commands above; nothing else widens.
 
 Services that run by themselves are not commands and are not gated. They only read: the capability
 request (`MAV_CMD_REQUEST_MESSAGE` for `AUTOPILOT_VERSION`) at connect, the repair reads of a list that is
@@ -536,7 +540,7 @@ say which role the session has.
 Written before the code (the design of 2026-11-13, `decision-foundation-20261113.md`, sections 5 and 8). The
 station sends a MAVLink command only when the user presses a button; it never sends one by itself (the
 capability request of section 9 is a read, not a command of this section). Every `Command::SendCommand`
-is Configure-class: on an Operate session it writes 0 bytes and is recorded in `link.refused` (except the four flight
+is Configure-class: on an Operate session it writes 0 bytes and is recorded in `link.refused` (except the five flight
 commands at the end of this section, section 9).
 
 What the vehicle answers (binding for the station and for the simulator)
@@ -615,12 +619,13 @@ device or action not listed: DENIED; any other command except 512 (`MAV_CMD_REQU
 configuration, off by default: drop the first N `COMMAND_LONG`s that are not `MAV_CMD_REQUEST_MESSAGE`, and
 never send the final ACK. The simulator reads and writes 42430 by hand, as it does `MARV_DEVICE_STATUS`.
 
-Not in this feature: `COMMAND_INT`, a queue of commands, arming, flight commands (until the amendment below), automatic
+Not in this feature: `COMMAND_INT`, a queue of commands, arming, flight commands (until the amendments below), automatic
 commands.
 
 Flight commands and the effective mode (amendment 2026-11-23; `_plan/decision-mavlink-mode-20261123.md` of
 `MARV-V2-drivers`, section 9: A1, A9, A10 and its state table; approved by the owner, its section 10, with A2' and
-A10' there). APPROVED, NOT BUILT. Built today (firmware 72de0d4): the vehicle
+A10' there; Amendment C, its sections 12 and 13, adds the fifth command Return, the reason codes, BLIND, the new
+TAKEOVER rule and the take-over panel, below, from the owner's words in its section 12). APPROVED, NOT BUILT. Built today (firmware 72de0d4): the vehicle
 answers 300, 193 and 176 UNSUPPORTED (section 2) and sends custom_mode 0. The codes below come with stage 2, the states
 and the commands with packet H2 (stage 3, `FS_HOLD_EN` 1); the station's buttons and `gcs-sim` with packet H4. It binds
 the firmware, the station and `gcs-sim`.
@@ -631,14 +636,15 @@ The effective mode, in HEARTBEAT `custom_mode` (a value, not a bitfield), on eve
 |---|---|---|
 | 0 | not reported | every firmware before stage 2, and `gcs-sim` today: the one value section 2 assigned, kept; the station shows no mode |
 | 1 | PILOT | a fresh CRSF report and the pilot latch set: today's flight modes |
-| 2 | TAKEOVER | a fresh CRSF report in HOLD, AUTO, RETURN or LAND: the ladder as if ch6 were High, centred sticks, real sticks and ch6 ignored; it stays TAKEOVER until a report has shown switch6 High and a later one shows it not High (A2'), which gives PILOT |
+| 2 | TAKEOVER | a fresh CRSF report in HOLD, AUTO, RETURN, LAND or BLIND: the vehicle holds (the ladder as if ch6 were High, centred sticks), real sticks and ch6 ignored. Control stays locked until the vehicle has seen, in fresh CRSF reports after the return, the arm switch ON and the mode switch in Position (switch6 High) in the same report; then the first fresh report with the mode switch not in Position hands over (A2', C1) and gives PILOT. An arm-OFF report before arm ON has been seen does not stop the motors while airborne (the vehicle keeps holding); after arm ON has been seen, arm OFF disarms at once; with the airborne latch false, arm OFF disarms at once. RC lost again in TAKEOVER: HOLD, LAND or BLIND by tier, and the lock starts over |
 | 3 | HOLD | hands-off Position hold, centred sticks |
 | 4 | AUTO | flying the stored list (section 17) |
 | 5 | RETURN | climbing to the return height, then a straight leg home |
 | 6 | LAND | descending to touchdown, then disarm |
 | 7 | STOP | disarmed, motors stopped |
+| 8 | BLIND | level descent with no height estimate (position tier T1; the lead's ruling; its law and touchdown detection stay unknown, U-1) |
 
-Codes 8 and above are not assigned (a station shows "unknown" and the number). With `FS_HOLD_EN` 0 only PILOT and STOP
+Codes 9 and above are not assigned (a station shows "unknown" and the number). With `FS_HOLD_EN` 0 only PILOT and STOP
 are sent.
 
 The commands: `COMMAND_LONG`, on the radio link (on the station's side the UDP link through the backpack, section 9);
@@ -650,13 +656,14 @@ parameters not named are 0.
 | Pause | 193 `MAV_CMD_DO_PAUSE_CONTINUE` | param1 0 | AUTO; RETURN | HOLD; from AUTO the place is kept |
 | Abort | 176 `MAV_CMD_DO_SET_MODE` | param1 1 (`MAV_MODE_FLAG_CUSTOM_MODE_ENABLED`), param2 3 (HOLD) | AUTO; RETURN; LAND on T3 only | HOLD, the place dropped |
 | Land | 176 `MAV_CMD_DO_SET_MODE` | param1 1, param2 6 (LAND) | HOLD; AUTO; RETURN | LAND |
+| Return | 20 `MAV_CMD_NAV_RETURN_TO_LAUNCH` | all 7 parameters 0 | HOLD; AUTO (in RETURN: ACCEPTED, no effect) | RETURN, the place dropped, the return height latched (A7) |
 
 What the vehicle answers
 - One `COMMAND_ACK` at once, addressed to the sender as every ACK: ACCEPTED when it takes the command (the state changes
   at the step it is taken), otherwise DENIED. Never IN_PROGRESS, TEMPORARILY_REJECTED or FAILED.
-- DENIED, for each of the four, when any of these holds:
+- DENIED, for each of the five, when any of these holds:
   1. a CRSF stick report is fresh (younger than 1.0 s, the gate's rule): in PILOT and TAKEOVER always;
-  2. the vehicle is in a state the table does not give for that command: PILOT, TAKEOVER and STOP for all four, and
+  2. the vehicle is in a state the table does not give for that command: PILOT, TAKEOVER and STOP for all five, and
      every state with `FS_HOLD_EN` 0. The cases where the vehicle is already in the command's result (Start in AUTO,
      Pause or Abort in HOLD, Land in LAND) are an open point (section 17);
   3. the parameters differ from the table: Pause with param1 other than 0 (continue is not served: Start resumes);
@@ -672,12 +679,68 @@ What the vehicle answers
   5. position tier T3 (A3: the position is covered);
   6. the heading monitor reports OK (`nav-eskf`:1774; designed separately);
   7. the battery is not critical;
-  8. the last CRSF report before the sticks were lost had the mode switch in Position (switch6 High; arm on holds by
-     construction) (A10').
-- No command arms, disarms or kills, whatever its parameters. The one kill stays the arm switch on CRSF (A2).
+  8. the arm switch was ON in the last CRSF report before the sticks were lost (Amendment C, C2: arm ON no longer
+     holds by construction, because a return with arm OFF followed by a change back to the MAVLink model leaves the
+     vehicle armed with a last report showing arm OFF); placed before the next condition;
+  9. the mode switch was in Position (switch6 High) in that same report (A10').
+- Return is DENIED, in this order (C3): the common four (not the radio link; a CRSF report is fresh; hands-off not
+  enabled (`FS_HOLD_EN` 0); not in this state), then no home, then position or heading tier lost (T3'), then battery
+  critical (the last two are B2's no-bounce rule, which applies to Return too). Already within `GDN_RADIUS` of home:
+  ACCEPTED (RETURN goes to LAND at the next step: the intended end of a return).
+- No command arms, disarms or kills, whatever its parameters. SUPERSEDED by Amendment C (C1, C5): "the arm switch is
+  the one kill" no longer holds in TAKEOVER before arm ON has been seen (an arm-OFF report there does not stop the motors
+  in the air). In the MAVLink model the arm switch does not reach the vehicle and there is no laptop kill (the owner);
+  the quickest stop is the model change back to CRSF (1.2 s measured, once 2.5 s; `facts-rc-link.md`:228-230), then arm
+  ON, then arm OFF. The model change itself is never blocked.
+
+Every DENIED `COMMAND_ACK` carries a reason code in `result_param2` (`COMMAND_ACK.result_param2`, `common.xml`:6157;
+0 = unknown), for all five commands (C3; the owner's "e" of the decision's section 12). The codes below are TO BE
+CONFIRMED AGAINST THE FIRMWARE'S `DenyReason::code()` BEFORE EITHER SIDE IS BUILT. The station shows the text of the
+code, then ": " and the pressed button with " refused", for example, code 11 on Start: "A waypoint is more than 1 km
+from the take-off point: Start refused". A code not in the table: "Refused, reason not known (code N): <button> refused".
+
+| Code | Reason | The text the station shows (before ": <button> refused") |
+|---|---|---|
+| 0 | unknown | "Refused, no reason given" |
+| 1 | not the radio link | "Not on the radio link: connect through the transmitter's WiFi backpack" |
+| 2 | a CRSF report is fresh | "The pilot's radio is sending sticks: change the transmitter to the MAVLink model first" |
+| 3 | hands-off not enabled | "Hands-off flight is off in the vehicle (FS_HOLD_EN is 0)" |
+| 4 | not in this state | "The vehicle is not in a state that takes this command" |
+| 5 | station heartbeat absent | "The vehicle does not hear this station on the radio link: check the link and try again" |
+| 6 | no waypoints stored | "No waypoints are stored on the vehicle: upload a mission first" |
+| 7 | a stored height outside the limits in force | "A stored height is outside the height limits in force: upload the mission again" |
+| 8 | no home | "The vehicle has no home point: it is set at arming, before take-off" |
+| 9 | vehicle beyond 1000 m | "The vehicle is more than 1 km from the take-off point" |
+| 10 | waypoint distance unknown | "The distance to a waypoint is unknown: the vehicle has no valid position" |
+| 11 | waypoint beyond 1000 m | "A waypoint is more than 1 km from the take-off point" |
+| 12 | heading not OK | "The vehicle's heading is not OK: wait for it to settle" |
+| 13 | position tier lost | "The vehicle has lost its position estimate" |
+| 14 | battery not OK | "The battery is not OK" |
+| 15 | arm switch off | "The arm switch was OFF before the sticks were lost: it must be ON" |
+| 16 | mode switch not in Position | "The mode switch was not in Position before the sticks were lost: it must be in Position" |
+| 17 | battery critical | "The battery is critical" |
+| 18 | link lost | "The link to this station was lost for more than 10 s" |
 
 The station sends them as every command above (one outstanding, three sends 1.5 s apart, the ACK rule); the first
 ACCEPTED or DENIED ends one. It shows the effective mode from the HEARTBEAT, not from the ACK.
+
+The take-over panel (Amendment C, C4, the decision's section 13, from the owner's words in its section 12; APPROVED, NOT BUILT; station
+packet H4). The fact behind it: on the CRSF model the station has no link to the vehicle, so it cannot confirm anything
+after the model change and shows an instruction from its own data, with two triggers:
+- a standing panel while the vehicle's latest HEARTBEAT `custom_mode` is HOLD, AUTO, RETURN, LAND or BLIND (3, 4, 5, 6, 8);
+- full-width when the vehicle's HEARTBEAT stops while the last reported state was one of those.
+It must NOT claim: that the model was changed; that the vehicle is in TAKEOVER, holding or handed back; that either
+switch is set; that a return will happen. It may show: the last reported state and its age; and the last home-set and
+position-tier (T3') bits, for the conditional line. The wording, verbatim from C4:
+
+> TO TAKE CONTROL. Before changing the model to CRSF: 1 ARM ON. 2 Mode switch POSITION. 3 Throttle in the middle
+> (advice; not checked). Then change the model: the vehicle stops and holds. Control stays locked until it sees ARM ON
+> and POSITION together; then move the mode switch out of Position. TO STOP THE MOTORS after the change: ARM ON, then
+> OFF (OFF alone does nothing until ON has been seen).
+
+and the conditional line, shown with it: "If you did NOT change the model: the vehicle holds and, after 10 s without the
+link, returns to take-off (home was set) / lands where it is (no home)" (the station shows the half its last home-set bit
+selects). This wording replaces the lead's earlier one (the decision's C5).
 
 ## 11. Log download
 
@@ -1683,10 +1746,10 @@ Open points (each would otherwise be guessed by the firmware, the station or `gc
 4. A command whose result is the present state (Start in AUTO, Pause or Abort in HOLD, Land in LAND): ACCEPTED or
    DENIED; it matters because the station sends again after 1.5 s when an ACK is lost; and whether Abort in HOLD drops
    a place kept by Pause.
-5. The four flight commands arriving on USB (A10 says the radio link): taken, DENIED, or UNSUPPORTED.
-6. The reason for a DENIED flight command: a STATUSTEXT naming the first failed condition (as section 10 does for a
-   refusal by parameters), or nothing.
-7. BLIND (tier T1, U-1): reported as LAND (6) or with a code of its own.
+5. The five flight commands arriving on USB (A10 says the radio link): taken, DENIED, or UNSUPPORTED.
+6. SETTLED by Amendment C (section 10): the reason of a DENIED flight command is a code in `result_param2`. Still open:
+   whether a STATUSTEXT also names it.
+7. SETTLED (the lead's ruling, section 10): BLIND has a code of its own, 8.
 8. HEARTBEAT base_mode: stays 0, or sets MAV_MODE_FLAG_CUSTOM_MODE_ENABLED (1) and MAV_MODE_FLAG_SAFETY_ARMED (128)
    once `custom_mode` carries the mode (the station must also show armed, the decision's section 1 D).
 9. What Start reads for "heading monitor OK" and "battery not critical" until the monitor and BATT exist (deny, or
@@ -1694,3 +1757,17 @@ Open points (each would otherwise be guessed by the firmware, the station or `gc
 10. The station's files of stage 1 (no return row) and where the map tab takes the return height (a default, or none).
 11. `gcs-sim`: how it reaches HOLD without CRSF, and which Start conditions (home, T3, heading, battery, switch6 in the
     last CRSF report) it models or sets by configuration.
+
+Open points of Amendment C (section 10; each would otherwise be guessed; approved, not built)
+12. The reason codes 1-18 are to be confirmed against the firmware's `DenyReason::code()` before either side is built; so
+    are which commands can give which code (the common four and Return's 8, 13, 17 are certain; 18, and 13 and 17 for
+    Pause, Abort and Land, follow B2, which this contract does not carry yet) and the texts, which are the station's.
+13. Start's deny order after the common four, with 15 before 16: the order of its list or the firmware's `DenyReason`
+    order; where 7 (a stored height outside the limits in force) sits, and whether Start re-checks heights at all (open
+    point 1); and 14 (battery not OK) against 17 (battery critical) for Start.
+14. How the station learns the home-set and position-tier (T3') bits for the conditional line of the take-over panel: no
+    message of this contract carries them (a field of an existing message, or a message of its own).
+15. How long the vehicle's HEARTBEAT must be absent before the full-width panel shows (C4 says "stops", not a time), and
+    what clears either form of the panel (a HEARTBEAT in PILOT, TAKEOVER or STOP, or the user).
+16. The station's text for code 0 and for a code above 18 (written above as a suggestion).
+17. `gcs-sim` for Amendment C: which of the five commands and codes it models, and how it sets the home-set and tier bits.
