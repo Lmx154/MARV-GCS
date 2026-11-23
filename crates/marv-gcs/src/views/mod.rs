@@ -59,6 +59,12 @@ pub fn all() -> Vec<Box<dyn View>> {
     registry(false)
 }
 
+/// The Map tab with no tiles and its waypoint lists in `store` (`None`: in memory only): for the tests, which need
+/// lists on disk of their own.
+pub fn map_with_store(store: Option<crate::missions::Store>) -> Box<dyn View> {
+    Box::new(map::MapView::with_store(false, store))
+}
+
 /// In tab order: the one line to touch when a view is added.
 fn registry(tiles: bool) -> Vec<Box<dyn View>> {
     let debug = presets::DebugFlag::default();

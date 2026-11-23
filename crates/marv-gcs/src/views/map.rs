@@ -1,15 +1,19 @@
 //! The Map tab: the vehicle's GPS position and this session's track on a dark map drawn from OpenFreeMap's
 //! vector tiles (OpenStreetMap data), and a waypoint editor. The position comes from GPS_RAW_INT (`lat` and
 //! `lon` in degE7, `cog`, `fix_type`) and nothing is computed from it. The tiles are fetched over HTTPS only
-//! for what is on the screen and kept on disk (`cache_dir`); the vehicle's position is never written anywhere
-//! and nothing is sent to the vehicle. The marker turns by the yaw of ATTITUDE (radians, 0 = north, clockwise)
+//! for what is on the screen and kept on disk (`cache_dir`); the vehicle's position is never written anywhere.
+//! The marker turns by the yaw of ATTITUDE (radians, 0 = north, clockwise)
 //! while that message is fresh (the HUD's rule); otherwise by the GPS course when there is one, otherwise it is
 //! a circle. The map is always north up.
 //!
 //! Waypoints: a left click on the map adds one to the end of the current list (while "Add on click" is on),
 //! a right click within `HIT_RADIUS` of one removes it. The side panel edits the lists (new, rename,
 //! duplicate, delete), the points (coordinates typed or pasted, altitude, order) and saves every change to
-//! the list's file (`crate::missions`, QGC WPL 110). The waypoints are not sent to the vehicle.
+//! the list's file (`crate::missions`, QGC WPL 110). The panel's "On the vehicle" part sends the current list
+//! to the vehicle (Upload), reads the vehicle's list (Read) and empties it (Clear) through the mission service
+//! (`mission`, docs/link-contract.md section 17); the vehicle only stores the list, nothing here makes it follow
+//! it. What the vehicle holds is drawn on the map in another style and compared with the edited list; reading it
+//! never changes the edited list or its file.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -31,6 +35,8 @@ use super::{View, ViewCtx};
 use crate::missions::{self, Store, Waypoint};
 use crate::status::GREY;
 use crate::theme;
+
+mod mission;
 
 /// Sent with every tile request (the tile policies ask for one that names the application).
 pub const USER_AGENT: &str = concat!(
@@ -512,6 +518,7 @@ impl View for MapView {
         self.tracker = Tracker::default();
         self.memory = world_view();
         self.zoomed = false;
+        self.waypoints.controls.session_changed();
     }
 
     fn update(&mut self, state: &VehicleState, _now: Option<Duration>) {
@@ -565,7 +572,7 @@ impl View for MapView {
                 .id_salt("map_waypoint_panel")
                 .auto_shrink([false, false])
                 .show(&mut panel_ui, |ui| {
-                    self.waypoints.panel(ui, &mut self.memory)
+                    self.waypoints.panel(ui, &mut self.memory, cx)
                 });
         }
 
@@ -573,6 +580,12 @@ impl View for MapView {
         let tiles = tiles(&mut self.tiles, &ctx);
         let tracker = &self.tracker;
         let waypoints = &mut self.waypoints;
+        let on_vehicle: Option<Vec<Waypoint>> = cx
+            .state
+            .missions
+            .vehicle
+            .as_ref()
+            .map(|list| mission::waypoints_of(&list.items));
         let heading = marker_heading(
             &cx.state.messages,
             cx.now,
@@ -586,7 +599,7 @@ impl View for MapView {
                         draw_base(ui, projector, tiles);
                     }
                     draw_track(ui, projector, tracker, status, heading);
-                    waypoints.interact_and_draw(ui, response, projector);
+                    waypoints.interact_and_draw(ui, response, projector, on_vehicle.as_deref());
                     overlay_status(ui, response.rect, status);
                     let attribution = overlay_attribution(ui, response.rect);
                     overlay_compass(ui, response.rect, attribution);
@@ -789,6 +802,8 @@ const ALT_RANGE: std::ops::RangeInclusive<f32> = -1_000.0..=100_000.0;
 const MARK_RADIUS: f32 = 9.0;
 const AMBER: Color32 = theme::WARN;
 const NEW_LIST_NAME: &str = "mission";
+/// The name of a copy of the vehicle's list.
+const VEHICLE_LIST_NAME: &str = "from vehicle";
 
 /// The index of the point nearest to `pointer` and within `radius` of it, if any (the last one on a tie:
 /// it is drawn on top).
@@ -866,6 +881,8 @@ struct WaypointEditor {
     selected: Option<usize>,
     /// The row under the pointer in the panel, this frame.
     hovered: Option<usize>,
+    /// The Upload, Read and Clear buttons and what they wait for.
+    controls: mission::Controls,
 }
 
 impl WaypointEditor {
@@ -885,6 +902,7 @@ impl WaypointEditor {
             mode: Mode::Idle,
             selected: None,
             hovered: None,
+            controls: mission::Controls::default(),
         };
         editor.refresh_names();
         if let Some(first) = editor.names.first().cloned() {
@@ -1029,7 +1047,7 @@ impl WaypointEditor {
     }
 
     /// The side panel.
-    fn panel(&mut self, ui: &mut egui::Ui, memory: &mut MapMemory) {
+    fn panel(&mut self, ui: &mut egui::Ui, memory: &mut MapMemory, cx: &mut ViewCtx) {
         ui.add_space(4.0);
         theme::section_title(ui, "Waypoint list");
         self.list_selector(ui);
@@ -1062,6 +1080,9 @@ impl WaypointEditor {
                 format_length(missions::path_length_m(&self.list))
             ));
         });
+        if self.list.len() > mission::CAPACITY {
+            ui.label(RichText::new(mission::OVER_CAPACITY).small().color(AMBER));
+        }
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(
@@ -1079,13 +1100,39 @@ impl WaypointEditor {
                 self.mode = Mode::ConfirmClear;
             }
         });
-        ui.label(
-            RichText::new("Waypoints are not sent to the vehicle yet.")
-                .small()
-                .color(GREY),
-        );
+        ui.separator();
+        if self.controls.ui(ui, cx, &self.list)
+            && let Some(vehicle) = &cx.state.missions.vehicle
+        {
+            self.copy_vehicle_list(&mission::waypoints_of(&vehicle.items));
+        }
         ui.separator();
         self.table(ui);
+    }
+
+    /// The vehicle's list as a new list of its own, which becomes the current one. The only way a list read
+    /// from the vehicle reaches a file, and only when asked for.
+    fn copy_vehicle_list(&mut self, vehicle: &[Waypoint]) {
+        let Some(store) = self.store.clone() else {
+            self.fail("no data folder: lists cannot be kept");
+            return;
+        };
+        if let Some(at) = vehicle.iter().position(|w| !w.is_valid()) {
+            self.fail(format!(
+                "not copied: waypoint {} of the vehicle's list is off the globe or has no finite altitude",
+                at + 1
+            ));
+            return;
+        }
+        let name = store.unique_name(VEHICLE_LIST_NAME);
+        match store.save(&name, vehicle) {
+            Ok(()) => {
+                self.refresh_names();
+                self.select(&name);
+                self.ok(format!("copied the vehicle's list to \"{name}\""));
+            }
+            Err(e) => self.fail(e),
+        }
     }
 
     fn list_selector(&mut self, ui: &mut egui::Ui) {
@@ -1378,6 +1425,7 @@ impl WaypointEditor {
         ui: &egui::Ui,
         response: &egui::Response,
         projector: &Projector,
+        on_vehicle: Option<&[Waypoint]>,
     ) {
         let project = |list: &[Waypoint]| -> Vec<Pos2> {
             list.iter()
@@ -1432,6 +1480,28 @@ impl WaypointEditor {
                 theme::INSET,
             );
         }
+        if let Some(on_vehicle) = on_vehicle {
+            draw_on_vehicle(&painter, &project(on_vehicle));
+        }
+    }
+}
+
+/// The vehicle's list: a dashed blue line and hollow blue rings with the numbers outside, against the edited
+/// list's solid amber line and filled discs, so the two stay apart when they lie on each other.
+fn draw_on_vehicle(painter: &egui::Painter, points: &[Pos2]) {
+    let stroke = Stroke::new(2.0, mission::ON_VEHICLE);
+    if points.len() > 1 {
+        painter.extend(Shape::dashed_line(points, stroke, 8.0, 5.0));
+    }
+    for (i, at) in points.iter().enumerate() {
+        painter.circle_stroke(*at, MARK_RADIUS + 5.0, stroke);
+        painter.text(
+            *at + vec2(MARK_RADIUS + 6.0, -MARK_RADIUS - 6.0),
+            egui::Align2::LEFT_BOTTOM,
+            format!("{}", i + 1),
+            egui::FontId::proportional(11.0),
+            mission::ON_VEHICLE,
+        );
     }
 }
 

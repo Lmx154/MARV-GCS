@@ -1,12 +1,18 @@
 //! Headless test of the Map tab with a hand-built message store. The tab comes from `views::all()`, which
 //! gives the Map no tiles: nothing here touches the network.
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
-use gcs_mavlink::VehicleState;
 use gcs_mavlink::services::messages::{Field, FieldValue, MessageEntry, MessageKey};
+use gcs_mavlink::services::missions::{
+    MissionKind, MissionPoint, MissionStatus, MissionsState, VehicleList,
+};
+use gcs_mavlink::{Access, Command, LinkState, LinkStatus, VehicleId, VehicleState};
+use marv_gcs::missions::{Store, Waypoint};
 use marv_gcs::views::{self, View, ViewCtx};
 
 const ATTRIBUTION: &str = "OpenFreeMap © OpenMapTiles © OpenStreetMap contributors";
@@ -162,4 +168,241 @@ fn a_new_session_empties_the_map() {
     let harness = draw(&mut *view, &state, None);
     harness.get_by_label("waiting for a GPS fix");
     assert!(harness.query_by_label("45.000000, 9.000000").is_none());
+}
+
+const UPLOAD: &str = "Upload to vehicle";
+const READ: &str = "Read from vehicle";
+const CLEAR: &str = "Clear on vehicle";
+
+fn connected() -> VehicleState {
+    VehicleState {
+        link: LinkState {
+            status: LinkStatus::Connected,
+            vehicle: Some(VehicleId {
+                system_id: 1,
+                component_id: 1,
+                mav_type: "MAV_TYPE_QUADROTOR".into(),
+                autopilot: "MAV_AUTOPILOT_GENERIC".into(),
+            }),
+            ..LinkState::default()
+        },
+        ..VehicleState::default()
+    }
+}
+
+fn store_with_example(tag: &str) -> Store {
+    let store = Store::new(std::env::temp_dir().join(format!(
+        "marv-gcs-views-map-{tag}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )));
+    let list: Vec<Waypoint> = [(10.0, -30.0, 10.0), (10.001, -30.0, 12.5)]
+        .into_iter()
+        .map(|(lat, lon, alt_m)| Waypoint { lat, lon, alt_m })
+        .collect();
+    store.save("mission", &list).unwrap();
+    store
+}
+
+/// The Map over a state that the test can change between frames; the commands it sends are collected.
+struct Window {
+    harness: Harness<'static>,
+    state: Rc<RefCell<VehicleState>>,
+    sent: Rc<RefCell<Vec<Command>>>,
+}
+
+fn window(store: &Store, state: VehicleState, now: Option<f64>, access: Access) -> Window {
+    let state = Rc::new(RefCell::new(state));
+    let sent: Rc<RefCell<Vec<Command>>> = Rc::default();
+    let mut view = views::map_with_store(Some(store.clone()));
+    let (shared, collected) = (state.clone(), sent.clone());
+    let mut harness = Harness::builder()
+        .with_size(eframe::egui::vec2(1500.0, 1300.0))
+        .build_ui(move |ui| {
+            let state = shared.borrow().clone();
+            let mut commands = Vec::new();
+            let mut cx = ViewCtx {
+                state: &state,
+                commands: &mut commands,
+                now: now.map(Duration::from_secs_f64),
+                access,
+            };
+            view.ui(ui, &mut cx);
+            collected.borrow_mut().extend(commands);
+        });
+    harness.run();
+    Window {
+        harness,
+        state,
+        sent,
+    }
+}
+
+impl Window {
+    fn disabled(&self, label: &str) -> bool {
+        self.harness
+            .get_by_label(label)
+            .accesskit_node()
+            .is_disabled()
+    }
+
+    fn shows(&self, text: &str) -> bool {
+        self.harness.query_all_by_label(text).next().is_some()
+    }
+}
+
+#[test]
+fn without_a_vehicle_upload_read_and_clear_are_disabled_and_send_nothing() {
+    let store = store_with_example("none");
+    let mut window = window(&store, VehicleState::default(), None, Access::Configure);
+    for button in [UPLOAD, READ, CLEAR] {
+        assert!(window.disabled(button), "{button}");
+        window.harness.get_by_label(button).click();
+        window.harness.run();
+    }
+    assert!(window.sent.borrow().is_empty());
+    // A link that is up but has heard no vehicle is not a vehicle either.
+    let mut state = connected();
+    state.link.vehicle = None;
+    let window = self::window(&store, state, Some(5.0), Access::Configure);
+    for button in [UPLOAD, READ, CLEAR] {
+        assert!(window.disabled(button), "{button} with no heartbeat");
+    }
+    drop(window);
+    let _ = std::fs::remove_dir_all(store.dir());
+}
+
+#[test]
+fn with_a_vehicle_the_three_are_enabled_also_on_an_operate_only_link_and_the_upload_needs_a_list() {
+    let store = store_with_example("enabled");
+    for access in [Access::Configure, Access::Operate] {
+        let window = window(&store, connected(), Some(5.0), access);
+        for button in [UPLOAD, READ, CLEAR] {
+            assert!(!window.disabled(button), "{button} on {access:?}");
+        }
+        assert!(
+            window
+                .shows("The vehicle only stores the list; nothing here makes it follow the list.")
+        );
+        for text in ["Edited list: amber discs.", "matches", "differs"] {
+            assert!(
+                window
+                    .harness
+                    .query_all_by_label_contains(text)
+                    .next()
+                    .is_none(),
+                "{text}: nothing read yet"
+            );
+        }
+    }
+    let empty = Store::new(store.dir().join("none"));
+    let window = window(&empty, connected(), Some(5.0), Access::Configure);
+    assert!(window.disabled(UPLOAD), "an empty list is not an upload");
+    assert!(!window.disabled(READ) && !window.disabled(CLEAR));
+    let _ = std::fs::remove_dir_all(store.dir());
+}
+
+#[test]
+fn a_press_sends_one_command_and_waits_for_the_service_before_believing_its_status() {
+    let store = store_with_example("press");
+    // The previous operation ended verified.
+    let mut state = connected();
+    state.missions = MissionsState {
+        status: MissionStatus::Verified,
+        kind: Some(MissionKind::Upload),
+        runs: 1,
+        vehicle: Some(VehicleList {
+            plan_id: 5,
+            items: Vec::new(),
+        }),
+        ..MissionsState::default()
+    };
+    let mut window = window(&store, state, Some(5.0), Access::Configure);
+    window.harness.get_by_label_contains("Upload verified");
+    window.harness.get_by_label(READ).click();
+    window.harness.run();
+    assert_eq!(window.sent.borrow().len(), 1);
+    assert!(matches!(window.sent.borrow()[0], Command::DownloadMission));
+    // The service has not started it: the old verdict is not shown as this one's, and no button is live.
+    window
+        .harness
+        .get_by_label("Request sent, waiting for the vehicle");
+    assert!(
+        window
+            .harness
+            .query_all_by_label_contains("verified")
+            .next()
+            .is_none()
+    );
+    for button in [UPLOAD, READ, CLEAR] {
+        assert!(window.disabled(button), "{button}");
+    }
+    window.harness.run();
+    assert_eq!(window.sent.borrow().len(), 1, "no second command");
+
+    // The service starts it: the progress shows and the buttons stay off.
+    {
+        let mut state = window.state.borrow_mut();
+        state.missions.runs = 2;
+        state.missions.kind = Some(MissionKind::Download);
+        state.missions.status = MissionStatus::Downloading {
+            received: 1,
+            total: Some(2),
+        };
+        state.missions.vehicle = None;
+    }
+    window.harness.run();
+    assert!(window.shows("Reading 1 of 2 waypoints"));
+    for button in [UPLOAD, READ, CLEAR] {
+        assert!(window.disabled(button), "{button} while reading");
+    }
+    assert!(!window.shows("Request sent, waiting for the vehicle"));
+
+    // The service ends it: the list is drawn as the vehicle's and compared.
+    {
+        let mut state = window.state.borrow_mut();
+        state.missions.status = MissionStatus::Complete;
+        state.missions.vehicle = Some(VehicleList {
+            plan_id: 0,
+            items: vec![MissionPoint {
+                lat_e7: 100_000_000,
+                lon_e7: -300_000_000,
+                z: 10.0,
+            }],
+        });
+    }
+    window.harness.run();
+    window
+        .harness
+        .get_by_label_contains("Read complete: the vehicle holds 1 waypoint, plan id 0x00000000");
+    window
+        .harness
+        .get_by_label("Edited list: amber discs. Vehicle's list as last read: blue dashed rings.");
+    window.harness.get_by_label(
+        "The vehicle's list differs from the edited list: the vehicle holds 1 waypoint, the edited list has 2 waypoints",
+    );
+    for button in [UPLOAD, READ, CLEAR] {
+        assert!(!window.disabled(button), "{button} when it is over");
+    }
+    assert_eq!(window.sent.borrow().len(), 1);
+    drop(window);
+    let _ = std::fs::remove_dir_all(store.dir());
+}
+
+#[test]
+fn a_command_the_service_refused_does_not_leave_the_buttons_off() {
+    let store = store_with_example("refused");
+    let mut window = window(&store, connected(), Some(5.0), Access::Configure);
+    window.harness.get_by_label(CLEAR).click();
+    window.harness.run();
+    assert!(window.disabled(READ));
+    // The service counted a refusal and started nothing.
+    window.state.borrow_mut().missions.refused = 1;
+    window.harness.run();
+    assert!(!window.disabled(READ));
+    drop(window);
+    let _ = std::fs::remove_dir_all(store.dir());
 }
