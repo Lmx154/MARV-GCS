@@ -14,6 +14,7 @@ Usage: marv-cli --connect <endpoint> [--timeout <s>] <command> [args]
        marv-cli session list [<dir>]
        marv-cli log report <file.BIN> --mass-kg <kg> --kf <N/(rad/s)^2> [--poles <n>] [--accel-lpf-hz <Hz>]... [--level-range <min> <max>] [--json <file>]
        marv-cli log tune <file.BIN> [--json] [--from <s>] [--to <s>] [--<constant> <value>]...
+       marv-cli log survey <file.BIN> [--name <list>] [--alt <m>] [--channel <n>] [--force]
 
 Endpoint: serial:PATH[:BAUD], tcp:HOST:PORT or udp:ADDR:PORT. serial and tcp are
 configure links; udp is operate-only (every command that writes is refused).
@@ -61,6 +62,12 @@ Commands:
                                    --json prints the same content as JSON on stdout instead of text; --from and --to
                                    (log seconds) limit the analysis; every threshold and window is a named constant
                                    printed in the header and overridable by a flag of its name (the header lists them).
+  log survey <file.BIN>            survey mode: each press of RC channel 9 (--channel; low to high, held for 2 RCIN samples)
+                                   becomes a waypoint at the median position of the receiver's 3D fixes during the press,
+                                   saved as a list in the window's store (<name>.waypoints; default survey-<date>-<file
+                                   name>; an existing list is kept without --force). --alt is the height of every point
+                                   above take-off in metres (default 5). At most 16 points. No --connect, no vehicle; the
+                                   output has no coordinate, they are only in the list.
 
 Options:
   --connect <endpoint>   where the vehicle is (required)
@@ -69,7 +76,7 @@ Options:
   --yes                  confirm reset-all, reset-calibration and reboot
   --debug                allow param set of a field a sensor preset sets
   -o, --output <file>    where logs get writes the log
-  --name <name>          session export: the session's name
+  --name <name>          session export: the session's name; log survey: the list's name
   --out <dir>            session export: where the session folder goes
   --mass-kg <kg>         log report: the vehicle's mass (required)
   --kf <k>               log report: the thrust constant of one motor, N/(rad/s)^2 (required)
@@ -79,7 +86,8 @@ Options:
                          motor line's speed at both
   --json <file>          log report: also write the report as JSON
   --json                 log tune: print the analysis as JSON on stdout instead of text (a flag, no file)
-  --force                let logs get and mission download overwrite an existing file
+  --force                let logs get, mission download and log survey overwrite an existing file
+  --alt <m>, --channel <n>  log survey: the height of the points above take-off (default 5), the RC channel (default 9)
   --from <s>, --to <s>   log tune: only the part of the log between these log times (TimeUS seconds)
   --help                 this text
 
@@ -190,6 +198,16 @@ pub struct TuneCommand {
     pub settings: crate::log_tune::Settings,
 }
 
+/// `log survey FILE [--name N] [--alt M] [--channel C] [--force]`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurveyCommand {
+    pub file: PathBuf,
+    pub name: Option<String>,
+    pub alt_m: f64,
+    pub channel: u8,
+    pub force: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Invocation {
     pub endpoint: Endpoint,
@@ -209,6 +227,8 @@ pub enum Parsed {
     Log(LogCommand),
     /// `log tune ...`: the tuning analysis of a log file.
     LogTune(TuneCommand),
+    /// `log survey ...`: the survey presses of a log file as a waypoint list.
+    LogSurvey(SurveyCommand),
 }
 
 /// The `MARV_DEVICE` ids by name (docs/link-contract.md, section 8).
@@ -342,6 +362,9 @@ fn log(args: &[String]) -> Result<Parsed, String> {
     if args.first().map(String::as_str) == Some("tune") {
         return tune(&args[1..]);
     }
+    if args.first().map(String::as_str) == Some("survey") {
+        return survey(&args[1..]);
+    }
     let (mut mass, mut kf, mut poles, mut json) = (None, None, None, None);
     let mut lpf = Vec::new();
     let mut level_range = None;
@@ -446,6 +469,50 @@ fn tune(args: &[String]) -> Result<Parsed, String> {
             settings,
         })),
         [] => Err("log tune needs a FILE.BIN".to_string()),
+        [_, extra, ..] => Err(format!("unexpected argument {extra:?}")),
+    }
+}
+
+/// `log survey <file> [--name N] [--alt M] [--channel C] [--force]`.
+fn survey(args: &[String]) -> Result<Parsed, String> {
+    let (mut name, mut alt_m, mut channel, mut force) = (None, 5.0, 9u8, false);
+    let mut words: Vec<&str> = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let mut value = |option: &str| {
+            iter.next()
+                .map(String::as_str)
+                .ok_or_else(|| format!("{option} needs a value"))
+        };
+        match arg.as_str() {
+            "--help" | "-h" => return Ok(Parsed::Help),
+            "--name" => name = Some(value("--name")?.to_string()),
+            "--alt" => alt_m = positive("--alt", value("--alt")?)?,
+            "--channel" => {
+                let text = value("--channel")?;
+                channel = match text.parse::<u8>() {
+                    Ok(n) if (1..=14).contains(&n) => n,
+                    _ => {
+                        return Err(format!(
+                            "--channel needs a number from 1 to 14, not {text:?}"
+                        ));
+                    }
+                };
+            }
+            "--force" => force = true,
+            option if option.starts_with("--") => return Err(format!("unknown option {option}")),
+            word => words.push(word),
+        }
+    }
+    match words.as_slice() {
+        [file] => Ok(Parsed::LogSurvey(SurveyCommand {
+            file: PathBuf::from(file),
+            name,
+            alt_m,
+            channel,
+            force,
+        })),
+        [] => Err("log survey needs a FILE.BIN".to_string()),
         [_, extra, ..] => Err(format!("unexpected argument {extra:?}")),
     }
 }
