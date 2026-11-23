@@ -178,6 +178,12 @@ impl Window {
         self.harness.run();
     }
 
+    /// A button that asks first: the press, then Confirm.
+    fn click_confirmed(&mut self, label: &str) {
+        self.click(label);
+        self.click("Confirm");
+    }
+
     /// Draws until the window shows `text` (a whole label), for at most `seconds`; the buttons are checked on
     /// the way: while a progress line is shown, none of the three is enabled.
     fn wait_for(&mut self, text: &str, seconds: f64) {
@@ -256,7 +262,7 @@ fn upload_read_edit_and_clear_of_the_contracts_example() {
     assert!(!window.shows(LEGEND), "no vehicle list yet");
 
     // Upload: verified, with the count and the plan id of the contract's example.
-    window.click(UPLOAD);
+    window.click_confirmed(UPLOAD);
     window.wait_for(VERIFIED_3, 20.0);
     assert!(window.sent()[0].starts_with("UploadMission"));
     assert_eq!(window.sent().len(), 1);
@@ -309,7 +315,7 @@ fn upload_read_edit_and_clear_of_the_contracts_example() {
     );
 
     // Clear: verified empty; the edited list stays.
-    window.click(CLEAR);
+    window.click_confirmed(CLEAR);
     window.wait_for(
         "Clear verified: the vehicle holds 0 waypoints, plan id 0x00000000",
         20.0,
@@ -328,7 +334,7 @@ fn the_vehicles_list_becomes_a_list_of_its_own_only_when_asked() {
     let rig = Rig::start(SimConfig::default());
     let store = store_with("copy", "mission", &example());
     let mut window = Window::open(&rig.session, &store);
-    window.click(UPLOAD);
+    window.click_confirmed(UPLOAD);
     window.wait_for(VERIFIED_3, 20.0);
     let original = window.file("mission");
     window.click(READ);
@@ -356,7 +362,7 @@ fn seventeen_points_are_sent_and_the_vehicle_refuses_with_no_space() {
     // The vehicle holds the example first.
     let first = store_with("seventeen-a", "mission", &example());
     let mut window = Window::open(&rig.session, &first);
-    window.click(UPLOAD);
+    window.click_confirmed(UPLOAD);
     window.wait_for(VERIFIED_3, 20.0);
     drop(window);
 
@@ -372,7 +378,7 @@ fn seventeen_points_are_sent_and_the_vehicle_refuses_with_no_space() {
     window.harness.get_by_label(
         "More than 16 points: the vehicle holds at most 16 and will refuse this list.",
     );
-    window.click(UPLOAD);
+    window.click_confirmed(UPLOAD);
     window.wait_for(
         "Upload failed: refused by the vehicle, code 4 (MAV_MISSION_NO_SPACE): the vehicle holds at most 16 waypoints; the vehicle holds 3 waypoints, plan id 0x99C3BD49",
         20.0,
@@ -399,13 +405,13 @@ fn an_armed_vehicle_refuses_and_the_window_says_so() {
     rig.arm();
     let store = store_with("armed", "mission", &example());
     let mut window = Window::open(&rig.session, &store);
-    window.click(UPLOAD);
+    window.click_confirmed(UPLOAD);
     window.wait_for(
         "Upload failed: refused by the vehicle, code 1 (MAV_MISSION_ERROR): the vehicle is armed, or no transfer was running; the vehicle holds 0 waypoints, plan id 0x00000000",
         20.0,
     );
     assert!(!window.shows_containing("verified"));
-    window.click(CLEAR);
+    window.click_confirmed(CLEAR);
     window.wait_for(
         "Clear failed: refused by the vehicle, code 1 (MAV_MISSION_ERROR): the vehicle is armed, or no transfer was running; the vehicle holds 0 waypoints, plan id 0x00000000",
         20.0,
@@ -425,7 +431,7 @@ fn upload_on_a_lossy_link(config: SimConfig, tag: &str) {
     let store = store_with(tag, "mission", &example());
     let mut window = Window::open(&rig.session, &store);
     let started = Instant::now();
-    window.click(UPLOAD);
+    window.click_confirmed(UPLOAD);
     // Every lost frame costs 1.5 s: the window shows the progress meanwhile, with the buttons disabled.
     window.wait_for(VERIFIED_3, 120.0);
     assert!(
@@ -470,7 +476,7 @@ fn the_buttons_are_disabled_while_an_operation_runs_and_the_progress_is_shown() 
         .set_silent(true);
     let store = store_with("busy", "mission", &example());
     let mut window = Window::open(&rig.session, &store);
-    window.click(UPLOAD);
+    window.click_confirmed(UPLOAD);
     // The vehicle says nothing: the upload waits, and the window says what it waits for.
     window.wait_for("Uploading 0 of 3 waypoints", 5.0);
     for button in [UPLOAD, READ, CLEAR] {

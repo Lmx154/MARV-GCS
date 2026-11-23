@@ -398,6 +398,8 @@ fn a_command_the_service_refused_does_not_leave_the_buttons_off() {
     let mut window = window(&store, connected(), Some(5.0), Access::Configure);
     window.harness.get_by_label(CLEAR).click();
     window.harness.run();
+    window.harness.get_by_label("Confirm").click();
+    window.harness.run();
     assert!(window.disabled(READ));
     // The service counted a refusal and started nothing.
     window.state.borrow_mut().missions.refused = 1;

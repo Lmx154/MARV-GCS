@@ -1101,7 +1101,7 @@ impl WaypointEditor {
             }
         });
         ui.separator();
-        if self.controls.ui(ui, cx, &self.list)
+        if self.controls.ui(ui, cx, &self.list, self.selected)
             && let Some(vehicle) = &cx.state.missions.vehicle
         {
             self.copy_vehicle_list(&mission::waypoints_of(&vehicle.items));

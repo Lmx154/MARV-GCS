@@ -32,6 +32,10 @@ pub const SENT: &str = "Request sent, waiting for the vehicle";
 /// Colour of the vehicle's list on the map and in the legend (the edited list is amber).
 pub const ON_VEHICLE: Color32 = theme::ACCENT;
 
+/// Upload and Clear change the vehicle's stored list, so they ask first. Set to false and they send on one
+/// press again (the `Pending` below is then never created).
+pub const CONFIRM_BEFORE_SENDING: bool = true;
+
 /// A command that the station's session has not started yet is forgotten after this long (session time).
 const AWAIT_MAX: Duration = Duration::from_secs(3);
 
@@ -275,6 +279,21 @@ struct Awaiting {
     since: Duration,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Action {
+    Upload,
+    Clear,
+}
+
+/// An Upload or Clear that waits for Confirm, with the list and selection it was armed on: a change to
+/// either one cancels it.
+#[derive(Debug, Clone, PartialEq)]
+struct Pending {
+    action: Action,
+    list: Vec<Waypoint>,
+    selected: Option<usize>,
+}
+
 /// What the Map tab remembers of its dealings with the service: the service's state is in `VehicleState`.
 #[derive(Debug, Default)]
 pub struct Controls {
@@ -283,6 +302,7 @@ pub struct Controls {
     awaiting: Option<Awaiting>,
     /// The station's own refusal before sending: the value of `runs` at that time and the line.
     refusal: Option<(u32, String)>,
+    pending: Option<Pending>,
 }
 
 impl Controls {
@@ -337,6 +357,55 @@ impl Controls {
         }
     }
 
+    fn press(
+        &mut self,
+        cx: &mut ViewCtx,
+        action: Action,
+        list: &[Waypoint],
+        selected: Option<usize>,
+    ) {
+        if CONFIRM_BEFORE_SENDING {
+            self.pending = Some(Pending {
+                action,
+                list: list.to_vec(),
+                selected,
+            });
+        } else {
+            self.run(cx, action, list);
+        }
+    }
+
+    fn run(&mut self, cx: &mut ViewCtx, action: Action, list: &[Waypoint]) {
+        match action {
+            Action::Upload => self.upload(cx, list),
+            Action::Clear => self.send(cx, Command::ClearMission),
+        }
+    }
+
+    fn confirm(&mut self, cx: &mut ViewCtx, list: &[Waypoint]) {
+        if let Some(pending) = self.pending.take() {
+            self.run(cx, pending.action, list);
+        }
+    }
+
+    /// Forget a pending action when the list or the selection moved or the buttons are disabled.
+    fn keep_pending(&mut self, list: &[Waypoint], selected: Option<usize>, gate: Option<&str>) {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|p| gate.is_some() || p.list != list || p.selected != selected)
+        {
+            self.pending = None;
+        }
+    }
+
+    fn question(pending: &Pending) -> String {
+        match pending.action {
+            Action::Upload => format!("Upload {} to the vehicle?", count_text(pending.list.len())),
+            Action::Clear => "Clear the vehicle's waypoint list?".to_string(),
+        }
+    }
+
     /// The line under the buttons: the request just sent, the station's own refusal, or the service's.
     fn status_line(&self, state: &MissionsState) -> Option<(String, Color32)> {
         if self.awaiting.is_some() {
@@ -351,23 +420,45 @@ impl Controls {
     }
 
     /// The vehicle section of the waypoint panel. True when "Copy to a new list" was pressed.
-    pub fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx, list: &[Waypoint]) -> bool {
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        cx: &mut ViewCtx,
+        list: &[Waypoint],
+        selected: Option<usize>,
+    ) -> bool {
         self.settle(cx);
         theme::section_title(ui, "On the vehicle");
         ui.label(theme::muted(ONLY_STORES).small());
         let gate = self.gate(cx);
+        self.keep_pending(list, selected, gate);
         ui.horizontal_wrapped(|ui| {
             let upload_gate = gate.or(list.is_empty().then_some(EMPTY_LIST));
             if actions::button(ui, "Upload to vehicle", upload_gate) {
-                self.upload(cx, list);
+                self.press(cx, Action::Upload, list, selected);
             }
             if actions::button(ui, "Read from vehicle", gate) {
+                self.pending = None;
                 self.send(cx, Command::DownloadMission);
             }
             if actions::button(ui, "Clear on vehicle", gate) {
-                self.send(cx, Command::ClearMission);
+                self.press(cx, Action::Clear, list, selected);
             }
         });
+        if let Some(pending) = &self.pending {
+            let question = Self::question(pending);
+            let (mut yes, mut no) = (false, false);
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(theme::WARN, question);
+                yes = actions::button(ui, "Confirm", None);
+                no = actions::button(ui, "Cancel", None);
+            });
+            if yes {
+                self.confirm(cx, list);
+            } else if no {
+                self.pending = None;
+            }
+        }
         if let Some((text, colour)) = self.status_line(&cx.state.missions) {
             ui.colored_label(colour, text);
         }
@@ -930,5 +1021,122 @@ mod tests {
             since: Duration::ZERO,
         });
         assert_eq!(controls.status_line(&newer).unwrap().0, SENT);
+    }
+
+    fn connected() -> gcs_mavlink::VehicleState {
+        let mut state = gcs_mavlink::VehicleState::default();
+        state.link.status = LinkStatus::Connected;
+        state
+    }
+
+    fn only_command(commands: &[Command]) -> &Command {
+        assert_eq!(commands.len(), 1, "{commands:?}");
+        &commands[0]
+    }
+
+    #[test]
+    fn upload_asks_first_then_sends_the_same_points_once_on_confirm() {
+        let state = connected();
+        let mut commands = Vec::new();
+        let mut cx = ViewCtx {
+            state: &state,
+            commands: &mut commands,
+            now: Some(Duration::from_secs(1)),
+            access: gcs_mavlink::Access::Configure,
+        };
+        let mut controls = Controls::default();
+        let list = example();
+        controls.press(&mut cx, Action::Upload, &list, None);
+        assert!(cx.commands.is_empty(), "the first press sends nothing");
+        let pending = controls.pending.clone().unwrap();
+        assert_eq!(
+            Controls::question(&pending),
+            "Upload 3 waypoints to the vehicle?"
+        );
+        controls.confirm(&mut cx, &list);
+        assert!(controls.pending.is_none());
+        let Command::UploadMission { items } = only_command(cx.commands) else {
+            panic!("not an upload");
+        };
+        assert_eq!(*items, to_items(&list).unwrap());
+    }
+
+    #[test]
+    fn clear_asks_first_then_sends_one_clear_on_confirm() {
+        let state = connected();
+        let mut commands = Vec::new();
+        let mut cx = ViewCtx {
+            state: &state,
+            commands: &mut commands,
+            now: Some(Duration::from_secs(1)),
+            access: gcs_mavlink::Access::Configure,
+        };
+        let mut controls = Controls::default();
+        let list = example();
+        controls.press(&mut cx, Action::Clear, &list, None);
+        assert!(cx.commands.is_empty(), "the first press sends nothing");
+        assert_eq!(
+            Controls::question(controls.pending.as_ref().unwrap()),
+            "Clear the vehicle's waypoint list?"
+        );
+        controls.confirm(&mut cx, &list);
+        assert!(matches!(only_command(cx.commands), Command::ClearMission));
+    }
+
+    #[test]
+    fn cancel_and_any_change_of_list_selection_or_gate_send_nothing() {
+        let mut controls = Controls::default();
+        let list = example();
+        for action in [Action::Upload, Action::Clear] {
+            let arm = |controls: &mut Controls| {
+                controls.pending = Some(Pending {
+                    action,
+                    list: list.clone(),
+                    selected: Some(1),
+                });
+            };
+            arm(&mut controls);
+            controls.keep_pending(&list, Some(1), None);
+            assert!(controls.pending.is_some(), "unchanged stays armed");
+            controls.keep_pending(&list, Some(0), None);
+            assert!(controls.pending.is_none(), "selection moved");
+            arm(&mut controls);
+            controls.keep_pending(&list[..2], Some(1), None);
+            assert!(controls.pending.is_none(), "list changed");
+            arm(&mut controls);
+            controls.keep_pending(&list, Some(1), Some(RUNNING));
+            assert!(controls.pending.is_none(), "buttons disabled");
+            arm(&mut controls);
+            controls.pending = None;
+            let state = connected();
+            let mut commands = Vec::new();
+            let mut cx = ViewCtx {
+                state: &state,
+                commands: &mut commands,
+                now: Some(Duration::from_secs(1)),
+                access: gcs_mavlink::Access::Configure,
+            };
+            controls.confirm(&mut cx, &list);
+            assert!(cx.commands.is_empty(), "cancelled: nothing is sent");
+        }
+    }
+
+    #[test]
+    fn read_still_sends_on_one_press() {
+        let state = connected();
+        let mut commands = Vec::new();
+        let mut cx = ViewCtx {
+            state: &state,
+            commands: &mut commands,
+            now: Some(Duration::from_secs(1)),
+            access: gcs_mavlink::Access::Configure,
+        };
+        let mut controls = Controls::default();
+        controls.send(&mut cx, Command::DownloadMission);
+        assert!(matches!(
+            only_command(cx.commands),
+            Command::DownloadMission
+        ));
+        assert!(controls.pending.is_none());
     }
 }
