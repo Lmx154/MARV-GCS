@@ -46,11 +46,13 @@ pub fn serve_tcp(listener: TcpListener, vehicle: Arc<Mutex<SimVehicle>>, stop: A
 
         if closed {
             client = None;
+            lock(&vehicle).link_down();
         } else if let Some(stream) = client.as_mut()
             && !out.is_empty()
             && stream.write_all(&out).is_err()
         {
             client = None;
+            lock(&vehicle).link_down();
         }
     }
 }

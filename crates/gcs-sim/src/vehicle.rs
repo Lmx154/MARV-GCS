@@ -16,6 +16,11 @@
 //!
 //! Logs: LOG_REQUEST_LIST, LOG_REQUEST_DATA and LOG_REQUEST_END are answered as `docs/link-contract.md`
 //! section 11 says the real vehicle will answer them: see [`crate::SimLog`] and [`crate::LogDataDrop`].
+//!
+//! Missions: the vehicle's side of `docs/link-contract.md` section 17 (the `missions` module), through a reply
+//! slot of 5 ms. It is armed only when a test calls [`SimVehicle::set_armed`]; [`SimConfig::drop_mission_rx_every`]
+//! and [`SimConfig::drop_mission_tx_every`] lose chosen mission frames; [`SimVehicle::link_down`] is the link
+//! going down.
 
 use mavlink::dialects::common::{
     ATTITUDE_DATA, AUTOPILOT_VERSION_DATA, COMMAND_ACK_DATA, ESC_INFO_DATA, ESC_STATUS_DATA,
@@ -34,6 +39,7 @@ use crate::logs::{
     SimLog, Transfer,
 };
 use crate::mag::{self, MagEnvironment};
+use crate::missions::{self, Missions, Slot};
 use crate::params::{ParamEncoding, ParamValue, SimParam, default_params, other_type_params};
 use crate::presets::{self, Verdict};
 use crate::script::CalibrationUser;
@@ -118,6 +124,12 @@ pub struct SimConfig {
     /// Names of Real32 parameters that the list (PARAM_REQUEST_LIST) reports one more than they hold, to test a
     /// ground station's read-back. Echoes and PARAM_REQUEST_READ answers are true. Empty is none.
     pub list_differs: Vec<String>,
+    /// Every this many-th mission frame addressed to the vehicle is lost before it is acted on (the 1st, 2nd, ...
+    /// frame of the six mission messages counted together), to test a ground station's retries. 0 is none.
+    pub drop_mission_rx_every: u32,
+    /// Every this many-th mission frame the vehicle sends is lost (it still takes a sequence number and starts its
+    /// timers, as a frame lost on the link). 0 is none.
+    pub drop_mission_tx_every: u32,
 }
 
 impl SimConfig {
@@ -198,6 +210,8 @@ impl Default for SimConfig {
             refuse_params: Vec::new(),
             silent_after_param_sets: 0,
             list_differs: Vec::new(),
+            drop_mission_rx_every: 0,
+            drop_mission_tx_every: 0,
         }
     }
 }
@@ -280,6 +294,14 @@ pub struct SimVehicle {
     last_heartbeat_ms: Option<u64>,
     /// Whether HEARTBEAT shows the vehicle armed ([`SimVehicle::set_armed`]).
     armed: bool,
+    /// The mission service: the stored list and the transaction.
+    missions: Missions,
+    /// The reply slot of the mission messages.
+    mission_slot: Slot,
+    /// Mission frames addressed to the vehicle that were counted for `drop_mission_rx_every`.
+    mission_rx_count: u32,
+    /// Mission frames the vehicle sent, counted for `drop_mission_tx_every`.
+    mission_tx_count: u32,
 }
 
 /// A COMMAND_LONG read from its bytes: the command is a number, not a dialect enum.
@@ -294,6 +316,8 @@ struct RawCommand {
 enum Incoming {
     Message(Box<MavMessage>),
     Command(RawCommand),
+    /// A mission message, read by hand: its target system and component and the message.
+    Mission((u8, u8), missions::In),
 }
 
 /// MAVLink message id of COMMAND_LONG.
@@ -363,6 +387,10 @@ impl SimVehicle {
             },
             last_heartbeat_ms: None,
             armed: false,
+            missions: Missions::default(),
+            mission_slot: Slot::default(),
+            mission_rx_count: 0,
+            mission_tx_count: 0,
         }
     }
 
@@ -370,6 +398,13 @@ impl SimVehicle {
     /// Nothing else changes (a test double, to stop a calibration in the middle).
     pub fn set_armed(&mut self, armed: bool) {
         self.armed = armed;
+    }
+
+    /// The link went down: a running mission transaction ends silently (the stored list stays), the message
+    /// waiting in the mission slot is dropped and the last upload is forgotten.
+    pub fn link_down(&mut self) {
+        self.missions.link_down();
+        self.mission_slot.clear();
     }
 
     /// Current value of the parameter `name`.
@@ -399,6 +434,7 @@ impl SimVehicle {
             self.booted = true;
             self.push_text(BOOT_TEXT, &mut out);
         }
+        self.run_missions(now_ms, &mut out);
         self.ingest(received, &mut out);
         self.emit_params(&mut out);
         self.emit_held_echo(&mut out);
@@ -421,6 +457,53 @@ impl SimVehicle {
     /// System and component id of the sender of the last counted HEARTBEAT.
     pub fn last_heartbeat_from(&self) -> Option<(u8, u8)> {
         self.last_heartbeat_from
+    }
+
+    /// The mission slot and timers up to `now_ms`: a message handed over in an earlier step goes out when its slot
+    /// has come; a timer that ran out hands its message over at the time it ran out.
+    fn run_missions(&mut self, now_ms: u64, out: &mut Vec<u8>) {
+        self.flush_mission_slot(now_ms, out);
+        while let Some(due_ms) = self.missions.due_ms()
+            && due_ms <= now_ms
+        {
+            for (to, message) in self.missions.fire() {
+                self.mission_slot.hand_over(due_ms, to, message);
+            }
+            self.flush_mission_slot(now_ms, out);
+        }
+    }
+
+    fn flush_mission_slot(&mut self, now_ms: u64, out: &mut Vec<u8>) {
+        let Some((to, message)) = self.mission_slot.take_due(now_ms) else {
+            return;
+        };
+        let (id, payload) = message.encode(to);
+        let Some(crc_extra) = missions::crc_extra(id) else {
+            return;
+        };
+        self.mission_tx_count = self.mission_tx_count.wrapping_add(1);
+        let every = self.config.drop_mission_tx_every;
+        if every != 0 && self.mission_tx_count.is_multiple_of(every) {
+            self.push_raw(id, crc_extra, &payload, &mut Vec::new());
+        } else {
+            self.push_raw(id, crc_extra, &payload, out);
+        }
+    }
+
+    /// A mission message from another system: addressed to this vehicle, counted for the injected loss, then
+    /// handled at the current time, and what the service answers goes to the slot.
+    fn handle_mission(&mut self, from: (u8, u8), target: (u8, u8), message: missions::In) {
+        if from.0 == self.config.system_id || !self.is_addressed(target.0, target.1) {
+            return;
+        }
+        self.mission_rx_count = self.mission_rx_count.wrapping_add(1);
+        let every = self.config.drop_mission_rx_every;
+        if every != 0 && self.mission_rx_count.is_multiple_of(every) {
+            return;
+        }
+        for (to, reply) in self.missions.handle(self.now_ms, from, message, self.armed) {
+            self.mission_slot.hand_over(self.now_ms, to, reply);
+        }
     }
 
     fn emit_due(&mut self, now_ms: u64, out: &mut Vec<u8>) {
@@ -709,6 +792,9 @@ impl SimVehicle {
                                 }
                                 Incoming::Command(command) => {
                                     self.handle_long(system_id, component_id, &command, out);
+                                }
+                                Incoming::Mission(target, message) => {
+                                    self.handle_mission((system_id, component_id), target, message);
                                 }
                             }
                         }
@@ -1251,6 +1337,13 @@ fn decode_frame(frame: &[u8]) -> Option<(u8, u8, Incoming)> {
             target_component: payload[31],
         };
         return Some((system_id, raw.component_id(), Incoming::Command(command)));
+    }
+    if let Some((target, message)) = missions::parse(raw.message_id(), raw.payload()) {
+        return Some((
+            system_id,
+            raw.component_id(),
+            Incoming::Mission(target, message),
+        ));
     }
     let message = MavMessage::parse(MavlinkVersion::V2, raw.message_id(), raw.payload()).ok()?;
     Some((

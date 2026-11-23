@@ -21,6 +21,7 @@ pub mod signals;
 
 mod fwparams;
 mod logs;
+mod missions;
 mod params;
 mod server;
 mod vehicle;
