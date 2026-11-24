@@ -644,8 +644,9 @@ The effective mode, in HEARTBEAT `custom_mode` (a value, not a bitfield), on eve
 | 7 | STOP | disarmed, motors stopped |
 | 8 | BLIND | level descent with no height estimate (position tier T1; the lead's ruling; its law and touchdown detection stay unknown, U-1) |
 
-Codes 9 and above are not assigned (a station shows "unknown" and the number). With `FS_HOLD_EN` 0 only PILOT and STOP
-are sent.
+Codes 9 and above are not assigned (a station shows "unknown" and the number). With `FS_HOLD_EN` 0 the vehicle sends
+PILOT and STOP, and after a loss of the stick reports also LAND, BLIND and TAKEOVER (firmware Amendment N, 2026-11-24: a
+stick loss in the air starts a descent in every configuration; HOLD, AUTO and RETURN stay unreachable with `FS_HOLD_EN` 0).
 
 The commands: `COMMAND_LONG`, on the radio link (on the station's side the UDP link through the backpack, section 9);
 parameters not named are 0.
