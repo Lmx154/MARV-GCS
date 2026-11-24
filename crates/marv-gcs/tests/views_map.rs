@@ -11,7 +11,10 @@ use gcs_mavlink::services::messages::{Field, FieldValue, MessageEntry, MessageKe
 use gcs_mavlink::services::missions::{
     MissionKind, MissionPoint, MissionStatus, MissionsState, VehicleList,
 };
-use gcs_mavlink::{Access, Command, LinkState, LinkStatus, VehicleId, VehicleState};
+use gcs_mavlink::{
+    Access, Command, FlightCommand, FlightOutcome, FlightResult, LinkState, LinkStatus, VehicleId,
+    VehicleState,
+};
 use marv_gcs::missions::{Store, Waypoint};
 use marv_gcs::views::{self, View, ViewCtx};
 
@@ -406,5 +409,127 @@ fn a_command_the_service_refused_does_not_leave_the_buttons_off() {
     window.harness.run();
     assert!(!window.disabled(READ));
     drop(window);
+    let _ = std::fs::remove_dir_all(store.dir());
+}
+
+const FLIGHT: [&str; 5] = ["Start", "Pause", "Abort", "Land", "Return"];
+
+#[test]
+fn the_five_flight_buttons_are_disabled_without_a_vehicle_and_there_is_no_stop_or_disarm_button() {
+    let store = store_with_example("flight-off");
+    let mut window = window(&store, VehicleState::default(), None, Access::Operate);
+    for button in FLIGHT {
+        assert!(window.disabled(button), "{button}");
+        window.harness.get_by_label(button).click();
+        window.harness.run();
+    }
+    assert!(window.sent.borrow().is_empty());
+    for word in ["Kill", "Disarm", "Stop motors", "Emergency"] {
+        assert!(
+            window
+                .harness
+                .query_all_by_label_contains(word)
+                .next()
+                .is_none(),
+            "{word}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(store.dir());
+}
+
+#[test]
+fn a_flight_button_sends_its_command_and_start_asks_first() {
+    let store = store_with_example("flight-send");
+    let mut window = window(&store, connected(), Some(5.0), Access::Operate);
+    for button in FLIGHT {
+        assert!(!window.disabled(button), "{button}");
+    }
+    for (button, command) in [
+        ("Pause", FlightCommand::Pause),
+        ("Abort", FlightCommand::Abort),
+        ("Land", FlightCommand::Land),
+        ("Return", FlightCommand::Return),
+    ] {
+        window.sent.borrow_mut().clear();
+        window.harness.get_by_label(button).click();
+        window.harness.run();
+        assert!(
+            matches!(window.sent.borrow().as_slice(), [Command::Flight(c)] if *c == command),
+            "{button}"
+        );
+    }
+    window.sent.borrow_mut().clear();
+    window.harness.get_by_label("Start").click();
+    window.harness.run();
+    assert!(
+        window.sent.borrow().is_empty(),
+        "Start waits for its confirmation"
+    );
+    window.harness.get_by_label("Start the stored mission?");
+    window.harness.get_by_label("Confirm").click();
+    window.harness.run();
+    assert!(matches!(
+        window.sent.borrow().as_slice(),
+        [Command::Flight(FlightCommand::Start)]
+    ));
+    let _ = std::fs::remove_dir_all(store.dir());
+}
+
+#[test]
+fn a_denial_shows_as_an_error_until_dismissed_and_the_mode_is_in_words() {
+    let store = store_with_example("flight-deny");
+    let mut state = connected();
+    state.flight.mode_code = Some(3);
+    state.flight.last = Some(FlightResult {
+        command: FlightCommand::Start,
+        outcome: FlightOutcome::Denied { code: 11 },
+    });
+    let mut window = window(&store, state, Some(5.0), Access::Operate);
+    window.harness.get_by_label("Mode: Holding position");
+    window
+        .harness
+        .get_by_label("A waypoint is more than 1 km from the take-off point: Start refused");
+    window.harness.get_by_label("Dismiss").click();
+    window.harness.run();
+    assert!(!window.shows("A waypoint is more than 1 km from the take-off point: Start refused"));
+    let _ = std::fs::remove_dir_all(store.dir());
+}
+
+#[test]
+fn the_takeover_panel_shows_with_a_hands_off_mode_and_full_width_when_the_link_is_lost() {
+    let store = store_with_example("flight-panel");
+    let mut state = connected();
+    state.link.last_heartbeat = Some(Duration::from_secs(1));
+    state.flight.mode_code = Some(4);
+    let window_up = window(&store, state.clone(), Some(2.0), Access::Operate);
+    assert!(
+        window_up
+            .harness
+            .query_all_by_label_contains("TO TAKE CONTROL.")
+            .next()
+            .is_some()
+    );
+    assert!(window_up.shows("The vehicle reports: Flying the stored mission"));
+    state.link.status = LinkStatus::Lost;
+    let window_lost = window(&store, state.clone(), Some(13.0), Access::Operate);
+    assert!(
+        window_lost
+            .harness
+            .query_all_by_label_contains("TO TAKE CONTROL.")
+            .next()
+            .is_some()
+    );
+    assert!(window_lost.shows(
+        "The link to the vehicle stopped. Last reported 12 s ago: Flying the stored mission"
+    ));
+    state.flight.mode_code = Some(1);
+    let window_pilot = window(&store, state, Some(13.0), Access::Operate);
+    assert!(
+        window_pilot
+            .harness
+            .query_all_by_label_contains("TO TAKE CONTROL.")
+            .next()
+            .is_none()
+    );
     let _ = std::fs::remove_dir_all(store.dir());
 }

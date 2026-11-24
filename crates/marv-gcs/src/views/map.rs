@@ -36,6 +36,7 @@ use crate::missions::{self, Store, Waypoint};
 use crate::status::GREY;
 use crate::theme;
 
+mod flight;
 mod mission;
 
 /// Sent with every tile request (the tile policies ask for one that names the application).
@@ -306,6 +307,8 @@ pub struct MapView {
     zoomed: bool,
     tiles: TileSource,
     waypoints: WaypointEditor,
+    /// The flight command buttons and the take-over panel.
+    flight: flight::Controls,
 }
 
 impl MapView {
@@ -319,6 +322,7 @@ impl MapView {
     pub fn with_store(online: bool, store: Option<Store>) -> Self {
         Self {
             waypoints: WaypointEditor::new(store),
+            flight: flight::Controls::default(),
             tracker: Tracker::default(),
             memory: world_view(),
             zoomed: false,
@@ -519,6 +523,7 @@ impl View for MapView {
         self.memory = world_view();
         self.zoomed = false;
         self.waypoints.controls.session_changed();
+        self.flight.session_changed();
     }
 
     fn update(&mut self, state: &VehicleState, _now: Option<Duration>) {
@@ -545,6 +550,7 @@ impl View for MapView {
             vehicle,
             &mut self.waypoints.panel_open,
         );
+        self.flight.ui(ui, cx);
         ui.add_space(2.0);
         self.waypoints.hovered = None;
         let area = ui.available_rect_before_wrap();
