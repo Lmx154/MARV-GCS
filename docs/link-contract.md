@@ -636,15 +636,15 @@ The effective mode, in HEARTBEAT `custom_mode` (a value, not a bitfield), on eve
 |---|---|---|
 | 0 | not reported | every firmware before stage 2, and `gcs-sim` today: the one value section 2 assigned, kept; the station shows no mode |
 | 1 | PILOT | a fresh CRSF report and the pilot latch set: today's flight modes |
-| 2 | TAKEOVER | a fresh CRSF report in HOLD, AUTO, RETURN, LAND or BLIND: the vehicle holds (the ladder as if ch6 were High, centred sticks), real sticks and ch6 ignored. Control stays locked until the vehicle has seen, in fresh CRSF reports after the return, the arm switch ON and the mode switch in Position (switch6 High) in the same report; then the first fresh report with the mode switch not in Position hands over (A2', C1) and gives PILOT. An arm-OFF report before arm ON has been seen does not stop the motors while airborne (the vehicle keeps holding); after arm ON has been seen, arm OFF disarms at once; with the airborne latch false, arm OFF disarms at once. RC lost again in TAKEOVER: HOLD, LAND or BLIND by tier, and the lock starts over |
-| 3 | HOLD | hands-off Position hold, centred sticks |
+| 2 | TAKEOVER | On a MAVLink flight (firmware Amendment N19, section 5): mission switch OFF; control locked until ARM ON and the mode switch in POSITION. REPLACED by firmware Amendment N19 for a MAVLink flight, the earlier CRSF wording, kept for a flight armed on the CRSF model: a fresh CRSF report in HOLD, AUTO, RETURN, LAND or BLIND: the vehicle holds (the ladder as if ch6 were High, centred sticks), real sticks and ch6 ignored. Control stays locked until the vehicle has seen, in fresh CRSF reports after the return, the arm switch ON and the mode switch in Position (switch6 High) in the same report; then the first fresh report with the mode switch not in Position hands over (A2', C1) and gives PILOT. An arm-OFF report before arm ON has been seen does not stop the motors while airborne (the vehicle keeps holding); after arm ON has been seen, arm OFF disarms at once; with the airborne latch false, arm OFF disarms at once. RC lost again in TAKEOVER: HOLD, LAND or BLIND by tier, and the lock starts over |
+| 3 | HOLD | hands-off Position hold, centred sticks, after mission switch ON (firmware Amendment N19) |
 | 4 | AUTO | flying the stored list (section 17) |
 | 5 | RETURN | climbing to the return height, then a straight leg home |
 | 6 | LAND | descending to touchdown, then disarm |
 | 7 | STOP | disarmed, motors stopped |
 | 8 | BLIND | level descent with no height estimate (position tier T1; the lead's ruling; its law and touchdown detection stay unknown, U-1) |
 
-Codes 9 and above are not assigned (a station shows "unknown" and the number). With `FS_HOLD_EN` 0 the vehicle sends
+Codes 9 and above are not assigned (a station shows "unknown" and the number). With `FS_HOLD_EN` 0, and on every flight armed on the CRSF model (firmware Amendment N19), the vehicle sends
 PILOT and STOP, and after a loss of the stick reports also LAND, BLIND and TAKEOVER (firmware Amendment N, 2026-11-24: a
 stick loss in the air starts a descent in every configuration; HOLD, AUTO and RETURN stay unreachable with `FS_HOLD_EN` 0).
 
@@ -663,7 +663,9 @@ What the vehicle answers
 - One `COMMAND_ACK` at once, addressed to the sender as every ACK: ACCEPTED when it takes the command (the state changes
   at the step it is taken), otherwise DENIED. Never IN_PROGRESS, TEMPORARILY_REJECTED or FAILED.
 - DENIED, for each of the five, when any of these holds:
-  1. a CRSF stick report is fresh (younger than 1.0 s, the gate's rule): in PILOT and TAKEOVER always;
+  1. REPLACED by firmware Amendment N19: fresh stick reports no longer refuse commands on a MAVLink flight. PILOT,
+     TAKEOVER and STOP answer code 4. (Before: a CRSF stick report is fresh, younger than 1.0 s, the gate's rule: in
+     PILOT and TAKEOVER always.);
   2. the vehicle is in a state the table does not give for that command: PILOT, TAKEOVER and STOP for all five, and
      every state with `FS_HOLD_EN` 0. The cases where the vehicle is already in the command's result (Start in AUTO,
      Pause or Abort in HOLD, Land in LAND) are an open point (section 17);
@@ -680,10 +682,11 @@ What the vehicle answers
   5. position tier T3 (A3: the position is covered);
   6. the heading monitor reports OK (`nav-eskf`:1774; designed separately);
   7. the battery is not critical;
-  8. the arm switch was ON in the last CRSF report before the sticks were lost (Amendment C, C2: arm ON no longer
-     holds by construction, because a return with arm OFF followed by a change back to the MAVLink model leaves the
-     vehicle armed with a last report showing arm OFF); placed before the next condition;
-  9. the mode switch was in Position (switch6 High) in that same report (A10').
+  8. REPLACED by firmware Amendment N19 (conditions 8 and 9 of Amendment C: the arm switch ON and the mode switch in
+     Position in the last CRSF report before the sticks were lost). In this order after 14: code 19, a receiver
+     report younger than 1.0 s with the mission switch (channel 8) ON; then code 15, arm ON in it (defensive only: HOLD
+     with arm OFF and the mission switch ON is already LAND); then code 16, the mode switch in Position in it.
+  9. (see 8: the three conditions above replace both.)
 - Return is DENIED, in this order (C3): the common four (not the radio link; a CRSF report is fresh; hands-off not
   enabled (`FS_HOLD_EN` 0); not in this state), then no home, then position or heading tier lost (T3'), then battery
   critical (the last two are B2's no-bounce rule, which applies to Return too). Already within `GDN_RADIUS` of home:
@@ -704,8 +707,8 @@ from the take-off point: Start refused". A code not in the table: "Refused, reas
 |---|---|---|
 | 0 | unknown | "Refused, no reason given" |
 | 1 | not the radio link | "Not on the radio link: connect through the transmitter's WiFi backpack" |
-| 2 | a CRSF report is fresh | "The pilot's radio is sending sticks: change the transmitter to the MAVLink model first" |
-| 3 | hands-off not enabled | "Hands-off flight is off in the vehicle (FS_HOLD_EN is 0)" |
+| 2 | the flight is on the CRSF model (REPLACED by firmware Amendment N19; before: a CRSF report is fresh) | "The transmitter is on the CRSF model: missions fly on the MAVLink model only" |
+| 3 | hands-off not enabled (REPLACED by firmware Amendment N19: also a flight armed on the CRSF model) | "Hands-off flight is off: FS_HOLD_EN is 0, or this flight was armed on the CRSF model" |
 | 4 | not in this state | "The vehicle is not in a state that takes this command" |
 | 5 | station heartbeat absent | "The vehicle does not hear this station on the radio link: check the link and try again" |
 | 6 | no waypoints stored | "No waypoints are stored on the vehicle: upload a mission first" |
@@ -717,31 +720,32 @@ from the take-off point: Start refused". A code not in the table: "Refused, reas
 | 12 | heading not OK | "The vehicle's heading is not OK: wait for it to settle" |
 | 13 | position tier lost | "The vehicle has lost its position estimate" |
 | 14 | battery not OK | "The battery is not OK" |
-| 15 | arm switch off | "The arm switch was OFF before the sticks were lost: it must be ON" |
-| 16 | mode switch not in Position | "The mode switch was not in Position before the sticks were lost: it must be in Position" |
+| 15 | arm switch off (REPLACED by firmware Amendment N19) | "The arm switch is OFF" (on Abort: "The arm switch is OFF: the landing continues") |
+| 16 | mode switch not in Position (REPLACED by firmware Amendment N19) | "The mode switch is not in Position" |
 | 17 | battery critical | "The battery is critical" |
 | 18 | link lost | "The link to this station was lost for more than 10 s" |
+| 19 | mission switch not confirmed ON (NEW, firmware Amendment N19) | "The mission switch (channel 8) is not confirmed ON: no live stick report with it ON" |
 
 The station sends them as every command above (one outstanding, three sends 1.5 s apart, the ACK rule); the first
 ACCEPTED or DENIED ends one. It shows the effective mode from the HEARTBEAT, not from the ACK.
 
-The take-over panel (Amendment C, C4, the decision's section 13, from the owner's words in its section 12; APPROVED, NOT BUILT; station
-packet H4). The fact behind it: on the CRSF model the station has no link to the vehicle, so it cannot confirm anything
-after the model change and shows an instruction from its own data, with two triggers:
-- a standing panel while the vehicle's latest HEARTBEAT `custom_mode` is HOLD, AUTO, RETURN, LAND or BLIND (3, 4, 5, 6, 8);
+The take-over panel (firmware Amendment N19, section 5; REPLACED by firmware Amendment N19: Amendment C's C4 panel and its
+wording, which told the pilot to change the transmitter model, are void). Same triggers, two:
+- a standing panel while the vehicle's latest HEARTBEAT `custom_mode` is TAKEOVER, HOLD, AUTO, RETURN, LAND or BLIND
+  (2, 3, 4, 5, 6, 8);
 - full-width when the vehicle's HEARTBEAT stops while the last reported state was one of those.
-It must NOT claim: that the model was changed; that the vehicle is in TAKEOVER, holding or handed back; that either
-switch is set; that a return will happen. It may show: the last reported state and its age; and the last home-set and
-position-tier (T3') bits, for the conditional line. The wording, verbatim from C4:
+It still must NOT claim any switch position. The wording, verbatim:
 
-> TO TAKE CONTROL. Before changing the model to CRSF: 1 ARM ON. 2 Mode switch POSITION. 3 Throttle in the middle
-> (advice; not checked). Then change the model: the vehicle stops and holds. Control stays locked until it sees ARM ON
-> and POSITION together; then move the mode switch out of Position. TO STOP THE MOTORS after the change: ARM ON, then
-> OFF (OFF alone does nothing until ON has been seen).
+> MISSION SWITCH ON: the laptop flies. TO TAKE CONTROL: mode switch POSITION, ARM ON, throttle in the middle (advice),
+> then MISSION SWITCH OFF: you fly in Position at once. Not in Position: control stays locked until it is. TO LAND NOW:
+> ARM OFF with the mission switch ON. TO STOP THE MOTORS: ARM OFF and the mission switch OFF (they stop at once, in the
+> air too). Do NOT change the transmitter model in the air: the vehicle ignores it for the rest of the flight.
 
-and the conditional line, shown with it: "If you did NOT change the model: the vehicle holds and, after 10 s without the
-link, returns to take-off (home was set) / lands where it is (no home)" (the station shows the half its last home-set bit
-selects). This wording replaces the lead's earlier one (the decision's C5).
+In TAKEOVER the panel adds: "Control locked: mode switch to POSITION, ARM ON".
+
+The link-loss line is as before ("If you did NOT change the model: the vehicle holds and, after 10 s without the link,
+returns to take-off (if home was set) / lands where it is (if no home)"), plus: "When the link returns with the mission
+switch ON the vehicle carries on."
 
 ## 11. Log download
 
