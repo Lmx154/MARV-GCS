@@ -505,7 +505,7 @@ fn the_takeover_panel_shows_with_a_hands_off_mode_and_full_width_when_the_link_i
     assert!(
         window_up
             .harness
-            .query_all_by_label_contains("TO TAKE CONTROL.")
+            .query_all_by_label_contains("MISSION SWITCH ON: the laptop flies.")
             .next()
             .is_some()
     );
@@ -515,19 +515,29 @@ fn the_takeover_panel_shows_with_a_hands_off_mode_and_full_width_when_the_link_i
     assert!(
         window_lost
             .harness
-            .query_all_by_label_contains("TO TAKE CONTROL.")
+            .query_all_by_label_contains("MISSION SWITCH ON: the laptop flies.")
             .next()
             .is_some()
     );
     assert!(window_lost.shows(
         "The link to the vehicle stopped. Last reported 12 s ago: Flying the stored mission"
     ));
+    state.flight.mode_code = Some(2);
+    let window_takeover = window(&store, state.clone(), Some(13.0), Access::Operate);
+    assert!(window_takeover.shows("Control locked: mode switch to POSITION, ARM ON"));
+    assert!(
+        window_takeover
+            .shows("When the link returns with the mission switch ON the vehicle carries on.")
+    );
+    state.flight.mode_code = Some(4);
+    let window_auto = window(&store, state.clone(), Some(13.0), Access::Operate);
+    assert!(!window_auto.shows("Control locked: mode switch to POSITION, ARM ON"));
     state.flight.mode_code = Some(1);
     let window_pilot = window(&store, state, Some(13.0), Access::Operate);
     assert!(
         window_pilot
             .harness
-            .query_all_by_label_contains("TO TAKE CONTROL.")
+            .query_all_by_label_contains("MISSION SWITCH ON: the laptop flies.")
             .next()
             .is_none()
     );

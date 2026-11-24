@@ -49,8 +49,8 @@ fn only_exactly_these_commands_are_flight_commands() {
 }
 
 #[test]
-fn each_of_the_18_codes_and_0_has_its_text() {
-    let texts: Vec<String> = (0..=18).map(deny_text).collect();
+fn each_of_the_19_codes_and_0_has_its_text() {
+    let texts: Vec<String> = (0..=19).map(deny_text).collect();
     assert_eq!(texts[0], "Refused, no reason given");
     assert_eq!(
         texts[1],
@@ -64,6 +64,20 @@ fn each_of_the_18_codes_and_0_has_its_text() {
         texts[18],
         "The link to this station was lost for more than 10 s"
     );
+    assert_eq!(
+        texts[2],
+        "The transmitter is on the CRSF model: missions fly on the MAVLink model only"
+    );
+    assert_eq!(
+        texts[3],
+        "Hands-off flight is off: FS_HOLD_EN is 0, or this flight was armed on the CRSF model"
+    );
+    assert_eq!(texts[15], "The arm switch is OFF");
+    assert_eq!(texts[16], "The mode switch is not in Position");
+    assert_eq!(
+        texts[19],
+        "The mission switch (channel 8) is not confirmed ON: no live stick report with it ON"
+    );
     for (a, text) in texts.iter().enumerate() {
         assert!(!text.contains("not known"), "code {a}");
         assert_eq!(
@@ -76,7 +90,7 @@ fn each_of_the_18_codes_and_0_has_its_text() {
 
 #[test]
 fn an_unknown_code_is_shown_with_its_number() {
-    assert_eq!(deny_text(19), "Refused, reason not known (code 19)");
+    assert_eq!(deny_text(20), "Refused, reason not known (code 20)");
     assert_eq!(deny_text(-4), "Refused, reason not known (code -4)");
 }
 
@@ -89,6 +103,25 @@ fn a_denied_start_reads_as_the_contracts_example() {
     assert_eq!(
         result.error().as_deref(),
         Some("A waypoint is more than 1 km from the take-off point: Start refused")
+    );
+}
+
+#[test]
+fn an_abort_denied_for_the_arm_switch_says_the_landing_continues() {
+    let of = |command| {
+        FlightResult {
+            command,
+            outcome: FlightOutcome::Denied { code: 15 },
+        }
+        .error()
+    };
+    assert_eq!(
+        of(FlightCommand::Abort).as_deref(),
+        Some("The arm switch is OFF: the landing continues: Abort refused")
+    );
+    assert_eq!(
+        of(FlightCommand::Start).as_deref(),
+        Some("The arm switch is OFF: Start refused")
     );
 }
 

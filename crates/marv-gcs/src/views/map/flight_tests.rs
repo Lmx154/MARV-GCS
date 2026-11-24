@@ -104,10 +104,10 @@ fn no_answer_is_an_error() {
 }
 
 #[test]
-fn the_panel_stands_in_the_five_hands_off_modes_and_only_there() {
+fn the_panel_stands_in_the_hands_off_modes_and_takeover_only() {
     for code in 0..=9 {
         let shown = panel(&state(LinkStatus::Connected, Some(code)), secs(101));
-        let hands_off = [3, 4, 5, 6, 8].contains(&code);
+        let hands_off = [2, 3, 4, 5, 6, 8].contains(&code);
         assert_eq!(shown != Panel::Hidden, hands_off, "mode {code}: {shown:?}");
     }
     assert_eq!(
@@ -142,8 +142,8 @@ fn the_panel_goes_full_width_when_the_heartbeat_stops_after_a_hands_off_mode() {
 }
 
 #[test]
-fn a_heartbeat_in_pilot_takeover_or_stop_clears_the_panel() {
-    for code in [1, 2, 7] {
+fn a_heartbeat_in_pilot_or_stop_clears_the_panel() {
+    for code in [1, 7] {
         assert_eq!(
             panel(&state(LinkStatus::Connected, Some(code)), secs(101)),
             Panel::Hidden
@@ -153,8 +153,27 @@ fn a_heartbeat_in_pilot_takeover_or_stop_clears_the_panel() {
 
 #[test]
 fn the_panel_wording_is_the_contracts_and_claims_nothing_more() {
-    assert!(TAKEOVER.starts_with("TO TAKE CONTROL. Before changing the model to CRSF: 1 ARM ON. 2 Mode switch POSITION. 3 Throttle in the middle (advice; not checked)."));
-    assert!(TAKEOVER.ends_with("TO STOP THE MOTORS after the change: ARM ON, then OFF (OFF alone does nothing until ON has been seen)."));
+    assert_eq!(
+        TAKEOVER,
+        "MISSION SWITCH ON: the laptop flies. TO TAKE CONTROL: mode switch POSITION, ARM ON, throttle in the middle (advice), then MISSION SWITCH OFF: you fly in Position at once. Not in Position: control stays locked until it is. TO LAND NOW: ARM OFF with the mission switch ON. TO STOP THE MOTORS: ARM OFF and the mission switch OFF (they stop at once, in the air too). Do NOT change the transmitter model in the air: the vehicle ignores it for the rest of the flight."
+    );
+    assert_eq!(LOCKED, "Control locked: mode switch to POSITION, ARM ON");
+    assert_eq!(
+        LINK_RETURNS,
+        "When the link returns with the mission switch ON the vehicle carries on."
+    );
+    assert_eq!(
+        panel_mode(panel(&state(LinkStatus::Connected, Some(2)), secs(101))),
+        Some(FlightMode::Takeover)
+    );
+    assert_eq!(
+        panel_mode(panel(&state(LinkStatus::Lost, Some(2)), secs(112))),
+        Some(FlightMode::Takeover)
+    );
+    assert_eq!(
+        panel_mode(panel(&state(LinkStatus::Connected, Some(3)), secs(101))),
+        Some(FlightMode::Hold)
+    );
     assert_eq!(
         panel_header(Panel::Standing(FlightMode::Hold)).as_deref(),
         Some("The vehicle reports: Holding position")
@@ -164,7 +183,7 @@ fn the_panel_wording_is_the_contracts_and_claims_nothing_more() {
         Some("The link to the vehicle stopped. Last reported 12 s ago: Flying the stored mission")
     );
     assert_eq!(panel_header(Panel::Hidden), None);
-    for text in [TAKEOVER, NOT_CHANGED] {
+    for text in [TAKEOVER, NOT_CHANGED, LINK_RETURNS, LOCKED] {
         assert!(!text.contains("handed back") && !text.contains("is in TAKEOVER"));
     }
 }

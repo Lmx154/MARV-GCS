@@ -88,6 +88,9 @@ impl FlightResult {
         let button = self.command.label();
         match self.outcome {
             FlightOutcome::Accepted => None,
+            FlightOutcome::Denied { code: 15 } if self.command == FlightCommand::Abort => Some(
+                format!("{}: the landing continues: {button} refused", deny_text(15)),
+            ),
             FlightOutcome::Denied { code } => {
                 Some(format!("{}: {button} refused", deny_text(code)))
             }
@@ -114,10 +117,12 @@ pub fn deny_text(code: i32) -> String {
     match code {
         0 => "Refused, no reason given",
         1 => "Not on the radio link: connect through the transmitter's WiFi backpack",
-        2 => "The pilot's radio is sending sticks: change the transmitter to the MAVLink model first",
-        3 => "Hands-off flight is off in the vehicle (FS_HOLD_EN is 0)",
+        2 => "The transmitter is on the CRSF model: missions fly on the MAVLink model only",
+        3 => "Hands-off flight is off: FS_HOLD_EN is 0, or this flight was armed on the CRSF model",
         4 => "The vehicle is not in a state that takes this command",
-        5 => "The vehicle does not hear this station on the radio link: check the link and try again",
+        5 => {
+            "The vehicle does not hear this station on the radio link: check the link and try again"
+        }
         6 => "No waypoints are stored on the vehicle: upload a mission first",
         7 => "A stored height is outside the height limits in force: upload the mission again",
         8 => "The vehicle has no home point: it is set at arming, before take-off",
@@ -127,10 +132,11 @@ pub fn deny_text(code: i32) -> String {
         12 => "The vehicle's heading is not OK: wait for it to settle",
         13 => "The vehicle has lost its position estimate",
         14 => "The battery is not OK",
-        15 => "The arm switch was OFF before the sticks were lost: it must be ON",
-        16 => "The mode switch was not in Position before the sticks were lost: it must be in Position",
+        15 => "The arm switch is OFF",
+        16 => "The mode switch is not in Position",
         17 => "The battery is critical",
         18 => "The link to this station was lost for more than 10 s",
+        19 => "The mission switch (channel 8) is not confirmed ON: no live stick report with it ON",
         other => return format!("Refused, reason not known (code {other})"),
     }
     .to_string()

@@ -16,11 +16,16 @@ use super::mission::CONFIRM_BEFORE_SENDING;
 use crate::theme;
 use crate::views::actions;
 
-/// The take-over wording of the contract (section 10, C4), verbatim.
-pub const TAKEOVER: &str = "TO TAKE CONTROL. Before changing the model to CRSF: 1 ARM ON. 2 Mode switch POSITION. 3 Throttle in the middle (advice; not checked). Then change the model: the vehicle stops and holds. Control stays locked until it sees ARM ON and POSITION together; then move the mode switch out of Position. TO STOP THE MOTORS after the change: ARM ON, then OFF (OFF alone does nothing until ON has been seen).";
+/// The take-over wording of the contract (section 10, Amendment N19), verbatim.
+pub const TAKEOVER: &str = "MISSION SWITCH ON: the laptop flies. TO TAKE CONTROL: mode switch POSITION, ARM ON, throttle in the middle (advice), then MISSION SWITCH OFF: you fly in Position at once. Not in Position: control stays locked until it is. TO LAND NOW: ARM OFF with the mission switch ON. TO STOP THE MOTORS: ARM OFF and the mission switch OFF (they stop at once, in the air too). Do NOT change the transmitter model in the air: the vehicle ignores it for the rest of the flight.";
+/// Added in TAKEOVER.
+pub const LOCKED: &str = "Control locked: mode switch to POSITION, ARM ON";
 /// The conditional line shown with it. The station does not learn whether home was set (open point 14), so it
 /// names both halves instead of choosing one.
 pub const NOT_CHANGED: &str = "If you did NOT change the model: the vehicle holds and, after 10 s without the link, returns to take-off (if home was set) / lands where it is (if no home)";
+/// Added to the link-loss line.
+pub const LINK_RETURNS: &str =
+    "When the link returns with the mission switch ON the vehicle carries on.";
 pub const WAITING: &str = "a command is waiting for the vehicle";
 pub const START_QUESTION: &str = "Start the stored mission?";
 
@@ -68,7 +73,7 @@ pub fn panel(state: &VehicleState, now: Option<Duration>) -> Panel {
     let Some(mode) = state.flight.mode_code.map(FlightMode::from_code) else {
         return Panel::Hidden;
     };
-    if !mode.hands_off() {
+    if !(mode.hands_off() || mode == FlightMode::Takeover) {
         return Panel::Hidden;
     }
     match state.link.status {
@@ -79,6 +84,14 @@ pub fn panel(state: &VehicleState, now: Option<Duration>) -> Panel {
                 .map(|(now, at)| now.saturating_sub(at)),
         ),
         LinkStatus::Connecting | LinkStatus::Closed(_) => Panel::Hidden,
+    }
+}
+
+/// The last reported mode behind a shown panel.
+pub fn panel_mode(panel: Panel) -> Option<FlightMode> {
+    match panel {
+        Panel::Hidden => None,
+        Panel::Standing(mode) | Panel::FullWidth(mode, _) => Some(mode),
     }
 }
 
@@ -172,7 +185,11 @@ impl Controls {
                     ui.set_width(ui.available_width());
                     ui.colored_label(colour, RichText::new(header).strong());
                     ui.label(TAKEOVER);
+                    if panel_mode(panel) == Some(FlightMode::Takeover) {
+                        ui.label(RichText::new(LOCKED).strong());
+                    }
                     ui.label(NOT_CHANGED);
+                    ui.label(LINK_RETURNS);
                 });
         }
     }
