@@ -22,7 +22,7 @@ pub const TAKEOVER: &str = "MISSION SWITCH ON: the laptop flies. TO TAKE CONTROL
 pub const LOCKED: &str = "Control locked: mode switch to POSITION, ARM ON";
 /// The conditional line shown with it. The station does not learn whether home was set (open point 14), so it
 /// names both halves instead of choosing one.
-pub const NOT_CHANGED: &str = "If you did NOT change the model: the vehicle holds and, after 10 s without the link, returns to take-off (if home was set) / lands where it is (if no home)";
+pub const LINK_LOST: &str = "If the link is lost: the vehicle holds and, after 10 s without the link, returns to take-off (if home was set) / lands where it is (if no home)";
 /// Added to the link-loss line.
 pub const LINK_RETURNS: &str =
     "When the link returns with the mission switch ON the vehicle carries on.";
@@ -188,7 +188,7 @@ impl Controls {
                     if panel_mode(panel) == Some(FlightMode::Takeover) {
                         ui.label(RichText::new(LOCKED).strong());
                     }
-                    ui.label(NOT_CHANGED);
+                    ui.label(LINK_LOST);
                     ui.label(LINK_RETURNS);
                 });
         }

@@ -183,7 +183,7 @@ fn the_panel_wording_is_the_contracts_and_claims_nothing_more() {
         Some("The link to the vehicle stopped. Last reported 12 s ago: Flying the stored mission")
     );
     assert_eq!(panel_header(Panel::Hidden), None);
-    for text in [TAKEOVER, NOT_CHANGED, LINK_RETURNS, LOCKED] {
+    for text in [TAKEOVER, LINK_LOST, LINK_RETURNS, LOCKED] {
         assert!(!text.contains("handed back") && !text.contains("is in TAKEOVER"));
     }
 }

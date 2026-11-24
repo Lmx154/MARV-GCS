@@ -743,7 +743,7 @@ It still must NOT claim any switch position. The wording, verbatim:
 
 In TAKEOVER the panel adds: "Control locked: mode switch to POSITION, ARM ON".
 
-The link-loss line is as before ("If you did NOT change the model: the vehicle holds and, after 10 s without the link,
+The link-loss line ("If the link is lost: the vehicle holds and, after 10 s without the link,
 returns to take-off (if home was set) / lands where it is (if no home)"), plus: "When the link returns with the mission
 switch ON the vehicle carries on."
 
