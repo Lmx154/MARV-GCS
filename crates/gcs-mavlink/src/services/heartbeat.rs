@@ -53,6 +53,7 @@ impl Service for Heartbeat {
         }
         link.last_heartbeat = Some(cx.now);
         link.status = LinkStatus::Connected;
+        cx.state.flight.mode_code = Some(heartbeat.custom_mode);
         cx.changed = true;
     }
 

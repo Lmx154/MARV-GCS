@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use super::{Ctx, Service};
 use crate::dialect::{COMMAND_ACK_DATA, COMMAND_LONG_DATA, MavCmd, MavResult};
+use crate::flight::{FlightCommand, FlightOutcome, FlightResult, outcome_of};
 use crate::session::SessionConfig;
 use crate::state::{
     CancelStatus, CommandRecord, CommandStatus, RefusedCommand, UnsavedCalibration,
@@ -196,6 +197,12 @@ impl Commands {
         let Some(target) = Self::target(cx) else {
             record.status = CommandStatus::Refused("the vehicle is not connected".to_string());
             cx.state.command = Some(record);
+            if let Some(command) = FlightCommand::from_wire(command, &params) {
+                cx.state.flight.last = Some(FlightResult {
+                    command,
+                    outcome: FlightOutcome::NotSent,
+                });
+            }
             cx.changed = true;
             return;
         };
@@ -301,6 +308,12 @@ impl Commands {
             },
         };
         record.status = CommandStatus::Finished { text, accepted };
+        if let Some(command) = FlightCommand::from_wire(track.command, &track.params) {
+            cx.state.flight.last = Some(FlightResult {
+                command,
+                outcome: outcome_of(result, ack.result_param2, text),
+            });
+        }
         if accepted {
             note_accepted(track.command, track.params, &mut cx.state.calibration);
         }
@@ -430,6 +443,12 @@ impl Service for Commands {
                     if let Some(record) = cx.state.command.as_mut() {
                         record.status = CommandStatus::NoAnswer;
                     }
+                    if let Some(command) = FlightCommand::from_wire(track.command, &track.params) {
+                        cx.state.flight.last = Some(FlightResult {
+                            command,
+                            outcome: FlightOutcome::NoAnswer,
+                        });
+                    }
                     self.end(cx);
                     cx.changed = true;
                 }
@@ -438,8 +457,13 @@ impl Service for Commands {
     }
 
     fn on_command(&mut self, command: &Command, cx: &mut Ctx) {
-        if let Command::SendCommand { command, params } = command {
-            self.send_command(*command, *params, cx);
+        match command {
+            Command::SendCommand { command, params } => self.send_command(*command, *params, cx),
+            Command::Flight(flight) => {
+                let (command, params) = flight.wire();
+                self.send_command(command, params, cx);
+            }
+            _ => {}
         }
     }
 }

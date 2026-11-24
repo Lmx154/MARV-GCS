@@ -14,8 +14,8 @@ use gcs_mavlink::services::params::FetchStatus;
 use gcs_mavlink::services::texts::TextEntry;
 use gcs_mavlink::tlog::LogSink;
 use gcs_mavlink::{
-    Access, Command as SessionCommand, CommandRecord, CommandStatus, LinkStatus, Refused, Session,
-    VehicleState,
+    Access, Command as SessionCommand, CommandRecord, CommandStatus, FlightCommand, LinkStatus,
+    Refused, Session, VehicleState,
 };
 
 use crate::args::{
@@ -48,6 +48,8 @@ const FILE_BUFFER: usize = 256 * 1024;
 /// the same for the read-back), but a link that loses many frames makes every item cost several retries (16
 /// waypoints with every other frame lost both ways take over 200 s), so this is never the usual end.
 const MISSION_DEADLINE: Duration = Duration::from_secs(900);
+/// A flight command ends by itself within 4.5 s; this is the backstop.
+const FLIGHT_DEADLINE: Duration = Duration::from_secs(15);
 const DEVICE_MESSAGE: &str = "MARV_DEVICE_STATUS";
 /// The last texts `status` shows.
 const STATUS_TEXTS: usize = 3;
@@ -234,6 +236,7 @@ fn run_command(
             }
             Ok(())
         }
+        Command::Flight(flight) => flight_run(session, *flight, out, echo),
         command => {
             let Some((label, mav, params)) = mav_command(command) else {
                 return Err(Fail::new(exit::FAILED, "internal error: no such command"));
@@ -253,6 +256,41 @@ fn run_command(
             }
             follow_command(session, &label, out, echo)
         }
+    }
+}
+
+/// Sends one flight command and waits for its result: the service ends it by itself (three sends, 1.5 s apart).
+/// Accepted prints one line; a denial prints the reason's text; no answer is never reported as accepted.
+fn flight_run(
+    session: &Session,
+    flight: FlightCommand,
+    out: &mut dyn Write,
+    echo: &mut Echo,
+) -> Outcome {
+    send(session, SessionCommand::Flight(flight))?;
+    let end = wait_with(
+        FLIGHT_DEADLINE,
+        || {
+            let state = session.state();
+            if let Some(fail) = closed(&state) {
+                return Some(Err(fail));
+            }
+            state.flight.last.map(Ok)
+        },
+        &mut || echo.pump(session),
+    );
+    let Some(result) = end.transpose()? else {
+        return Err(Fail::new(
+            exit::FAILED,
+            format!("{}: gave up waiting", flight.label()),
+        ));
+    };
+    match result.error() {
+        None => {
+            writeln!(out, "{}: accepted", flight.label())?;
+            Ok(())
+        }
+        Some(error) => Err(Fail::new(exit::FAILED, error)),
     }
 }
 

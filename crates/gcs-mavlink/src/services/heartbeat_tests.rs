@@ -296,3 +296,23 @@ fn changed_is_set_by_a_vehicle_heartbeat_and_not_by_an_ignored_one() {
     rig.frame(&vehicle_frame(1), 500);
     assert!(!rig.changed, "closed");
 }
+
+#[test]
+fn the_vehicles_custom_mode_is_kept_and_a_ground_station_heartbeat_does_not_set_it() {
+    let mut rig = Rig::new(Duration::from_secs(3));
+    assert_eq!(rig.state.flight.mode_code, None);
+    let Frame {
+        body: Body::Known(Message::HEARTBEAT(mut data)),
+        ..
+    } = vehicle_frame(1)
+    else {
+        panic!("a heartbeat");
+    };
+    data.custom_mode = 3;
+    let mut frame = vehicle_frame(1);
+    frame.body = Body::Known(Message::HEARTBEAT(data));
+    rig.frame(&frame, 100);
+    assert_eq!(rig.state.flight.mode_code, Some(3));
+    rig.frame(&heartbeat_frame(1, 1, MavType::MAV_TYPE_GCS), 200);
+    assert_eq!(rig.state.flight.mode_code, Some(3));
+}

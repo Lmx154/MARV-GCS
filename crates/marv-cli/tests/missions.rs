@@ -616,3 +616,16 @@ fn z_travels_as_its_four_bytes_whatever_they_are() {
     let wanted: Vec<(i32, i32, f32)> = items.iter().map(|p| (p.lat_e7, p.lon_e7, p.z)).collect();
     assert_eq!(held.plan_id, plan_id(&wanted));
 }
+
+/// The simulator models none of the five flight commands yet (contract section 10: it answers UNSUPPORTED), so
+/// each must exit non-zero with the vehicle's word and never print `accepted`.
+#[test]
+fn a_flight_command_the_vehicle_does_not_take_exits_1_and_is_never_accepted() {
+    let rig = Rig::start();
+    for word in ["start", "pause", "abort", "land", "return"] {
+        let r = rig.cli(&format!("mission {word}"));
+        assert_eq!(r.code, 1, "{word}: {r:?}");
+        assert!(!r.out.contains("accepted"), "{word}: {r:?}");
+        assert!(r.err.contains("not accepted: unsupported"), "{word}: {r:?}");
+    }
+}

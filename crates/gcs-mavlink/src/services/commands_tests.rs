@@ -902,3 +902,99 @@ fn a_restart_of_the_vehicle_drops_them_and_leaves_a_note_until_the_next_calibrat
     assert_eq!(unsaved(&rig), (false, false, true));
     assert!(!rig.state.calibration.lost_at_reboot);
 }
+
+mod flight {
+    use super::*;
+    use crate::flight::{FlightCommand, FlightOutcome, FlightResult};
+
+    fn flight(rig: &mut Rig, f: FlightCommand, now_ms: u64) {
+        rig.call(now_ms, |s, cx| s.on_command(&Command::Flight(f), cx));
+    }
+
+    fn last(rig: &Rig) -> Option<FlightResult> {
+        rig.state.flight.last
+    }
+
+    #[test]
+    fn each_button_sends_its_command_long() {
+        for f in FlightCommand::ALL {
+            let mut rig = Rig::new();
+            flight(&mut rig, f, 0);
+            let [(_, Message::COMMAND_LONG(c))] = rig.log.as_slice() else {
+                panic!("one COMMAND_LONG for {f:?}");
+            };
+            let (command, params) = f.wire();
+            assert_eq!(c.command, command);
+            assert_eq!(
+                [
+                    c.param1, c.param2, c.param3, c.param4, c.param5, c.param6, c.param7
+                ],
+                params
+            );
+            assert_eq!(
+                (c.target_system, c.target_component, c.confirmation),
+                (1, 1, 0)
+            );
+        }
+    }
+
+    #[test]
+    fn a_denied_ack_keeps_its_reason_code() {
+        let mut rig = Rig::new();
+        flight(&mut rig, FlightCommand::Start, 0);
+        let mut ack = ack_data(
+            MavCmd::MAV_CMD_MISSION_START,
+            MavResult::MAV_RESULT_DENIED,
+            0,
+            255,
+            190,
+        );
+        ack.result_param2 = 6;
+        rig.ack_for(ack, 1, 100);
+        assert_eq!(
+            last(&rig),
+            Some(FlightResult {
+                command: FlightCommand::Start,
+                outcome: FlightOutcome::Denied { code: 6 }
+            })
+        );
+    }
+
+    #[test]
+    fn accepted_is_accepted_and_replaces_an_earlier_error() {
+        let mut rig = Rig::new();
+        flight(&mut rig, FlightCommand::Pause, 0);
+        rig.ack(
+            MavCmd::MAV_CMD_DO_PAUSE_CONTINUE,
+            MavResult::MAV_RESULT_DENIED,
+            0,
+            50,
+        );
+        assert!(last(&rig).unwrap().error().is_some());
+        flight(&mut rig, FlightCommand::Pause, 100);
+        rig.ack(
+            MavCmd::MAV_CMD_DO_PAUSE_CONTINUE,
+            MavResult::MAV_RESULT_ACCEPTED,
+            0,
+            150,
+        );
+        assert_eq!(last(&rig).unwrap().outcome, FlightOutcome::Accepted);
+    }
+
+    #[test]
+    fn no_ack_ends_as_no_answer_after_three_sends() {
+        let mut rig = Rig::new();
+        flight(&mut rig, FlightCommand::Land, 0);
+        rig.tick_range(50, 10_000);
+        assert_eq!(rig.sends().len(), 3);
+        assert_eq!(last(&rig).unwrap().outcome, FlightOutcome::NoAnswer);
+    }
+
+    #[test]
+    fn a_plain_send_command_does_not_touch_the_flight_result() {
+        let mut rig = Rig::new();
+        rig.send(STORAGE, save(), 0);
+        rig.ack(STORAGE, MavResult::MAV_RESULT_ACCEPTED, 0, 50);
+        assert_eq!(last(&rig), None);
+    }
+}

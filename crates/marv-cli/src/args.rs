@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use gcs_mavlink::FlightCommand;
 use gcs_mavlink::dialect::MavCmd;
 use gcs_transport::Endpoint;
 
@@ -41,6 +42,10 @@ Commands:
   mission download [<out.waypoints>]  the vehicle's list: one line per waypoint, then the count and the plan id; with a
                                    file name also writes it as a .waypoints file (an existing file is kept without --force)
   mission clear                    empty the vehicle's list and read it back; prints `verified`, 0 waypoints, plan id 0x00000000
+  mission start | pause | abort | land | return
+                                   a flight command (radio link through the WiFi backpack): prints accepted, or the
+                                   vehicle's reason; exit 1 when refused or when the vehicle gives no answer.
+                                   Abort drops the mission and holds position. No command here arms, disarms or stops the motors
   session export <file.tlog>       a recording into a session folder (CSV per message, session.json, a copy of the .tlog);
                                    no vehicle and no --connect; --name (default the file's name), --out (default
                                    <the file's directory>/sessions); an existing folder is never overwritten
@@ -157,6 +162,8 @@ pub enum Command {
         force: bool,
     },
     MissionClear,
+    /// `mission start|pause|abort|land|return`: the five flight commands.
+    Flight(FlightCommand),
 }
 
 /// The commands that need no link.
@@ -720,9 +727,28 @@ fn command(words: &[&str], yes: bool) -> Result<(Command, bool), String> {
             ["download", _, extra, ..] => Err(format!("unexpected argument {extra:?}")),
             ["clear"] => Ok((Command::MissionClear, false)),
             ["clear", extra, ..] => Err(format!("unexpected argument {extra:?}")),
-            [] => Err("mission needs upload, download or clear".to_string()),
+            [
+                word @ ("start" | "pause" | "abort" | "land" | "return"),
+                tail @ ..,
+            ] => {
+                if let Some(extra) = tail.first() {
+                    return Err(format!("unexpected argument {extra:?}"));
+                }
+                let flight = match *word {
+                    "start" => FlightCommand::Start,
+                    "pause" => FlightCommand::Pause,
+                    "abort" => FlightCommand::Abort,
+                    "land" => FlightCommand::Land,
+                    _ => FlightCommand::Return,
+                };
+                Ok((Command::Flight(flight), false))
+            }
+            [] => Err(
+                "mission needs upload, download or clear, or start, pause, abort, land or return"
+                    .to_string(),
+            ),
             [other, ..] => Err(format!(
-                "unknown mission command {other:?}: upload, download or clear"
+                "unknown mission command {other:?}: upload, download, clear, start, pause, abort, land or return"
             )),
         },
         "session" => Err(

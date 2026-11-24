@@ -1111,9 +1111,10 @@ mod access {
             Command::UploadMission { .. } => 10,
             Command::DownloadMission => 11,
             Command::ClearMission => 12,
+            Command::Flight(_) => 13,
         }
     }
-    const COUNT: usize = 13;
+    const COUNT: usize = 14;
 
     #[test]
     fn every_command_has_its_class_in_the_table() {
@@ -1161,6 +1162,11 @@ mod access {
             ),
             (Command::DownloadMission, Access::Operate, "DownloadMission"),
             (Command::ClearMission, Access::Operate, "ClearMission"),
+            (
+                Command::Flight(crate::FlightCommand::Start),
+                Access::Operate,
+                "Flight",
+            ),
         ];
         let mut seen = [false; COUNT];
         for (command, access, name) in &rows {

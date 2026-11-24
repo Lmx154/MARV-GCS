@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use crate::RxStats;
 use crate::dialect::MavCmd;
+use crate::flight::{FlightCommand, FlightState};
 use crate::services::logs::LogsState;
 use crate::services::messages::MessageStore;
 use crate::services::missions::{MissionPoint, MissionsState};
@@ -29,6 +30,8 @@ pub struct VehicleState {
     pub command: Option<CommandRecord>,
     /// The calibrations the vehicle applies in RAM and has not saved to flash.
     pub calibration: UnsavedCalibration,
+    /// The vehicle's reported mode and the last flight command's result.
+    pub flight: FlightState,
 }
 
 /// The calibrations that ended accepted and are not yet saved (`MAV_CMD_PREFLIGHT_STORAGE` param1 = 1)
@@ -260,6 +263,9 @@ pub enum Command {
     DownloadMission,
     /// Empty the vehicle's list and read it back. The outcome shows in `VehicleState.missions`.
     ClearMission,
+    /// One of the five flight commands (docs/link-contract.md, section 10). The outcome shows in
+    /// `VehicleState.flight.last`, and the command's record in `VehicleState.command`.
+    Flight(FlightCommand),
 }
 
 impl Command {
@@ -284,6 +290,8 @@ impl Command {
             Command::UploadMission { .. } => Access::Operate,
             Command::DownloadMission => Access::Operate,
             Command::ClearMission => Access::Operate,
+            // The five flight commands are Operate-class (section 9, amendments A and C).
+            Command::Flight(_) => Access::Operate,
         }
     }
 
@@ -303,6 +311,7 @@ impl Command {
             Command::UploadMission { .. } => "UploadMission",
             Command::DownloadMission => "DownloadMission",
             Command::ClearMission => "ClearMission",
+            Command::Flight(_) => "Flight",
         }
     }
 }

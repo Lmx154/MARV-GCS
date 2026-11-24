@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use gcs_mavlink::FlightCommand;
 use marv_cli::args::{
     Action, Calibration, Command, Parsed, Storage, USAGE, device_id, mav_command, parse,
 };
@@ -437,6 +438,27 @@ fn the_mission_commands_parse() {
     );
     assert_eq!(command("mission clear"), Command::MissionClear);
     assert!(USAGE.contains("mission upload") && USAGE.contains("mission download"));
+    assert_eq!(
+        command("mission start"),
+        Command::Flight(FlightCommand::Start)
+    );
+    assert_eq!(
+        command("mission pause"),
+        Command::Flight(FlightCommand::Pause)
+    );
+    assert_eq!(
+        command("mission abort"),
+        Command::Flight(FlightCommand::Abort)
+    );
+    assert_eq!(
+        command("mission land"),
+        Command::Flight(FlightCommand::Land)
+    );
+    assert_eq!(
+        command("mission return"),
+        Command::Flight(FlightCommand::Return)
+    );
+    assert!(USAGE.contains("mission start | pause | abort | land | return"));
 }
 
 #[test]
@@ -448,6 +470,8 @@ fn the_mission_errors() {
     assert!(e("mission upload a b").contains("unexpected argument"));
     assert!(e("mission download a b").contains("unexpected argument"));
     assert!(e("mission clear now").contains("unexpected argument"));
+    assert!(e("mission start now").contains("unexpected argument"));
+    assert!(e("mission start --force").contains("only applies to"));
     assert!(
         e("mission upload a --force").contains("only applies to logs get and mission download")
     );
