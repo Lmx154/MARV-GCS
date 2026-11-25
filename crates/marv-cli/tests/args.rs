@@ -420,8 +420,31 @@ fn the_log_report_parses_and_needs_its_inputs() {
 fn the_mission_commands_parse() {
     assert_eq!(
         command("mission upload plan.waypoints"),
-        Command::MissionUpload(PathBuf::from("plan.waypoints"))
+        Command::MissionUpload {
+            file: PathBuf::from("plan.waypoints"),
+            return_height: None
+        }
     );
+    assert_eq!(
+        command("mission upload plan.waypoints --return-height 25.5"),
+        Command::MissionUpload {
+            file: PathBuf::from("plan.waypoints"),
+            return_height: Some(25.5)
+        }
+    );
+    assert!(
+        error("--connect tcp:127.0.0.1:5760 mission upload plan.waypoints --return-height nan")
+            .contains("--return-height")
+    );
+    assert!(
+        error("--connect tcp:127.0.0.1:5760 mission upload plan.waypoints --return-height")
+            .contains("needs a value")
+    );
+    assert!(
+        error("--connect tcp:127.0.0.1:5760 mission clear --return-height 20")
+            .contains("only applies to mission upload")
+    );
+    assert!(USAGE.contains("--return-height <m>"));
     assert_eq!(
         command("mission download"),
         Command::MissionDownload {

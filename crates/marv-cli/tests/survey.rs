@@ -170,7 +170,9 @@ fn survey(dir: &TempDir, bytes: &[u8], args: &str) -> Ran {
 
 fn list(ran: &Ran, name: &str) -> Vec<gcs_mavlink::services::missions::MissionPoint> {
     let text = std::fs::read_to_string(ran.store.join(format!("{name}.waypoints"))).expect("list");
-    waypoints::parse(&text).expect("the reader accepts the file")
+    waypoints::parse(&text)
+        .expect("the reader accepts the file")
+        .0
 }
 
 fn e7(x: f64) -> i32 {
@@ -330,7 +332,7 @@ fn the_file_is_the_stations_format_and_reads_back() {
         (e7(lat1), e7(lon1), 12.0)
     );
     // the same text the crate's own writer gives for the points it read
-    assert_eq!(waypoints::to_wpl(&points), text);
+    assert_eq!(waypoints::to_wpl(&points, None), text);
 }
 
 #[test]

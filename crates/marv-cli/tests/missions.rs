@@ -35,8 +35,26 @@ fn degrees(e7: i32) -> String {
     format!("{:.8}", f64::from(e7) / 1e7)
 }
 
-/// The text of a QGC WPL 110 file: the home placeholder, then one row per point.
+/// The return height of the examples, m above home.
+const RET: f32 = 20.0;
+
+/// The plan id of `points(3)` and the return item (x 0, y 0, z 20.0): the CRC-32 of their 48 bytes by the firmware's
+/// rule, computed independently with Python's zlib.crc32.
+const THREE_ID: &str = "0x1862F4A2";
+
+/// The text of a QGC WPL 110 file as the station's tools write it: the home placeholder, one row per point, and the
+/// return row (command 20, the altitude the return height) last.
 fn wpl(points: &[(i32, i32, f32)]) -> String {
+    let mut text = wpl_without_return(points);
+    text += &format!(
+        "{}\t0\t3\t20\t0\t0\t0\t0\t0\t0\t{RET}\t1\n",
+        points.len() + 1
+    );
+    text
+}
+
+/// A file as the station wrote them before the return item: no command-20 row.
+fn wpl_without_return(points: &[(i32, i32, f32)]) -> String {
     let mut text = String::from("QGC WPL 110\n");
     let (x, y) = points.first().map_or((0, 0), |p| (p.0, p.1));
     text += &format!(
@@ -66,16 +84,17 @@ fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
-/// The contract's plan id: the CRC-32 of x, y and the bits of z of each point, little-endian.
+/// The plan id of the points and the return item: the CRC-32 of x, y and the bits of z of each item, little-endian.
 fn plan_id(points: &[(i32, i32, f32)]) -> u32 {
     let mut bytes = Vec::new();
-    for (x, y, z) in points {
+    let items = [points, &[(0, 0, RET)]].concat();
+    for (x, y, z) in &items {
         bytes.extend_from_slice(&x.to_le_bytes());
         bytes.extend_from_slice(&y.to_le_bytes());
         bytes.extend_from_slice(&z.to_bits().to_le_bytes());
     }
     match crc32(&bytes) {
-        0 if !points.is_empty() => 1,
+        0 => 1,
         id => id,
     }
 }
@@ -126,13 +145,16 @@ fn config(rx: u32, tx: u32) -> SimConfig {
     }
 }
 
-/// What a download prints: the points (as the file would hold them) and the plan id.
+/// What a download prints: the points (as the file would hold them) and the plan id (the summary line); the return
+/// height is its own line before it, checked to be there.
 fn downloaded(r: &Output) -> (Vec<(i32, i32, f32)>, String) {
     let mut lines = r.lines();
     if lines.last().is_some_and(|l| l.starts_with("written\t")) {
         lines.pop();
     }
     let (summary, rows) = lines.split_last().expect("a summary line");
+    let (height, rows) = rows.split_last().expect("a return height line");
+    assert!(height.starts_with("return height\t"), "{height}");
     let points = rows
         .iter()
         .enumerate()
@@ -165,7 +187,7 @@ fn round_trip(rig: &Rig, n: usize, tag: &str) {
     assert_eq!(r.code, 0, "{r:?}");
     assert_eq!(
         r.out,
-        format!("verified\t{n} waypoints\tplan id {id:#010X}\n"),
+        format!("verified\t{n} waypoints\treturn height 20 m\tplan id {id:#010X}\n"),
         "{r:?}"
     );
 
@@ -173,6 +195,10 @@ fn round_trip(rig: &Rig, n: usize, tag: &str) {
     assert_eq!(r.code, 0, "{r:?}");
     let (got, summary) = downloaded(&r);
     assert_eq!(got.len(), n, "{r:?}");
+    assert!(
+        r.out.contains("\nreturn height\t20 m\n"),
+        "the return height has its own line: {r:?}"
+    );
     for (seq, (a, b)) in got.iter().zip(&want).enumerate() {
         assert_eq!(
             (a.0, a.1, a.2.to_bits()),
@@ -193,14 +219,27 @@ fn round_trip(rig: &Rig, n: usize, tag: &str) {
     let back = marv_cli::waypoints::parse(&written).expect("the map tab's format");
     let sent = marv_cli::waypoints::parse(&wpl(&want)).expect("parse");
     assert_eq!(back, sent);
-    assert_eq!(written.lines().count(), n + 2, "header, home, {n} rows");
+    assert_eq!(back.1, Some(RET));
+    assert_eq!(
+        written.lines().count(),
+        n + 3,
+        "header, home, {n} rows, the return row"
+    );
+    assert!(
+        written
+            .lines()
+            .last()
+            .unwrap()
+            .starts_with(&format!("{}\t0\t3\t20\t", n + 1)),
+        "the last row is the return item: {written}"
+    );
 }
 
 #[test]
 fn the_contract_vector_three_points_up_and_down() {
     let rig = Rig::start();
     round_trip(&rig, 3, "m-three");
-    assert_eq!(plan_id(&points(3)), 0x99C3_BD49);
+    assert_eq!(plan_id(&points(3)), 0x1862_F4A2);
 }
 
 #[test]
@@ -240,7 +279,7 @@ fn sixteen_points_with_both_losses() {
 }
 
 #[test]
-fn seventeen_points_are_refused_with_no_space_and_the_list_is_unchanged() {
+fn seventeen_points_are_refused_before_anything_is_sent_and_the_list_is_unchanged() {
     let rig = Rig::start();
     let dir = TempDir::new("m-seventeen");
     let (three, many) = (dir.file("three.waypoints"), dir.file("many.waypoints"));
@@ -255,14 +294,9 @@ fn seventeen_points_are_refused_with_no_space_and_the_list_is_unchanged() {
     assert_eq!(r.out, "", "{r:?}");
     assert!(
         r.err.contains(
-            "mission upload failed: refused by the vehicle: MAV_MISSION_NO_SPACE (4): the vehicle holds at most 16 waypoints"
+            "mission upload failed: more than 16 waypoints (the vehicle holds at most 16); nothing was sent"
         ),
         "{r:?}"
-    );
-    assert!(
-        r.err
-            .contains("the vehicle holds 3 waypoints, plan id 0x99C3BD49"),
-        "the read-back is shown: {r:?}"
     );
     let r = on(&session, "mission download");
     assert_eq!(r.code, 0, "{r:?}");
@@ -272,7 +306,7 @@ fn seventeen_points_are_refused_with_no_space_and_the_list_is_unchanged() {
     for (a, b) in got.iter().zip(&want) {
         assert_eq!((a.0, a.1, a.2.to_bits()), (b.0, b.1, b.2.to_bits()));
     }
-    assert_eq!(summary, "3 waypoints\tplan id 0x99C3BD49", "{r:?}");
+    assert_eq!(summary, format!("3 waypoints\tplan id {THREE_ID}"), "{r:?}");
 }
 
 #[test]
@@ -296,7 +330,7 @@ fn clear_then_download_is_empty_with_plan_id_0() {
     let r = on(&session, "mission download");
     assert_eq!(
         (r.code, r.out.as_str()),
-        (0, "0 waypoints\tplan id 0x00000000\n"),
+        (0, "return height\tnone\n0 waypoints\tplan id 0x00000000\n"),
         "{r:?}"
     );
 }
@@ -332,8 +366,9 @@ fn an_upload_while_armed_is_refused_and_the_list_is_unchanged() {
     assert!(
         r.err
             .contains("refused by the vehicle: MAV_MISSION_ERROR (1)")
-            && r.err
-                .contains("the vehicle holds 3 waypoints, plan id 0x99C3BD49"),
+            && r.err.contains(&format!(
+                "the vehicle holds 3 waypoints, return height 20 m, plan id {THREE_ID}"
+            )),
         "{r:?}"
     );
     let r = on(&session, "mission clear");
@@ -344,7 +379,8 @@ fn an_upload_while_armed_is_refused_and_the_list_is_unchanged() {
     assert_eq!(r.code, 0, "{r:?}");
     assert_eq!(downloaded(&r).0.len(), 3, "{r:?}");
     assert!(
-        r.out.ends_with("3 waypoints\tplan id 0x99C3BD49\n"),
+        r.out
+            .ends_with(&format!("3 waypoints\tplan id {THREE_ID}\n")),
         "{r:?}"
     );
 
@@ -365,7 +401,7 @@ fn each_invocation_on_its_own_connection_sees_the_list_of_the_one_before() {
         (r.code, r.out.as_str()),
         (
             0,
-            format!("verified\t5 waypoints\tplan id {id:#010X}\n").as_str()
+            format!("verified\t5 waypoints\treturn height 20 m\tplan id {id:#010X}\n").as_str()
         ),
         "{r:?}"
     );
@@ -381,7 +417,7 @@ fn each_invocation_on_its_own_connection_sees_the_list_of_the_one_before() {
     let r = rig.cli("mission download");
     assert_eq!(
         (r.code, r.out.as_str()),
-        (0, "0 waypoints\tplan id 0x00000000\n"),
+        (0, "return height\tnone\n0 waypoints\tplan id 0x00000000\n"),
         "{r:?}"
     );
 }
@@ -401,7 +437,8 @@ fn a_download_keeps_an_existing_file_without_force() {
     let text = std::fs::read_to_string(&file).expect("read");
     assert_eq!(
         marv_cli::waypoints::parse(&text).expect("parse"),
-        Vec::new()
+        (Vec::new(), None),
+        "an empty vehicle has no return row to write"
     );
 }
 
@@ -433,7 +470,8 @@ fn the_file_the_map_tab_writes_is_read_row_0_skipped() {
         0\t1\t0\t16\t0\t0\t0\t0\t10.00000000\t-30.00000000\t0\t1\n\
         1\t0\t3\t16\t0\t0\t0\t0\t10.00000000\t-30.00000000\t10\t1\n\
         2\t0\t3\t16\t0\t0\t0\t0\t10.00000010\t-29.99999990\t12.5\t1\n";
-    let parsed = marv_cli::waypoints::parse(text).expect("parse");
+    let (parsed, height) = marv_cli::waypoints::parse(text).expect("parse");
+    assert_eq!(height, None, "a file from before the return item");
     assert_eq!(parsed.len(), 2);
     assert_eq!(
         (parsed[0].lat_e7, parsed[0].lon_e7),
@@ -446,7 +484,7 @@ fn the_file_the_map_tab_writes_is_read_row_0_skipped() {
 }
 
 #[test]
-fn a_file_with_only_the_home_row_uploads_nothing_and_verifies_an_empty_list() {
+fn a_file_with_only_the_return_row_uploads_the_return_item_alone() {
     let rig = Rig::start();
     let dir = TempDir::new("m-empty");
     let (three, none) = (dir.file("three.waypoints"), dir.file("none.waypoints"));
@@ -458,13 +496,60 @@ fn a_file_with_only_the_home_row_uploads_nothing_and_verifies_an_empty_list() {
         0
     );
     let r = on(&session, &format!("mission upload {}", none.display()));
+    let id = plan_id(&[]);
     assert_eq!(
         (r.code, r.out.as_str()),
-        (0, "verified\t0 waypoints\tplan id 0x00000000\n"),
+        (
+            0,
+            format!("verified\t0 waypoints\treturn height 20 m\tplan id {id:#010X}\n").as_str()
+        ),
         "{r:?}"
     );
     let r = on(&session, "mission download");
-    assert_eq!(r.out, "0 waypoints\tplan id 0x00000000\n", "{r:?}");
+    assert_eq!(
+        r.out,
+        format!("return height\t20 m\n0 waypoints\tplan id {id:#010X}\n"),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn a_file_without_the_command_20_row_is_refused_and_names_return_height() {
+    let rig = Rig::start();
+    let dir = TempDir::new("m-no-return");
+    let file = dir.file("old.waypoints");
+    std::fs::write(&file, wpl_without_return(&points(3))).expect("write");
+    let session = connected(&rig);
+    let r = on(&session, &format!("mission upload {}", file.display()));
+    assert_eq!(r.code, 1, "{r:?}");
+    assert_eq!(r.out, "", "{r:?}");
+    assert!(
+        r.err.contains("no return row") && r.err.contains("--return-height <m>"),
+        "{r:?}"
+    );
+    // Nothing was sent: the vehicle holds nothing.
+    let r = on(&session, "mission download");
+    assert_eq!(
+        r.out, "return height\tnone\n0 waypoints\tplan id 0x00000000\n",
+        "{r:?}"
+    );
+    // --return-height supplies it: the same file uploads, with that height.
+    let r = on(
+        &session,
+        &format!("mission upload {} --return-height 25.5", file.display()),
+    );
+    assert_eq!(r.code, 0, "{r:?}");
+    assert!(r.out.contains("return height 25.5 m"), "{r:?}");
+    let r = on(&session, "mission download");
+    assert!(r.out.contains("\nreturn height\t25.5 m\n"), "{r:?}");
+    // The option wins over the file's own row.
+    let with_row = dir.file("row.waypoints");
+    std::fs::write(&with_row, wpl(&points(3))).expect("write");
+    let r = on(
+        &session,
+        &format!("mission upload {} --return-height 30", with_row.display()),
+    );
+    assert!(r.out.contains("return height 30 m"), "{r:?}");
 }
 
 #[test]
@@ -545,6 +630,7 @@ fn a_waypoint_the_vehicle_would_refuse_is_refused_by_the_station_and_nothing_is_
         &session,
         gcs_mavlink::Command::UploadMission {
             items: good.clone(),
+            return_height: RET,
         },
     );
     assert_eq!(state.status, MissionStatus::Verified, "{state:?}");
@@ -559,7 +645,13 @@ fn a_waypoint_the_vehicle_would_refuse_is_refused_by_the_station_and_nothing_is_
         ),
         (vec![point(0, 0, f32::NAN)], "altitude is not finite"),
     ] {
-        let state = direct(&session, gcs_mavlink::Command::UploadMission { items });
+        let state = direct(
+            &session,
+            gcs_mavlink::Command::UploadMission {
+                items,
+                return_height: RET,
+            },
+        );
         let MissionStatus::Failed { reason, .. } = &state.status else {
             panic!("{state:?}");
         };
@@ -572,14 +664,35 @@ fn a_waypoint_the_vehicle_would_refuse_is_refused_by_the_station_and_nothing_is_
     // The vehicle's list is what it was, and the limits themselves are sent and accepted.
     let state = direct(&session, gcs_mavlink::Command::DownloadMission);
     let held = state.vehicle.expect("the list");
-    assert_eq!((held.items, held.plan_id), (good, 0x99C3_BD49));
+    assert_eq!((held.items, held.plan_id), (good.clone(), 0x1862_F4A2));
+    // A return height that is not finite is refused by the station too.
+    let state = direct(
+        &session,
+        gcs_mavlink::Command::UploadMission {
+            items: good,
+            return_height: f32::NAN,
+        },
+    );
+    assert!(
+        matches!(
+            state.status,
+            MissionStatus::Failed {
+                reason: MissionFailure::InvalidReturnHeight,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
     let edge = vec![
-        point(900_000_000, 1_800_000_000, 1.0),
-        point(-900_000_000, -1_800_000_000, -1.0),
+        point(900_000_000, 1_800_000_000, 5.0),
+        point(-900_000_000, -1_800_000_000, 50.0),
     ];
     let state = direct(
         &session,
-        gcs_mavlink::Command::UploadMission { items: edge },
+        gcs_mavlink::Command::UploadMission {
+            items: edge,
+            return_height: 50.0,
+        },
     );
     assert_eq!(state.status, MissionStatus::Verified, "{state:?}");
 }
@@ -589,11 +702,12 @@ fn z_travels_as_its_four_bytes_whatever_they_are() {
     use gcs_mavlink::services::missions::{MissionPoint, MissionStatus};
     let rig = Rig::start();
     let session = connected(&rig);
+    // Inside the simulated vehicle's 5 m to 50 m, with low bits set: the four bytes are what comes back.
     let zs = [
-        f32::from_bits(0x8000_0000), // -0.0
-        f32::MAX,
-        f32::from_bits(0x0000_0001), // the smallest subnormal
-        f32::from_bits(0xC2F6_E979), // -123.456
+        f32::from_bits(0x40A0_0000), // 5.0
+        f32::from_bits(0x4248_0000), // 50.0
+        f32::from_bits(0x4120_0001), // 10.000001
+        f32::from_bits(0x41F6_E979), // about 30.8
     ];
     let items: Vec<MissionPoint> = zs
         .iter()
@@ -607,12 +721,13 @@ fn z_travels_as_its_four_bytes_whatever_they_are() {
         &session,
         gcs_mavlink::Command::UploadMission {
             items: items.clone(),
+            return_height: RET,
         },
     );
     assert_eq!(state.status, MissionStatus::Verified, "{state:?}");
     let held = state.vehicle.expect("the read-back");
     let bits: Vec<u32> = held.items.iter().map(|p| p.z.to_bits()).collect();
-    assert_eq!(bits, [0x8000_0000, 0x7F7F_FFFF, 1, 0xC2F6_E979]);
+    assert_eq!(bits, [0x40A0_0000, 0x4248_0000, 0x4120_0001, 0x41F6_E979]);
     let wanted: Vec<(i32, i32, f32)> = items.iter().map(|p| (p.lat_e7, p.lon_e7, p.z)).collect();
     assert_eq!(held.plan_id, plan_id(&wanted));
 }

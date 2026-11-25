@@ -309,7 +309,8 @@ fn upload_list(path: &Path, supplied: Option<f32>) -> Result<(Vec<MissionPoint>,
         .map_err(|e| Fail::new(exit::FAILED, format!("cannot read {}: {e}", path.display())))?;
     let (points, in_file) = waypoints::parse(&text)
         .map_err(|why| Fail::new(exit::FAILED, format!("{}: {why}", path.display())))?;
-    match in_file.or(supplied) {
+    // An explicit --return-height wins over the file's own row.
+    match supplied.or(in_file) {
         Some(height) => Ok((points, height)),
         None => Err(Fail::new(
             exit::FAILED,
@@ -399,8 +400,10 @@ fn mission_verdict(what: &str, state: &MissionsState) -> Outcome {
     };
     let holds = state.vehicle.as_ref().map_or(String::new(), |v| {
         format!(
-            "; the vehicle holds {} waypoints, plan id {:#010X}",
+            "; the vehicle holds {} waypoints{}, plan id {:#010X}",
             v.items.len(),
+            v.return_height
+                .map_or(String::new(), |h| format!(", return height {h} m")),
             v.plan_id
         )
     });
