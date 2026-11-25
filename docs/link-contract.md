@@ -1320,15 +1320,38 @@ neither checked nor stored. Waypoint fields of MISSION_ITEM_INT:
 | `z` | altitude in m above home, finite | any value: its 4 bytes are stored unchanged, never used | the stored 4 bytes | compared as 4 bytes |
 | `mission_type` | 0 | 0; else refused | 0 | 0; else dropped |
 
+Amendment 2026-11-24 (A5, the return item; firmware `crates/fw-core/src/mission.rs` and `_plan/decision-mavlink-mode-20261123.md`
+A5; where this section says otherwise below, this paragraph wins; replaced text is marked "amendment 2026-11-24"). The
+vehicle's list is n items: up to 16 waypoints, then exactly one return item, the last. The return item is a
+MISSION_ITEM_INT of `seq` n - 1 with `command` 20 (`MAV_CMD_NAV_RETURN_TO_LAUNCH`), `frame` 3 or 6, `x` = `y` = 0, `z` =
+the return height in m above home, `param1` to `param4` 0.0, `autocontinue` 1. `count` is 1 to 17; a `count` of 1 is the
+return item alone; 0 still clears. The vehicle refuses an upload whose last item is not command 20, and command 20 at any
+other `seq`, with MAV_MISSION_INVALID (5); `x` or `y` of the return item not 0 with MAV_MISSION_INVALID_PARAM5_X (10) or
+MAV_MISSION_INVALID_PARAM6_Y (11); every `z`, waypoint or return, must be finite and within `GDN_ALT_MIN` to `GDN_ALT_MAX`
+(vehicle parameters, default 5 m and 50 m), else MAV_MISSION_INVALID_PARAM7 (12). The check order for an item is the
+firmware's: `mission_type`, armed, command 20 against the last `seq` (5), `command` 16 for the others (3), `frame`
+(2), `x` (10), `y` (11), `z` (12). The plan id is the CRC-32 over the 12 bytes of all n items, the return item included
+(item n - 1 has `x` = `y` = 0); example 1's three waypoints with a return height of 20.0 m give 0x1862F4A2 (the three
+waypoints alone gave 0x99C3BD49 before this amendment). A download sends item n - 1 as command 20, frame 3, `x` = `y` =
+0, `z` as stored. The station: an upload (`Command::UploadMission { items, return_height }`) always sends the waypoints
+and then the return item, so `count` = waypoints + 1, and a list of more than 16 waypoints is refused by the station
+before anything is sent; a return height that is not finite is refused the same way. A download treats the last item as
+the return height and the others as waypoints; a list whose last item is not command 20 is an error, not a mission. The
+read-back verdict compares the waypoints, the return height (4 bytes) and the plan id. The window shows the number of
+waypoints, never counting the return item. The station's file (QGC WPL 110) ends with a row of command 20 whose altitude
+is the return height; a file without one is a list from before this amendment (the window gives it the default altitude
+as return height; the command line refuses it unless `--return-height <m>` supplies one).
+
 The other messages:
-- MISSION_COUNT from the station: `count` = n, the number of waypoints (0 clears); `mission_type` 0; `opaque_id` 0
+- MISSION_COUNT from the station: `count` = n, the number of waypoints (0 clears; amendment 2026-11-24: n items, the
+  waypoints and the return item, 1 to 17); `mission_type` 0; `opaque_id` 0
   (`CX`: "0 on upload"). The vehicle checks `count` and `mission_type` and ignores `opaque_id`.
-- MISSION_COUNT from the vehicle: `count` = the number stored; `mission_type` 0; `opaque_id` = the plan id of the stored
+- MISSION_COUNT from the vehicle: `count` = the number stored (amendment 2026-11-24: waypoints and the return item); `mission_type` 0; `opaque_id` = the plan id of the stored
   list.
 - MISSION_REQUEST_LIST and MISSION_CLEAR_ALL: `mission_type` 0. MISSION_REQUEST_INT: `seq`, `mission_type` 0.
 - MISSION_ACK from the vehicle: `type` from the table of results below; `mission_type` = that of the message it
   answers, for every `type`, MAV_MISSION_DENIED included (0 when the vehicle gives up by itself); `opaque_id` = the new plan id when it accepts an upload (0 for an
-  upload of count 0), 0 in every other MISSION_ACK, an accepted clear included.
+  upload of count 0; amendment 2026-11-24: an upload always has the return item, so its id is never 0), 0 in every other MISSION_ACK, an accepted clear included.
 - MISSION_ACK from the station: `type` MAV_MISSION_ACCEPTED (end of a download), MAV_MISSION_OPERATION_CANCELLED (it
   gives up) or MAV_MISSION_INVALID_SEQUENCE (below); `mission_type` 0; `opaque_id` 0 (`CX`: "0 on download").
 
@@ -1339,9 +1362,10 @@ placeholder in row 0 and the waypoints in rows 1 to n: row i is sent as `seq` i 
 from zero; `z` is the row's altitude as f32. A list read back from the vehicle is written with row i = `seq` i - 1 and
 row 0 made by the file's own rule.
 
-Capacity. 16 waypoints. A `count` of 1 to 16 is an upload; a `count` of 0 is valid and clears the list (`MM`: "Uploading
-an empty mission (MISSION_COUNT is 0) has the same effect as clearing the mission"); a `count` of 17 or more is refused.
-The station does not check the count itself: the vehicle decides.
+Capacity. 16 waypoints (amendment 2026-11-24: and the return item, 17 items). A `count` of 1 to 16 is an upload (amendment 2026-11-24: 1 to 17); a `count` of 0 is valid and clears the list (`MM`: "Uploading
+an empty mission (MISSION_COUNT is 0) has the same effect as clearing the mission"); a `count` of 17 or more is refused (amendment 2026-11-24: 18 or more).
+The station does not check the count itself: the vehicle decides (amendment 2026-11-24: the station refuses more than 16
+waypoints before sending).
 
 Storage. The list lives in the vehicle's RAM only: it is empty after every boot (plan id 0) and is never written to
 flash. A link going down does not touch it. Per waypoint the vehicle keeps `x`, `y` and the 4 bytes of `z` (12 bytes,
@@ -1399,7 +1423,8 @@ What the vehicle does with each mission message that passed the addressing check
 4. In the owner's upload, expecting `seq` k:
    - MISSION_ITEM_INT, in this order: `seq` not k (a repeat or out of order): dropped without any other check, and
      MISSION_REQUEST_INT `seq` k is sent again (`MM`: "the out-of-sequence item is dropped"; not an error);
-     `mission_type` not 0: MAV_MISSION_UNSUPPORTED; armed: MAV_MISSION_ERROR; `command` not 16:
+     `mission_type` not 0: MAV_MISSION_UNSUPPORTED; armed: MAV_MISSION_ERROR; (amendment 2026-11-24: last item not
+     command 20, or command 20 earlier: MAV_MISSION_INVALID;) `command` not 16:
      MAV_MISSION_UNSUPPORTED; `frame` not 3 or 6: MAV_MISSION_UNSUPPORTED_FRAME; `x` out of range:
      MAV_MISSION_INVALID_PARAM5_X; `y` out of range: MAV_MISSION_INVALID_PARAM6_Y. An item that passes is stored in the
      staging copy at k; then MISSION_REQUEST_INT `seq` k + 1, or, when k = n - 1, the commit and MISSION_ACK
@@ -1421,19 +1446,21 @@ Results (`MAV_MISSION_RESULT`, `CX`):
 | Accepted: an upload committed, a clear, an upload of count 0, the end of a download (from the station) | MAV_MISSION_ACCEPTED (0) |
 | Armed: MISSION_COUNT, MISSION_CLEAR_ALL, or an item of an upload | MAV_MISSION_ERROR (1) |
 | A MISSION_ITEM_INT (other than a lost final ACK's repeat) or a MISSION_REQUEST_INT with no transaction running | MAV_MISSION_ERROR (1) |
-| `count` above 16 | MAV_MISSION_NO_SPACE (4) |
+| `count` above 16 (amendment 2026-11-24: above 17) | MAV_MISSION_NO_SPACE (4) |
+| The last item is not command 20, or command 20 at another `seq` (amendment 2026-11-24) | MAV_MISSION_INVALID (5): the station says "the list does not end in a return item" |
+| A `z` not finite or outside `GDN_ALT_MIN` to `GDN_ALT_MAX` (amendment 2026-11-24) | MAV_MISSION_INVALID_PARAM7 (12): the station says "a height is outside the vehicle's limits (GDN_ALT_MIN to GDN_ALT_MAX)" |
 | `mission_type` not 0 (ArduPilot's choice for an unsupported plan type, `GCS_Common.cpp`) | MAV_MISSION_UNSUPPORTED (3) |
-| `command` not 16 | MAV_MISSION_UNSUPPORTED (3) |
+| `command` not 16 (amendment 2026-11-24: for an item before the last) | MAV_MISSION_UNSUPPORTED (3) |
 | `frame` not 3 or 6 | MAV_MISSION_UNSUPPORTED_FRAME (2) |
-| latitude out of range | MAV_MISSION_INVALID_PARAM5_X (10) |
-| longitude out of range | MAV_MISSION_INVALID_PARAM6_Y (11) |
+| latitude out of range (amendment 2026-11-24: or the return item's `x` not 0) | MAV_MISSION_INVALID_PARAM5_X (10) |
+| longitude out of range (amendment 2026-11-24: or the return item's `y` not 0) | MAV_MISSION_INVALID_PARAM6_Y (11) |
 | A MISSION_REQUEST_INT for a `seq` at or above the count (either side) | MAV_MISSION_INVALID_SEQUENCE (13) |
 | Another owner's transaction is running | MAV_MISSION_DENIED (14) |
 | Timeout: the sender gave up after its retries (either side) | MAV_MISSION_OPERATION_CANCELLED (15) |
 
 Sequences (S = station, V = vehicle)
 
-Upload of n = 1 to 16 waypoints (`MM`, "Upload a Plan to the Vehicle"):
+Upload of n = 1 to 16 waypoints (amendment 2026-11-24: n waypoints and then the return item as item n, `count` n + 1; `MM`, "Upload a Plan to the Vehicle"):
 1. S sends MISSION_COUNT n; its timer starts.
 2. V checks it and sends MISSION_REQUEST_INT `seq` 0; its timer starts.
 3. S sends MISSION_ITEM_INT `seq` 0.
@@ -1443,8 +1470,8 @@ Upload of n = 1 to 16 waypoints (`MM`, "Upload a Plan to the Vehicle"):
 6. S takes the ACK and reads the list back (the verdict, below).
 
 Clear (`MM`, "Clear Plan"):
-1. S sends MISSION_CLEAR_ALL for `Command::ClearMission`, or MISSION_COUNT with `count` 0 for `Command::UploadMission`
-   of an empty list; its timer starts.
+1. S sends MISSION_CLEAR_ALL for `Command::ClearMission` (amendment 2026-11-24: an `UploadMission` of an empty list is no
+   longer a clear: it sends the return item alone, `count` 1); its timer starts.
 2. V empties the list and sends MISSION_ACK MAV_MISSION_ACCEPTED, `opaque_id` 0.
 3. S reads the list back.
 
@@ -1459,7 +1486,8 @@ Download (`MM`, "Download a Plan from the Vehicle"):
 What the station sends (checked before anything goes out)
 - A list of 1 to 65535 waypoints is sent as it is, also above 16: the vehicle decides and refuses with
   MAV_MISSION_NO_SPACE (example 2). A list of more than 65535 waypoints (`count` is a uint16) is refused by the station
-  itself.
+  itself. (Amendment 2026-11-24: a list of more than 16 waypoints is refused by the station before anything is sent, and
+  so is a return height that is not finite; example 2's refusal by the vehicle is no longer produced by the station.)
 - Every waypoint is checked before anything is sent: latitude and longitude must be finite and, converted as above,
   inside the vehicle's ranges (`x` -900000000 to 900000000, `y` -1800000000 to 1800000000, both included); the altitude
   must be finite. Any failure refuses the whole operation in the station: nothing is sent, no read-back is made, and the
