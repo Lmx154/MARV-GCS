@@ -52,6 +52,8 @@ pub struct TextEntry {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TextLog {
     pub entries: VecDeque<TextEntry>,
+    /// How many entries were ever added (the dropped ones included): a reader keeps the count it has seen.
+    pub total: u64,
 }
 
 /// The chunks of one long text seen so far from one sender.
@@ -140,6 +142,7 @@ impl Service for Texts {
             system_id: frame.system_id,
             component_id: frame.component_id,
         });
+        cx.state.texts.total += 1;
         cx.changed = true;
     }
 }

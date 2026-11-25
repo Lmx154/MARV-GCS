@@ -41,6 +41,14 @@ The file has a home placeholder in row 0, the waypoints in rows 1 to n, and a la
 return height. A file without that row is a list from before the return item; the window gives it the default altitude as
 return height. Format and field rules: [link-missions](link-missions.md).
 
+## Pins from the vehicle
+
+When the vehicle sends the text `MARK <n> <lat_e7> <lon_e7> <hacc_cm>` ([link-telemetry](link-telemetry.md), section 18) on any
+link, the station adds a waypoint at that position to the end of the current list, with the panel's default altitude, as a
+click on the map does, and saves the list. The map shows for 12 s "Pin 3 dropped from the vehicle, ±1.2 m"; for `MARK <n>
+NOFIX` it shows "Mark 3: no GPS fix, nothing dropped" and adds nothing. Each `n` drops once; an `n` of 1 after higher ones
+(a vehicle that started again) counts anew. The pin is added whether or not the panel is open and whichever tab is shown.
+
 ## On the vehicle
 
 Under "On the vehicle": **Upload to vehicle**, **Read from vehicle**, **Clear on vehicle** ([link-missions](link-missions.md)).

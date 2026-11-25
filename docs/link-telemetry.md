@@ -1,6 +1,6 @@
-# Link contract: device status, RC mapping, ESC telemetry
+# Link contract: device status, RC mapping, ESC telemetry, position marks
 
-Part of [MARV-GCS](../README.md) · [link-contract](link-contract.md), sections 8, 12 and 14
+Part of [MARV-GCS](../README.md) · [link-contract](link-contract.md), sections 8, 12, 14 and 18
 
 Three vehicle reports the station only displays: the health of each device, the sticks as the vehicle maps them, and the
 four ESCs. The firmware computes; the station never computes a normalised stick value or an ESC figure beyond the error
@@ -158,6 +158,21 @@ Device row 12 (ESC), report only: STARTING; ABSENT (no ESC has answered this boo
 DEGRADED (1 to 3 online, error TIMEOUT); FAILED (none online after answering, error TIMEOUT; or the ESC task stopped, error
 STUCK). `samples` = valid replies, `errors` = invalid or missing, `timeouts` = drop-outs, `attempts` = stream starts. The
 simulator sends both messages at these rates, with row 12, as a test double.
+
+## 18. Position marks
+
+When the pilot toggles the mark switch on the transmitter, the vehicle sends one `STATUSTEXT` of severity INFO with exactly
+this text, on every link:
+
+| Text | Meaning |
+|---|---|
+| `MARK <n> <lat_e7> <lon_e7> <hacc_cm>` | The position of the vehicle at the toggle: latitude and longitude in degrees x 10^7 (signed decimal integers), horizontal accuracy in centimetres. Example `MARK 3 261886799 -981234567 120` |
+| `MARK <n> NOFIX` | The toggle came without a GPS fix; there is no position |
+
+`n` counts from 1 per vehicle boot. The station reads the words separated by any white space and ignores a text that does not
+fit (wrong word count, a number that does not parse, latitude beyond 90 degrees, longitude beyond 180). Each `n` is taken once;
+an `n` of 1 after higher ones is a vehicle that started again and counts anew. A position adds a waypoint to the Map tab's
+list ([ui-map](ui-map.md)); `NOFIX` adds none.
 
 ## Related
 

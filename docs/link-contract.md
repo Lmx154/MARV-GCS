@@ -28,7 +28,7 @@ names MAVLink); MAVLink is a layer on top of it.
 | 2 | Identity, heartbeat, streams, rates (this page); parameter protocol and the parameter set | [link-parameters](link-parameters.md) |
 | 3, 4 | The USB crate, the start gate, the device layer | [link-usb](link-usb.md) |
 | 5 | Invariants | this page |
-| 8, 12, 14 | `MARV_DEVICE_STATUS`, RC mapping and `MANUAL_CONTROL`, ESC telemetry | [link-telemetry](link-telemetry.md) |
+| 8, 12, 14, 18 | `MARV_DEVICE_STATUS`, RC mapping and `MANUAL_CONTROL`, ESC telemetry, position marks (`MARK` texts) | [link-telemetry](link-telemetry.md) |
 | 9 | Operate and Configure | [link-access](link-access.md) |
 | 10, 15 | Commands, calibration cancel, motor test | [link-commands](link-commands.md) |
 | 10 (flight) | Flight commands, effective mode, deny codes, take-over panel | [link-flight](link-flight.md) |

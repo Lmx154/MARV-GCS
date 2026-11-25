@@ -37,6 +37,7 @@ use crate::status::GREY;
 use crate::theme;
 
 mod flight;
+mod marks;
 mod mission;
 
 /// Sent with every tile request (the tile policies ask for one that names the application).
@@ -309,7 +310,14 @@ pub struct MapView {
     waypoints: WaypointEditor,
     /// The flight command buttons and the take-over panel.
     flight: flight::Controls,
+    /// The marks the vehicle sent, each taken once.
+    marks: marks::Marks,
+    /// The latest mark's notice and the session time it arrived.
+    notice: Option<(String, Duration)>,
 }
+
+/// How long the notice of a mark stays on the map.
+const NOTICE_SECS: u64 = 12;
 
 impl MapView {
     /// `online`: fetch tiles and keep the waypoint lists in the data folder; otherwise the map has no
@@ -323,6 +331,8 @@ impl MapView {
         Self {
             waypoints: WaypointEditor::new(store),
             flight: flight::Controls::default(),
+            marks: marks::Marks::default(),
+            notice: None,
             tracker: Tracker::default(),
             memory: world_view(),
             zoomed: false,
@@ -524,10 +534,24 @@ impl View for MapView {
         self.zoomed = false;
         self.waypoints.controls.session_changed();
         self.flight.session_changed();
+        self.marks.reset();
+        self.notice = None;
     }
 
-    fn update(&mut self, state: &VehicleState, _now: Option<Duration>) {
+    fn update(&mut self, state: &VehicleState, now: Option<Duration>) {
         self.tracker.update(&state.messages);
+        for mark in self.marks.take(&state.texts) {
+            let text = marks::notice(&mark);
+            if let marks::Mark::Pin { lat, lon, .. } = mark {
+                self.waypoints.add(Waypoint {
+                    lat,
+                    lon,
+                    alt_m: self.waypoints.default_alt,
+                });
+            }
+            self.waypoints.ok(text.clone());
+            self.notice = Some((text, now.unwrap_or_default()));
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx) {
@@ -585,6 +609,8 @@ impl View for MapView {
         let ctx = ui.ctx().clone();
         let tiles = tiles(&mut self.tiles, &ctx);
         let tracker = &self.tracker;
+        let notice = &self.notice;
+        let cx_now = cx.now;
         let waypoints = &mut self.waypoints;
         let on_vehicle: Option<Vec<Waypoint>> = cx
             .state
@@ -607,6 +633,11 @@ impl View for MapView {
                     draw_track(ui, projector, tracker, status, heading);
                     waypoints.interact_and_draw(ui, response, projector, on_vehicle.as_deref());
                     overlay_status(ui, response.rect, status);
+                    if let (Some((text, at)), Some(now)) = (notice, cx_now) {
+                        if now.saturating_sub(*at) < Duration::from_secs(NOTICE_SECS) {
+                            overlay_notice(ui, response.rect, text);
+                        }
+                    }
                     let attribution = overlay_attribution(ui, response.rect);
                     overlay_compass(ui, response.rect, attribution);
                 });
@@ -737,6 +768,16 @@ fn overlay_status(ui: &mut egui::Ui, area: Rect, status: Status) {
             .layout(Layout::top_down(Align::Min)),
     )
     .add(text_on_map(text, colour));
+}
+
+/// The notice of a mark from the vehicle, at the top centre of the map.
+fn overlay_notice(ui: &mut egui::Ui, area: Rect, text: &str) {
+    ui.new_child(
+        UiBuilder::new()
+            .max_rect(area.shrink(6.0))
+            .layout(Layout::top_down(Align::Center)),
+    )
+    .add(text_on_map(text, theme::TEXT_STRONG));
 }
 
 /// Draws the attribution and returns the rectangle it took.
@@ -2195,6 +2236,45 @@ mod tests {
         click(&mut harness, first, egui::PointerButton::Secondary);
         harness.get_by_label("1 points, 0 m");
         drop(harness);
+        assert_eq!(store.load("mission").unwrap().0.len(), 1);
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn a_mark_text_from_the_vehicle_adds_a_waypoint_once_with_the_default_altitude() {
+        use gcs_mavlink::services::texts::{Severity, TextEntry};
+        let store = temp_store("mark");
+        let mut view = MapView::with_store(false, Some(store.clone()));
+        view.waypoints.default_alt = 33.0;
+        let mut state = VehicleState::default();
+        let push = |state: &mut VehicleState, text: &str| {
+            state.texts.entries.push_back(TextEntry {
+                time: Duration::ZERO,
+                severity: Severity::Info,
+                text: text.to_string(),
+                system_id: 1,
+                component_id: 1,
+            });
+            state.texts.total += 1;
+        };
+        push(&mut state, "MARK 1 261886799 -981234567 120");
+        view.update(&state, secs(5.0));
+        assert_eq!(view.waypoints.list.len(), 1);
+        assert_eq!(view.waypoints.list[0].lat, 26.1886799);
+        assert_eq!(view.waypoints.list[0].lon, -98.1234567);
+        assert_eq!(view.waypoints.list[0].alt_m, 33.0);
+        assert_eq!(
+            view.notice.as_ref().unwrap().0,
+            "Pin 1 dropped from the vehicle, ±1.2 m"
+        );
+        push(&mut state, "MARK 1 261886799 -981234567 120");
+        push(&mut state, "MARK 2 NOFIX");
+        view.update(&state, secs(6.0));
+        assert_eq!(view.waypoints.list.len(), 1);
+        assert_eq!(
+            view.notice.as_ref().unwrap().0,
+            "Mark 2: no GPS fix, nothing dropped"
+        );
         assert_eq!(store.load("mission").unwrap().0.len(), 1);
         let _ = std::fs::remove_dir_all(store.dir());
     }
