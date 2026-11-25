@@ -22,6 +22,7 @@ egui_plot.workspace = true
 egui_extras.workspace = true
 png.workspace = true
 walkers.workspace = true
+reqwest.workspace = true
 rfd.workspace = true
 libc = "0.2"
 

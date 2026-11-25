@@ -2,7 +2,7 @@
 
 Part of [MARV-GCS](../README.md)
 
-The Map tab shows the vehicle on a dark vector map, edits named waypoint lists, uploads them to the vehicle, and carries
+The Map tab shows the vehicle on a dark street map or on aerial imagery, edits named waypoint lists, uploads them to the vehicle, and carries
 the five flight buttons. The editor works with or without a vehicle and over every link, and writes no position of the
 vehicle to any file or log.
 
@@ -84,22 +84,43 @@ home)" and "When the link returns with the mission switch ON the vehicle carries
 
 ## Tiles and privacy
 
-The background is drawn by the station from OpenFreeMap vector tiles (<https://openfreemap.org>: no key, no account, no
-request limit; OpenMapTiles schema, OpenStreetMap data) in a dark style.
+The map has two types, chosen by the "Streets" and "Imagery" buttons on the top row. **Streets** is drawn by the station from
+OpenFreeMap vector tiles (<https://openfreemap.org>: no key, no account, no request limit; OpenMapTiles schema,
+OpenStreetMap data) in a dark style. **Imagery** is aerial photography from the USGS National Map (public domain), which
+covers the United States.
 
 | Fact | Detail |
 |---|---|
-| What leaves the computer | Tiles are fetched over HTTPS from `https://tiles.openfreemap.org` only for the part of the map on screen, with the User-Agent `MARV-GCS/<version> (MARV V2 ground station)`. The tile server learns which area you view and your computer's address. The vehicle's position is never sent, only tile numbers |
-| Cache | `~/.cache/marv-gcs/tiles` (or `$XDG_CACHE_HOME/marv-gcs/tiles`), kept while the server's cache rules allow |
-| Offline | The station never downloads an area in advance and has no offline map; without a network only cached tiles show, and position and track are still drawn |
-| Credit | "OpenFreeMap © OpenMapTiles © OpenStreetMap contributors" is always drawn on the map |
-| Zoom | The tiles hold data up to zoom 14; closer (the map zooms to 26) the zoom 14 tile is drawn larger, so the map stays sharp and a road keeps its width on the ground |
-| Dependencies | The `walkers` crate (MIT) with its `mvt` feature; it brings an HTTP client (`reqwest`, `tokio`, `rustls`) and `egui-wgpu`/`wgpu`, compiled but unused because the window uses glow and the station paints the tiles with egui. Only `marv-gcs` depends on it |
+| What leaves the computer | Tiles are fetched over HTTPS from `https://tiles.openfreemap.org` (Streets) and `https://basemap.nationalmap.gov` (Imagery) only for the part of the map on screen, or for the area of a download, with the User-Agent `MARV-GCS/<version> (MARV V2 ground station)`. The tile server learns which area you view and your computer's address. The vehicle's position is never sent, only tile numbers |
+| Cache | One file per tile in `~/.cache/marv-gcs/tiles/streets` and `.../tiles/imagery` (or under `$XDG_CACHE_HOME/marv-gcs/tiles`). A file is used whatever its age and never replaced; only a tile with no file is fetched. Deleting a folder starts that map type over |
+| Offline | The "Offline" box makes the map use only the tiles on disk and fetch none (no waiting on a network that is not there); a tile with no file stays blank. Without the box a missing tile is fetched when the network answers. Position and track are drawn either way |
+| Download this area | See below |
+| Credit | Streets: "OpenFreeMap © OpenMapTiles © OpenStreetMap contributors"; Imagery: "Imagery: USGS The National Map". The credit of the type shown is always drawn on the map |
+| Zoom | The map zooms from 0 to 26. Streets tiles hold data up to zoom 14 and imagery tiles up to zoom 16 (zoom 17 does not exist on the server); closer, the last tile is drawn larger, so the map stays smooth but shows no more detail. A scale bar (round length in metres, centimetres below one) is drawn bottom left: at zoom 26 one metre is about 480 pixels wide, at zoom 22 about 30 |
+| Dependencies | The `walkers` crate (MIT) with its `mvt` feature, which brings an HTTP client (`reqwest`, `tokio`, `rustls`) and `egui-wgpu`/`wgpu`, compiled but unused because the window uses glow and the station paints the tiles with egui; `marv-gcs` also names `reqwest` (blocking client, same version and TLS as walkers) for the tile fetching. Only `marv-gcs` depends on them |
+
+### Download this area
+
+"Download this area" opens a line under the top row. It takes the part of the map on screen and, for the map type shown (or
+both, with "Both map types"), every tile from the zoom on screen down to the last zoom of the type (imagery 16, streets 14;
+when the map is zoomed closer than that, only the last zoom), and stores them in the cache.
+
+| Part | Behaviour |
+|---|---|
+| Estimate | Before anything is fetched: "1,234 tiles, zoom 13 to 16, about 31 MB at most" (the size from an average tile of 26 kB imagery or 45 kB streets) |
+| Cap | More than 20,000 tiles are refused with "N tiles is more than the 20,000 allowed: zoom in to a smaller area"; the button stays off |
+| Start | "Start download" is off while Offline is on ("Turn Offline off to download."). Six tiles are fetched at a time, the zoomed-out ones first. A tile already on disk is skipped |
+| Progress | "Downloading: 1,200 of 5,000 tiles (29 MB, 1,100 fetched, 3 not available, 0 failed)" with a Cancel button; the end reads "Downloaded ...", "Cancelled after ..." or, after 25 tiles in a row that failed, "Stopped, the tile server does not answer ..." |
+| Not available | A tile the server does not have (HTTP 404) is remembered as empty and not asked again |
+
+Download at the field's coordinates before going out, on a connection with internet; the laptop-to-backpack link has none.
 
 ## Code
 
 `crates/marv-gcs/src/views/map.rs` (map, track, editor), `views/map/mission.rs` (upload, read, clear, confirmations),
-`views/map/flight.rs` (buttons, result line, panel), `crates/marv-gcs/src/missions.rs` (lists on disk); services
+`views/map/flight.rs` (buttons, result line, panel), `views/map/marks.rs` (pins from the vehicle), `views/map/tilestore.rs`
+(tiles on disk, imagery source), `views/map/offline.rs` (area download), `views/map/scale.rs` (scale bar),
+`crates/marv-gcs/src/missions.rs` (lists on disk); services
 `crates/gcs-mavlink/src/services/missions.rs` and `crates/gcs-mavlink/src/flight.rs`.
 
 ## Related

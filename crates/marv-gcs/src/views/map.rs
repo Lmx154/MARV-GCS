@@ -17,6 +17,8 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use eframe::egui::{
@@ -26,8 +28,8 @@ use gcs_mavlink::VehicleState;
 use gcs_mavlink::services::messages::{MessageEntry, MessageStore};
 use walkers::sources::{Attribution as SourceAttribution, TileSource as TileSourceTrait};
 use walkers::{
-    Drawable, HeaderValue, HttpOptions, HttpTiles, MapMemory, Position, Projector, Style,
-    StyleLayer, Text as MapText, Tile, TileId, Tiles, Value, lat_lon,
+    Drawable, MapMemory, Position, Projector, Style, StyleLayer, Text as MapText, Tile, TileId,
+    Tiles, Value, lat_lon,
 };
 
 use super::hud::ATTITUDE_STALE;
@@ -39,6 +41,11 @@ use crate::theme;
 mod flight;
 mod marks;
 mod mission;
+mod offline;
+mod scale;
+mod tilestore;
+
+use tilestore::{DiskTiles, Fetcher, Layer};
 
 /// Sent with every tile request (the tile policies ask for one that names the application).
 pub const USER_AGENT: &str = concat!(
@@ -297,8 +304,15 @@ enum TileSource {
     /// No tiles at all (the tests, and every view list built by `views::all`).
     None,
     /// Created at the first frame, which has the egui context.
-    OpenFreeMap,
-    Ready(Box<HttpTiles>),
+    Pending,
+    Ready(Box<Tiling>),
+}
+
+/// The tiles of both map types, on disk and fetched when missing.
+struct Tiling {
+    streets: DiskTiles,
+    imagery: DiskTiles,
+    fetcher: Fetcher,
 }
 
 pub struct MapView {
@@ -310,6 +324,14 @@ pub struct MapView {
     waypoints: WaypointEditor,
     /// The flight command buttons and the take-over panel.
     flight: flight::Controls,
+    /// The map type shown.
+    layer: Layer,
+    /// Only the tiles on disk are used; none is fetched.
+    offline: Arc<AtomicBool>,
+    /// "Download this area".
+    download: offline::Panel,
+    /// The part of the map on screen at the last frame.
+    visible: Option<offline::Area>,
     /// The marks the vehicle sent, each taken once.
     marks: marks::Marks,
     /// The latest mark's notice and the session time it arrived.
@@ -331,13 +353,17 @@ impl MapView {
         Self {
             waypoints: WaypointEditor::new(store),
             flight: flight::Controls::default(),
+            layer: Layer::Streets,
+            offline: Arc::new(AtomicBool::new(false)),
+            download: offline::Panel::default(),
+            visible: None,
             marks: marks::Marks::default(),
             notice: None,
             tracker: Tracker::default(),
             memory: world_view(),
             zoomed: false,
             tiles: if online {
-                TileSource::OpenFreeMap
+                TileSource::Pending
             } else {
                 TileSource::None
             },
@@ -346,22 +372,19 @@ impl MapView {
 }
 
 /// The tiles, created at the first frame that wants them.
-fn tiles<'a>(source: &'a mut TileSource, ctx: &egui::Context) -> Option<&'a mut HttpTiles> {
-    if matches!(source, TileSource::OpenFreeMap) {
-        let options = HttpOptions {
-            cache: environment_cache_dir(),
-            user_agent: Some(HeaderValue::from_static(USER_AGENT)),
-            ..HttpOptions::default()
+fn tiles<'a>(source: &'a mut TileSource, ctx: &egui::Context, offline: &Arc<AtomicBool>) -> Option<&'a mut Tiling> {
+    if matches!(source, TileSource::Pending) {
+        *source = match Fetcher::new(environment_cache_dir(), offline.clone(), USER_AGENT) {
+            Some(fetcher) => TileSource::Ready(Box::new(Tiling {
+                streets: DiskTiles::new(Layer::Streets, fetcher.clone(), dark_style(), ctx.clone()),
+                imagery: DiskTiles::new(Layer::Imagery, fetcher.clone(), Style::default(), ctx.clone()),
+                fetcher,
+            })),
+            None => TileSource::None,
         };
-        *source = TileSource::Ready(Box::new(HttpTiles::with_options_and_style(
-            OpenFreeMap,
-            options,
-            dark_style(),
-            ctx.clone(),
-        )));
     }
     match source {
-        TileSource::Ready(tiles) => Some(&mut **tiles),
+        TileSource::Ready(tiling) => Some(&mut **tiling),
         _ => None,
     }
 }
@@ -390,7 +413,7 @@ fn tile_corner(x: u32, y: u32, zoom: u8) -> Position {
 /// with wgpu and the window uses glow, so the station paints each tile's areas, lines and labels with egui.
 /// A tile drawn larger than its 512 px (closer than zoom 15) widens its lines with it, so that a road keeps
 /// its width on the ground instead of turning into a hairline.
-fn draw_base(ui: &egui::Ui, projector: &Projector, tiles: &mut HttpTiles) {
+fn draw_base(ui: &egui::Ui, projector: &Projector, tiles: &mut dyn Tiles) {
     let area = projector.clip_rect();
     let painter = ui.painter().with_clip_rect(area.intersect(ui.clip_rect()));
     let zoom = projector.zoom();
@@ -566,6 +589,7 @@ impl View for MapView {
             .last
             .map_or_else(Position::default, |fix| lat_lon(fix.lat, fix.lon));
 
+        let with_tiles = !matches!(self.tiles, TileSource::None);
         controls(
             ui,
             &mut self.memory,
@@ -573,6 +597,20 @@ impl View for MapView {
             status,
             vehicle,
             &mut self.waypoints.panel_open,
+            with_tiles.then_some(TileControls {
+                layer: &mut self.layer,
+                offline: &self.offline,
+                download: &mut self.download.open,
+            }),
+        );
+        let ctx = ui.ctx().clone();
+        let tiling = tiles(&mut self.tiles, &ctx, &self.offline);
+        self.download.ui(
+            ui,
+            self.layer,
+            self.visible.as_ref(),
+            tiling.as_ref().map(|tiling| &tiling.fetcher),
+            &ctx,
         );
         self.flight.ui(ui, cx);
         ui.add_space(2.0);
@@ -606,8 +644,13 @@ impl View for MapView {
                 });
         }
 
-        let ctx = ui.ctx().clone();
-        let tiles = tiles(&mut self.tiles, &ctx);
+        let layer = self.layer;
+        let (streets, imagery): (Option<&mut DiskTiles>, Option<&mut DiskTiles>) = match tiling {
+            Some(tiling) if layer == Layer::Streets => (Some(&mut tiling.streets), None),
+            Some(tiling) => (None, Some(&mut tiling.imagery)),
+            None => (None, None),
+        };
+        let mut visible = None;
         let tracker = &self.tracker;
         let notice = &self.notice;
         let cx_now = cx.now;
@@ -624,12 +667,17 @@ impl View for MapView {
             tracker.last.and_then(|fix| fix.course),
         );
         ui.scope_builder(UiBuilder::new().max_rect(map_area), |ui| {
-            walkers::Map::new(None, &mut self.memory, vehicle)
+            walkers::Map::new(
+                imagery.map(|tiles| tiles as &mut dyn Tiles),
+                &mut self.memory,
+                vehicle,
+            )
                 .zoom_with_ctrl(false)
                 .show(ui, |ui, response, projector, _| {
-                    if let Some(tiles) = tiles {
+                    if let Some(tiles) = streets {
                         draw_base(ui, projector, tiles);
                     }
+                    visible = Some(visible_area(projector));
                     draw_track(ui, projector, tracker, status, heading);
                     waypoints.interact_and_draw(ui, response, projector, on_vehicle.as_deref());
                     overlay_status(ui, response.rect, status);
@@ -638,10 +686,35 @@ impl View for MapView {
                             overlay_notice(ui, response.rect, text);
                         }
                     }
-                    let attribution = overlay_attribution(ui, response.rect);
+                    let attribution = overlay_attribution(ui, response.rect, layer.credit());
                     overlay_compass(ui, response.rect, attribution);
+                    overlay_scale(ui, response.rect, projector);
                 });
         });
+        if visible.is_some() {
+            self.visible = visible;
+        }
+    }
+}
+
+/// The map-type, offline and download controls of the top row; absent when the map has no tiles.
+struct TileControls<'a> {
+    layer: &'a mut Layer,
+    offline: &'a AtomicBool,
+    download: &'a mut bool,
+}
+
+/// The part of the map on screen.
+fn visible_area(projector: &Projector) -> offline::Area {
+    let rect = projector.clip_rect();
+    let north_west = projector.unproject(rect.left_top().to_vec2());
+    let south_east = projector.unproject(rect.right_bottom().to_vec2());
+    offline::Area {
+        north: north_west.y(),
+        south: south_east.y(),
+        west: north_west.x(),
+        east: south_east.x(),
+        zoom: projector.zoom(),
     }
 }
 
@@ -652,8 +725,9 @@ fn controls(
     status: Status,
     vehicle: Position,
     waypoints_open: &mut bool,
+    tiles: Option<TileControls>,
 ) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         let known = tracker.last.is_some();
         let mut follow = memory.detached().is_none();
         if ui.checkbox(&mut follow, "Follow vehicle").changed() {
@@ -674,6 +748,20 @@ fn controls(
             let _ = memory.zoom_out();
         }
         ui.toggle_value(waypoints_open, "Waypoints");
+        if let Some(tiles) = tiles {
+            for layer in Layer::ALL {
+                ui.selectable_value(tiles.layer, layer, layer.name());
+            }
+            let mut offline = tiles.offline.load(Ordering::Relaxed);
+            if ui
+                .checkbox(&mut offline, "Offline")
+                .on_hover_text("Use only the tiles saved on this computer; fetch none")
+                .changed()
+            {
+                tiles.offline.store(offline, Ordering::Relaxed);
+            }
+            ui.toggle_value(tiles.download, "Download this area");
+        }
         if let Some(fix) = tracker.last {
             let text = format!("{:.6}, {:.6}", fix.lat, fix.lon);
             let colour = if status == Status::Live {
@@ -781,15 +869,47 @@ fn overlay_notice(ui: &mut egui::Ui, area: Rect, text: &str) {
 }
 
 /// Draws the attribution and returns the rectangle it took.
-fn overlay_attribution(ui: &mut egui::Ui, area: Rect) -> Rect {
+fn overlay_attribution(ui: &mut egui::Ui, area: Rect, credit: &str) -> Rect {
     let area = area.shrink(4.0);
     ui.new_child(
         UiBuilder::new()
             .max_rect(area)
             .layout(Layout::bottom_up(Align::Max)),
     )
-    .add(text_on_map(ATTRIBUTION, theme::TEXT_SECONDARY))
+    .add(text_on_map(credit, theme::TEXT_SECONDARY))
     .rect
+}
+
+/// The longest the scale bar is drawn.
+const SCALE_MAX_PX: f32 = 140.0;
+
+/// The scale bar in the bottom-left corner: a round length in metres (centimetres below one) and its width.
+fn overlay_scale(ui: &egui::Ui, area: Rect, projector: &Projector) {
+    let at = projector.unproject(area.center().to_vec2());
+    let per_pixel = scale::metres_per_pixel(at.y(), projector.zoom());
+    let Some((metres, width)) = scale::bar(per_pixel, SCALE_MAX_PX) else {
+        return;
+    };
+    let painter = ui.painter_at(area);
+    let left = area.left() + 8.0;
+    let y = area.bottom() - 12.0;
+    painter.text(
+        pos2(left, y - 5.0),
+        egui::Align2::LEFT_BOTTOM,
+        scale::label(metres),
+        egui::FontId::proportional(12.0),
+        theme::TEXT_STRONG,
+    );
+    let line = Stroke::new(2.0, theme::TEXT_STRONG);
+    let shadow = Stroke::new(4.0, Color32::from_black_alpha(160));
+    for stroke in [shadow, line] {
+        painter.line_segment([pos2(left, y), pos2(left + width, y)], stroke);
+        painter.line_segment([pos2(left, y - 4.0), pos2(left, y + 1.0)], stroke);
+        painter.line_segment(
+            [pos2(left + width, y - 4.0), pos2(left + width, y + 1.0)],
+            stroke,
+        );
+    }
 }
 
 /// Half the side of the compass square.
@@ -1850,6 +1970,115 @@ mod tests {
         harness.get_by_label(ATTRIBUTION);
     }
 
+    #[test]
+    fn the_map_type_switch_changes_the_credit_and_the_download_control_shows_an_estimate() {
+        use egui_kittest::kittest::Queryable;
+        let mut view = MapView::new(false);
+        let offline = Arc::new(AtomicBool::new(true));
+        let fetcher = Fetcher::new(None, offline, USER_AGENT).unwrap();
+        let ctx = egui::Context::default();
+        view.tiles = TileSource::Ready(Box::new(Tiling {
+            streets: DiskTiles::new(Layer::Streets, fetcher.clone(), dark_style(), ctx.clone()),
+            imagery: DiskTiles::new(Layer::Imagery, fetcher.clone(), Style::default(), ctx),
+            fetcher,
+        }));
+        view.memory.set_zoom(15.0).unwrap();
+        let state = VehicleState::default();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(vec2(900.0, 600.0))
+            .build_ui(|ui| {
+                let mut commands = Vec::new();
+                let mut cx = ViewCtx {
+                    state: &state,
+                    commands: &mut commands,
+                    now: secs(1.0),
+                    access: gcs_mavlink::Access::Configure,
+                };
+                view.ui(ui, &mut cx);
+            });
+        harness.run();
+        harness.get_by_label(ATTRIBUTION);
+        assert!(harness.query_by_label("Imagery: USGS The National Map").is_none());
+        harness.get_by_label("Imagery").click();
+        harness.run();
+        harness.get_by_label("Imagery: USGS The National Map");
+        assert!(harness.query_by_label(ATTRIBUTION).is_none());
+        harness.get_by_label("Download this area").click();
+        harness.run();
+        harness.get_by_label_contains("tiles, zoom 15 to 16, about");
+        harness.get_by_label("Turn Offline off to download.");
+        harness.get_by_label("Offline");
+    }
+
+    fn mesh_textures(shapes: &[egui::epaint::ClippedShape]) -> usize {
+        fn count(shape: &Shape) -> usize {
+            match shape {
+                Shape::Mesh(mesh) => usize::from(mesh.texture_id != egui::TextureId::default()),
+                Shape::Vec(shapes) => shapes.iter().map(count).sum(),
+                _ => 0,
+            }
+        }
+        shapes.iter().map(|clipped| count(&clipped.shape)).sum()
+    }
+
+    #[test]
+    fn the_imagery_layer_paints_the_stored_tiles_as_images() {
+        let dir = std::env::temp_dir().join(format!("marv-imagery-paint-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut png = Vec::new();
+        let mut encoder = png::Encoder::new(&mut png, 2, 2);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&[200u8; 16])
+            .unwrap();
+        for x in 0..4 {
+            for y in 0..4 {
+                let path = dir.join(format!("imagery/2/{x}/{y}"));
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, &png).unwrap();
+            }
+        }
+        let offline = Arc::new(AtomicBool::new(true));
+        let fetcher = Fetcher::new(Some(dir.clone()), offline, USER_AGENT).unwrap();
+        let ctx = egui::Context::default();
+        let mut view = MapView::new(false);
+        view.layer = Layer::Imagery;
+        view.tiles = TileSource::Ready(Box::new(Tiling {
+            streets: DiskTiles::new(Layer::Streets, fetcher.clone(), dark_style(), ctx.clone()),
+            imagery: DiskTiles::new(Layer::Imagery, fetcher.clone(), Style::default(), ctx.clone()),
+            fetcher,
+        }));
+        let state = VehicleState::default();
+        let mut painted = 0;
+        for _ in 0..100 {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 600.0))),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                let mut commands = Vec::new();
+                let mut cx = ViewCtx {
+                    state: &state,
+                    commands: &mut commands,
+                    now: secs(1.0),
+                    access: gcs_mavlink::Access::Configure,
+                };
+                view.ui(ui, &mut cx);
+            });
+            painted = mesh_textures(&output.shapes);
+            output.textures_delta.clear();
+            if painted > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(painted > 0, "no image tile was painted");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn attitude(yaw: f64, seen: f64) -> MessageStore {
         let mut store = MessageStore::default();
         store.entries.insert(
@@ -1911,7 +2140,7 @@ mod tests {
             )
         );
         assert!(!USER_AGENT.contains('@'));
-        assert!(HeaderValue::from_str(USER_AGENT).is_ok());
+        assert!(reqwest::header::HeaderValue::from_str(USER_AGENT).is_ok());
     }
 
     #[test]
