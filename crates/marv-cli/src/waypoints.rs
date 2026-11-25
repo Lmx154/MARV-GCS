@@ -10,9 +10,12 @@ const HEADER: &str = "QGC WPL 110";
 const FRAME_GLOBAL_RELATIVE_ALT: u32 = 3;
 const CMD_NAV_WAYPOINT: u32 = 16;
 
-/// The waypoints of a QGC WPL 110 text, ready to send: row 0 is skipped; every other row must be a
-/// `MAV_CMD_NAV_WAYPOINT` in `MAV_FRAME_GLOBAL_RELATIVE_ALT` on the globe.
-pub fn parse(text: &str) -> Result<Vec<MissionPoint>, String> {
+const CMD_NAV_RETURN: u32 = 20;
+
+/// The waypoints and the return height of a QGC WPL 110 text, ready to send: row 0 is skipped; every other row
+/// must be a `MAV_CMD_NAV_WAYPOINT` in `MAV_FRAME_GLOBAL_RELATIVE_ALT` on the globe, except a last row with command
+/// 20 (the return item), whose altitude is the return height (`None` when the file has no such row).
+pub fn parse(text: &str) -> Result<(Vec<MissionPoint>, Option<f32>), String> {
     let mut lines = text.lines().enumerate();
     match lines.next() {
         Some((_, first)) if first.trim() == HEADER => {}
@@ -23,6 +26,7 @@ pub fn parse(text: &str) -> Result<Vec<MissionPoint>, String> {
         }
     }
     let mut points = Vec::new();
+    let mut return_height = None;
     for (index, line) in lines {
         if line.trim().is_empty() {
             continue;
@@ -45,9 +49,14 @@ pub fn parse(text: &str) -> Result<Vec<MissionPoint>, String> {
         }
         let frame = int(2, "frame")?;
         let command = int(3, "command")?;
-        if command != CMD_NAV_WAYPOINT {
+        if return_height.is_some() {
             return Err(format!(
-                "line {line_no}: command {command} is not supported (only {CMD_NAV_WAYPOINT}, NAV_WAYPOINT)"
+                "line {line_no}: the return row (command {CMD_NAV_RETURN}) must be the last row"
+            ));
+        }
+        if command != CMD_NAV_WAYPOINT && command != CMD_NAV_RETURN {
+            return Err(format!(
+                "line {line_no}: command {command} is not supported (only {CMD_NAV_WAYPOINT}, NAV_WAYPOINT, and {CMD_NAV_RETURN}, the return height, last)"
             ));
         }
         if frame != FRAME_GLOBAL_RELATIVE_ALT {
@@ -60,6 +69,17 @@ pub fn parse(text: &str) -> Result<Vec<MissionPoint>, String> {
                 .parse::<f64>()
                 .map_err(|_| format!("line {line_no}: {what} \"{}\" is not a number", fields[i]))
         };
+        if command == CMD_NAV_RETURN {
+            let height = float(10, "altitude")? as f32;
+            if !height.is_finite() {
+                return Err(format!(
+                    "line {line_no}: the return height \"{}\" is not finite",
+                    fields[10]
+                ));
+            }
+            return_height = Some(height);
+            continue;
+        }
         let (lat, lon) = (float(8, "latitude")?, float(9, "longitude")?);
         let alt = float(10, "altitude")? as f32;
         let on_globe = lat.is_finite()
@@ -85,7 +105,7 @@ pub fn parse(text: &str) -> Result<Vec<MissionPoint>, String> {
             z: alt,
         });
     }
-    Ok(points)
+    Ok((points, return_height))
 }
 
 /// Degrees of a wire value of degrees x 10^7, to 7 decimals.
@@ -95,7 +115,7 @@ pub fn degrees(e7: i32) -> String {
 
 /// The text of a list in QGC WPL 110, as the map tab writes it: row 0 is a home placeholder at the first
 /// waypoint's position (0, 0 for an empty list), row i the waypoint `seq` i - 1.
-pub fn to_wpl(points: &[MissionPoint]) -> String {
+pub fn to_wpl(points: &[MissionPoint], return_height: Option<f32>) -> String {
     let mut text = format!("{HEADER}\n");
     let (home_lat, home_lon) = points.first().map_or((0.0, 0.0), |p| {
         (f64::from(p.lat_e7) / 1e7, f64::from(p.lon_e7) / 1e7)
@@ -112,6 +132,13 @@ pub fn to_wpl(points: &[MissionPoint]) -> String {
             f64::from(p.lat_e7) / 1e7,
             f64::from(p.lon_e7) / 1e7,
             p.z
+        );
+    }
+    if let Some(height) = return_height {
+        let _ = writeln!(
+            text,
+            "{}\t0\t{FRAME_GLOBAL_RELATIVE_ALT}\t{CMD_NAV_RETURN}\t0\t0\t0\t0\t0\t0\t{height}\t1",
+            points.len() + 1
         );
     }
     text

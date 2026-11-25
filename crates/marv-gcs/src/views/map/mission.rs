@@ -93,7 +93,7 @@ pub fn waypoints_of(items: &[MissionPoint]) -> Vec<Waypoint> {
 }
 
 /// How the vehicle's list differs from the edited list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Difference {
     Count {
         vehicle: usize,
@@ -103,26 +103,37 @@ pub enum Difference {
     Waypoint {
         number: usize,
     },
+    /// The return height is not the same (`vehicle`: `None` when the vehicle holds no list).
+    ReturnHeight {
+        vehicle: Option<f32>,
+        edited: f32,
+    },
     PlanId {
         vehicle: u32,
         edited: u32,
     },
     Unsendable(Unsendable),
+    /// The edited return height is not finite.
+    ReturnHeightUnsendable,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Comparison {
     Matches,
     Differs(Difference),
 }
 
-/// The edited list as the service would send it against what the vehicle holds: the points as `MissionPoint`
-/// (`degrees_to_e7`, altitude compared as 4 bytes) and the plan ids.
-pub fn compare(edited: &[Waypoint], vehicle: &VehicleList) -> Comparison {
+/// The edited list and its return height as the service would send them against what the vehicle holds: the points
+/// as `MissionPoint` (`degrees_to_e7`, altitude compared as 4 bytes), the return height (4 bytes too) and the plan
+/// ids.
+pub fn compare(edited: &[Waypoint], return_height: f32, vehicle: &VehicleList) -> Comparison {
     let items = match to_items(edited) {
         Ok(items) => items,
         Err(unsendable) => return Comparison::Differs(Difference::Unsendable(unsendable)),
     };
+    if !return_height.is_finite() {
+        return Comparison::Differs(Difference::ReturnHeightUnsendable);
+    }
     if items.len() != vehicle.items.len() {
         return Comparison::Differs(Difference::Count {
             vehicle: vehicle.items.len(),
@@ -132,7 +143,16 @@ pub fn compare(edited: &[Waypoint], vehicle: &VehicleList) -> Comparison {
     if let Some(at) = items.iter().zip(&vehicle.items).position(|(a, b)| a != b) {
         return Comparison::Differs(Difference::Waypoint { number: at + 1 });
     }
-    let edited_id = plan_id(&items);
+    if vehicle
+        .return_height
+        .is_none_or(|held| held.to_bits() != return_height.to_bits())
+    {
+        return Comparison::Differs(Difference::ReturnHeight {
+            vehicle: vehicle.return_height,
+            edited: return_height,
+        });
+    }
+    let edited_id = plan_id(&items, return_height);
     if edited_id != vehicle.plan_id {
         return Comparison::Differs(Difference::PlanId {
             vehicle: vehicle.plan_id,
@@ -165,11 +185,23 @@ pub fn comparison_line(comparison: Comparison) -> (String, Color32) {
                     count_text(edited)
                 ),
                 Difference::Waypoint { number } => format!("waypoint {number} is not the same"),
+                Difference::ReturnHeight { vehicle, edited } => match vehicle {
+                    Some(vehicle) => format!(
+                        "the return height is {vehicle} m on the vehicle, {edited} m for the edited list"
+                    ),
+                    None => format!(
+                        "the vehicle holds no return height, the edited list has {edited} m"
+                    ),
+                },
                 Difference::PlanId { vehicle, edited } => format!(
                     "plan id {vehicle:#010X} on the vehicle, {edited:#010X} for the edited list"
                 ),
                 Difference::Unsendable(Unsendable { number, problem }) => {
                     format!("waypoint {number} of the edited list cannot be sent ({problem})")
+                }
+                Difference::ReturnHeightUnsendable => {
+                    "the return height of the edited list cannot be sent (it is not finite)"
+                        .to_string()
                 }
             };
             (format!("{DIFFERS}: {why}"), theme::WARN)
@@ -189,8 +221,11 @@ pub fn running(status: &MissionStatus) -> bool {
 }
 
 fn holds(list: &VehicleList) -> String {
+    let height = list
+        .return_height
+        .map_or_else(String::new, |height| format!(", return height {height} m"));
     format!(
-        "the vehicle holds {}, plan id {:#010X}",
+        "the vehicle holds {}{height}, plan id {:#010X}",
         count_text(list.items.len()),
         list.plan_id
     )
@@ -291,6 +326,7 @@ enum Action {
 struct Pending {
     action: Action,
     list: Vec<Waypoint>,
+    return_height: f32,
     selected: Option<usize>,
 }
 
@@ -345,9 +381,22 @@ impl Controls {
         cx.commands.push(command);
     }
 
-    fn upload(&mut self, cx: &mut ViewCtx, list: &[Waypoint]) {
+    fn upload(&mut self, cx: &mut ViewCtx, list: &[Waypoint], return_height: f32) {
+        if !return_height.is_finite() {
+            self.refusal = Some((
+                cx.state.missions.runs,
+                "Upload failed: the return height is not finite; nothing was sent".to_string(),
+            ));
+            return;
+        }
         match to_items(list) {
-            Ok(items) => self.send(cx, Command::UploadMission { items }),
+            Ok(items) => self.send(
+                cx,
+                Command::UploadMission {
+                    items,
+                    return_height,
+                },
+            ),
             Err(Unsendable { number, problem }) => {
                 self.refusal = Some((
                     cx.state.missions.runs,
@@ -362,39 +411,48 @@ impl Controls {
         cx: &mut ViewCtx,
         action: Action,
         list: &[Waypoint],
+        return_height: f32,
         selected: Option<usize>,
     ) {
         if CONFIRM_BEFORE_SENDING {
             self.pending = Some(Pending {
                 action,
                 list: list.to_vec(),
+                return_height,
                 selected,
             });
         } else {
-            self.run(cx, action, list);
+            self.run(cx, action, list, return_height);
         }
     }
 
-    fn run(&mut self, cx: &mut ViewCtx, action: Action, list: &[Waypoint]) {
+    fn run(&mut self, cx: &mut ViewCtx, action: Action, list: &[Waypoint], return_height: f32) {
         match action {
-            Action::Upload => self.upload(cx, list),
+            Action::Upload => self.upload(cx, list, return_height),
             Action::Clear => self.send(cx, Command::ClearMission),
         }
     }
 
-    fn confirm(&mut self, cx: &mut ViewCtx, list: &[Waypoint]) {
+    fn confirm(&mut self, cx: &mut ViewCtx, list: &[Waypoint], return_height: f32) {
         if let Some(pending) = self.pending.take() {
-            self.run(cx, pending.action, list);
+            self.run(cx, pending.action, list, return_height);
         }
     }
 
     /// Forget a pending action when the list or the selection moved or the buttons are disabled.
-    fn keep_pending(&mut self, list: &[Waypoint], selected: Option<usize>, gate: Option<&str>) {
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|p| gate.is_some() || p.list != list || p.selected != selected)
-        {
+    fn keep_pending(
+        &mut self,
+        list: &[Waypoint],
+        return_height: f32,
+        selected: Option<usize>,
+        gate: Option<&str>,
+    ) {
+        if self.pending.as_ref().is_some_and(|p| {
+            gate.is_some()
+                || p.list != list
+                || p.return_height.to_bits() != return_height.to_bits()
+                || p.selected != selected
+        }) {
             self.pending = None;
         }
     }
@@ -425,24 +483,25 @@ impl Controls {
         ui: &mut egui::Ui,
         cx: &mut ViewCtx,
         list: &[Waypoint],
+        return_height: f32,
         selected: Option<usize>,
     ) -> bool {
         self.settle(cx);
         theme::section_title(ui, "On the vehicle");
         ui.label(theme::muted(ONLY_STORES).small());
         let gate = self.gate(cx);
-        self.keep_pending(list, selected, gate);
+        self.keep_pending(list, return_height, selected, gate);
         ui.horizontal_wrapped(|ui| {
             let upload_gate = gate.or(list.is_empty().then_some(EMPTY_LIST));
             if actions::button(ui, "Upload to vehicle", upload_gate) {
-                self.press(cx, Action::Upload, list, selected);
+                self.press(cx, Action::Upload, list, return_height, selected);
             }
             if actions::button(ui, "Read from vehicle", gate) {
                 self.pending = None;
                 self.send(cx, Command::DownloadMission);
             }
             if actions::button(ui, "Clear on vehicle", gate) {
-                self.press(cx, Action::Clear, list, selected);
+                self.press(cx, Action::Clear, list, return_height, selected);
             }
         });
         if let Some(pending) = &self.pending {
@@ -454,7 +513,7 @@ impl Controls {
                 no = actions::button(ui, "Cancel", None);
             });
             if yes {
-                self.confirm(cx, list);
+                self.confirm(cx, list, return_height);
             } else if no {
                 self.pending = None;
             }
@@ -465,7 +524,7 @@ impl Controls {
         let mut copy = false;
         if let Some(vehicle) = &cx.state.missions.vehicle {
             ui.label(legend(ui));
-            let (text, colour) = comparison_line(compare(list, vehicle));
+            let (text, colour) = comparison_line(compare(list, return_height, vehicle));
             ui.colored_label(colour, text);
             let reason = vehicle.items.is_empty().then_some(EMPTY_VEHICLE_LIST);
             copy = actions::button(ui, "Copy to a new list", reason);
@@ -513,10 +572,24 @@ mod tests {
         .collect()
     }
 
+    /// The return height of the examples, m.
+    const RET: f32 = 20.0;
+
+    /// What a vehicle holds after an upload of `items` with the return height `RET`.
     fn held(items: Vec<MissionPoint>) -> VehicleList {
         VehicleList {
-            plan_id: plan_id(&items),
+            plan_id: plan_id(&items, RET),
             items,
+            return_height: Some(RET),
+        }
+    }
+
+    /// What a vehicle that holds nothing reports.
+    fn nothing_held() -> VehicleList {
+        VehicleList {
+            plan_id: 0,
+            items: Vec::new(),
+            return_height: None,
         }
     }
 
@@ -541,7 +614,8 @@ mod tests {
                 (100_010_000, -299_990_000, 15.0),
             ]
         );
-        assert_eq!(plan_id(&items), 0x99C3_BD49);
+        // With the return item (z 20.0) last: 0x1862F4A2, the CRC-32 of the 48 bytes by the firmware's rule.
+        assert_eq!(plan_id(&items, RET), 0x1862_F4A2);
         assert_eq!(to_items(&[]), Ok(Vec::new()));
     }
 
@@ -605,16 +679,15 @@ mod tests {
     #[test]
     fn the_same_points_and_plan_id_match() {
         let vehicle = held(to_items(&example()).unwrap());
-        assert_eq!(compare(&example(), &vehicle), Comparison::Matches);
+        assert_eq!(compare(&example(), RET, &vehicle), Comparison::Matches);
+        // No waypoint and a return height is a list too; a vehicle that holds nothing is not that list.
+        assert_eq!(compare(&[], RET, &held(Vec::new())), Comparison::Matches);
         assert_eq!(
-            compare(
-                &[],
-                &VehicleList {
-                    plan_id: 0,
-                    items: Vec::new()
-                }
-            ),
-            Comparison::Matches
+            compare(&[], RET, &nothing_held()),
+            Comparison::Differs(Difference::ReturnHeight {
+                vehicle: None,
+                edited: RET
+            })
         );
         assert_eq!(
             comparison_line(Comparison::Matches),
@@ -631,12 +704,12 @@ mod tests {
         let mut edited = example();
         edited[1].alt_m = 12.75;
         assert_eq!(
-            compare(&edited, &vehicle),
+            compare(&edited, RET, &vehicle),
             Comparison::Differs(Difference::Waypoint { number: 2 })
         );
         edited.pop();
         assert_eq!(
-            compare(&edited, &vehicle),
+            compare(&edited, RET, &vehicle),
             Comparison::Differs(Difference::Count {
                 vehicle: 3,
                 edited: 2
@@ -658,6 +731,7 @@ mod tests {
                     lon: 2.0,
                     alt_m: -0.0
                 }],
+                RET,
                 &zero
             ),
             Comparison::Differs(Difference::Waypoint { number: 1 })
@@ -668,16 +742,39 @@ mod tests {
             ..held(to_items(&example()).unwrap())
         };
         assert_eq!(
-            compare(&example(), &other),
+            compare(&example(), RET, &other),
             Comparison::Differs(Difference::PlanId {
                 vehicle: 7,
-                edited: 0x99C3_BD49
+                edited: 0x1862_F4A2
             })
+        );
+        // Same waypoints, another return height (compared as 4 bytes: -0.0 is not 0.0).
+        assert_eq!(
+            compare(&example(), 25.0, &vehicle),
+            Comparison::Differs(Difference::ReturnHeight {
+                vehicle: Some(20.0),
+                edited: 25.0
+            })
+        );
+        let zero_height = VehicleList {
+            return_height: Some(0.0),
+            ..vehicle.clone()
+        };
+        assert_eq!(
+            compare(&example(), -0.0, &zero_height),
+            Comparison::Differs(Difference::ReturnHeight {
+                vehicle: Some(0.0),
+                edited: -0.0
+            })
+        );
+        assert_eq!(
+            compare(&example(), f32::NAN, &vehicle),
+            Comparison::Differs(Difference::ReturnHeightUnsendable)
         );
         let mut broken = example();
         broken[2].lat = f64::NAN;
         assert_eq!(
-            compare(&broken, &vehicle),
+            compare(&broken, RET, &vehicle),
             Comparison::Differs(Difference::Unsendable(Unsendable {
                 number: 3,
                 problem: "latitude is not finite"
@@ -706,10 +803,26 @@ mod tests {
         assert_eq!(
             line(Difference::PlanId {
                 vehicle: 1,
-                edited: 0x99C3_BD49
+                edited: 0x1862_F4A2
             })
             .0,
-            "The vehicle's list differs from the edited list: plan id 0x00000001 on the vehicle, 0x99C3BD49 for the edited list"
+            "The vehicle's list differs from the edited list: plan id 0x00000001 on the vehicle, 0x1862F4A2 for the edited list"
+        );
+        assert_eq!(
+            line(Difference::ReturnHeight {
+                vehicle: Some(20.0),
+                edited: 25.5
+            })
+            .0,
+            "The vehicle's list differs from the edited list: the return height is 20 m on the vehicle, 25.5 m for the edited list"
+        );
+        assert_eq!(
+            line(Difference::ReturnHeight {
+                vehicle: None,
+                edited: 25.5
+            })
+            .0,
+            "The vehicle's list differs from the edited list: the vehicle holds no return height, the edited list has 25.5 m"
         );
         assert_eq!(
             line(Difference::Unsendable(Unsendable {
@@ -828,19 +941,21 @@ mod tests {
         assert_eq!(
             line(&with(MissionKind::Upload, MissionStatus::Verified)),
             Some((
-                "Upload verified: the vehicle holds 3 waypoints, plan id 0x99C3BD49".to_string(),
+                "Upload verified: the vehicle holds 3 waypoints, return height 20 m, plan id 0x1862F4A2"
+                    .to_string(),
                 theme::OK
             ))
         );
         assert_eq!(
             line(&with(MissionKind::Download, MissionStatus::Complete)),
             Some((
-                "Read complete: the vehicle holds 3 waypoints, plan id 0x99C3BD49".to_string(),
+                "Read complete: the vehicle holds 3 waypoints, return height 20 m, plan id 0x1862F4A2"
+                    .to_string(),
                 theme::OK
             ))
         );
         let empty = MissionsState {
-            vehicle: Some(held(Vec::new())),
+            vehicle: Some(nothing_held()),
             ..state(MissionKind::Clear, MissionStatus::Verified)
         };
         assert_eq!(
@@ -887,7 +1002,7 @@ mod tests {
         shown.vehicle = Some(held(to_items(&example()).unwrap()));
         assert_eq!(
             line(&shown).unwrap().0,
-            "Upload failed: refused by the vehicle, code 4 (MAV_MISSION_NO_SPACE): the vehicle holds at most 16 waypoints; the vehicle holds 3 waypoints, plan id 0x99C3BD49"
+            "Upload failed: refused by the vehicle, code 4 (MAV_MISSION_NO_SPACE): the vehicle holds at most 16 waypoints; the vehicle holds 3 waypoints, return height 20 m, plan id 0x1862F4A2"
         );
         let armed = failed(
             MissionFailure::Refused(MavMissionResult::MAV_MISSION_ERROR),
@@ -975,7 +1090,7 @@ mod tests {
         let mut controls = Controls::default();
         let mut list = example();
         list[1].lat = f64::NAN;
-        controls.upload(&mut cx, &list);
+        controls.upload(&mut cx, &list, RET);
         assert!(commands.is_empty());
         assert!(
             controls.awaiting.is_none(),
@@ -994,9 +1109,34 @@ mod tests {
             now: Some(Duration::from_secs(2)),
             access: gcs_mavlink::Access::Configure,
         };
-        controls.upload(&mut cx, &example());
+        controls.upload(&mut cx, &example(), RET);
         assert!(matches!(commands[..], [Command::UploadMission { .. }]));
         assert_eq!(controls.status_line(&state.missions).unwrap().0, SENT);
+    }
+
+    #[test]
+    fn a_return_height_that_is_not_finite_sends_nothing_and_says_so() {
+        let state = gcs_mavlink::VehicleState::default();
+        let mut commands = Vec::new();
+        let mut cx = ViewCtx {
+            state: &state,
+            commands: &mut commands,
+            now: Some(Duration::from_secs(1)),
+            access: gcs_mavlink::Access::Configure,
+        };
+        for height in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut controls = Controls::default();
+            controls.upload(&mut cx, &example(), height);
+            assert!(cx.commands.is_empty());
+            assert!(controls.awaiting.is_none());
+            assert_eq!(
+                controls.status_line(&state.missions),
+                Some((
+                    "Upload failed: the return height is not finite; nothing was sent".to_string(),
+                    theme::ERROR
+                ))
+            );
+        }
     }
 
     #[test]
@@ -1046,19 +1186,24 @@ mod tests {
         };
         let mut controls = Controls::default();
         let list = example();
-        controls.press(&mut cx, Action::Upload, &list, None);
+        controls.press(&mut cx, Action::Upload, &list, 27.5, None);
         assert!(cx.commands.is_empty(), "the first press sends nothing");
         let pending = controls.pending.clone().unwrap();
         assert_eq!(
             Controls::question(&pending),
             "Upload 3 waypoints to the vehicle?"
         );
-        controls.confirm(&mut cx, &list);
+        controls.confirm(&mut cx, &list, 27.5);
         assert!(controls.pending.is_none());
-        let Command::UploadMission { items } = only_command(cx.commands) else {
+        let Command::UploadMission {
+            items,
+            return_height,
+        } = only_command(cx.commands)
+        else {
             panic!("not an upload");
         };
         assert_eq!(*items, to_items(&list).unwrap());
+        assert_eq!(*return_height, 27.5);
     }
 
     #[test]
@@ -1073,13 +1218,13 @@ mod tests {
         };
         let mut controls = Controls::default();
         let list = example();
-        controls.press(&mut cx, Action::Clear, &list, None);
+        controls.press(&mut cx, Action::Clear, &list, 27.5, None);
         assert!(cx.commands.is_empty(), "the first press sends nothing");
         assert_eq!(
             Controls::question(controls.pending.as_ref().unwrap()),
             "Clear the vehicle's waypoint list?"
         );
-        controls.confirm(&mut cx, &list);
+        controls.confirm(&mut cx, &list, 27.5);
         assert!(matches!(only_command(cx.commands), Command::ClearMission));
     }
 
@@ -1092,19 +1237,23 @@ mod tests {
                 controls.pending = Some(Pending {
                     action,
                     list: list.clone(),
+                    return_height: RET,
                     selected: Some(1),
                 });
             };
             arm(&mut controls);
-            controls.keep_pending(&list, Some(1), None);
+            controls.keep_pending(&list, RET, Some(1), None);
             assert!(controls.pending.is_some(), "unchanged stays armed");
-            controls.keep_pending(&list, Some(0), None);
+            controls.keep_pending(&list, RET, Some(0), None);
             assert!(controls.pending.is_none(), "selection moved");
             arm(&mut controls);
-            controls.keep_pending(&list[..2], Some(1), None);
+            controls.keep_pending(&list[..2], RET, Some(1), None);
             assert!(controls.pending.is_none(), "list changed");
             arm(&mut controls);
-            controls.keep_pending(&list, Some(1), Some(RUNNING));
+            controls.keep_pending(&list, RET + 1.0, Some(1), None);
+            assert!(controls.pending.is_none(), "return height changed");
+            arm(&mut controls);
+            controls.keep_pending(&list, RET, Some(1), Some(RUNNING));
             assert!(controls.pending.is_none(), "buttons disabled");
             arm(&mut controls);
             controls.pending = None;
@@ -1116,7 +1265,7 @@ mod tests {
                 now: Some(Duration::from_secs(1)),
                 access: gcs_mavlink::Access::Configure,
             };
-            controls.confirm(&mut cx, &list);
+            controls.confirm(&mut cx, &list, RET);
             assert!(cx.commands.is_empty(), "cancelled: nothing is sent");
         }
     }

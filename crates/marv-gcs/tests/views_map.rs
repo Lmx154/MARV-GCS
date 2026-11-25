@@ -206,7 +206,7 @@ fn store_with_example(tag: &str) -> Store {
         .into_iter()
         .map(|(lat, lon, alt_m)| Waypoint { lat, lon, alt_m })
         .collect();
-    store.save("mission", &list).unwrap();
+    store.save("mission", &list, None).unwrap();
     store
 }
 
@@ -320,6 +320,7 @@ fn a_press_sends_one_command_and_waits_for_the_service_before_believing_its_stat
         vehicle: Some(VehicleList {
             plan_id: 5,
             items: Vec::new(),
+            return_height: Some(30.0),
         }),
         ..MissionsState::default()
     };
@@ -375,12 +376,13 @@ fn a_press_sends_one_command_and_waits_for_the_service_before_believing_its_stat
                 lon_e7: -300_000_000,
                 z: 10.0,
             }],
+            return_height: Some(30.0),
         });
     }
     window.harness.run();
-    window
-        .harness
-        .get_by_label_contains("Read complete: the vehicle holds 1 waypoint, plan id 0x00000000");
+    window.harness.get_by_label_contains(
+        "Read complete: the vehicle holds 1 waypoint, return height 30 m, plan id 0x00000000",
+    );
     window
         .harness
         .get_by_label("Edited list: amber discs. Vehicle's list as last read: blue dashed rings.");
@@ -408,6 +410,32 @@ fn a_command_the_service_refused_does_not_leave_the_buttons_off() {
     window.state.borrow_mut().missions.refused = 1;
     window.harness.run();
     assert!(!window.disabled(READ));
+    drop(window);
+    let _ = std::fs::remove_dir_all(store.dir());
+}
+
+#[test]
+fn the_panel_has_a_return_height_field_and_upload_sends_it_with_the_list() {
+    // The example list is saved without a return height: the field starts at the default altitude (30 m).
+    let store = store_with_example("return-height");
+    let mut window = window(&store, connected(), Some(5.0), Access::Configure);
+    window.harness.get_by_label("Return height (m)");
+    window.harness.get_by_label(UPLOAD).click();
+    window.harness.run();
+    window.harness.get_by_label("Confirm").click();
+    window.harness.run();
+    let sent = window.sent.borrow();
+    let [
+        Command::UploadMission {
+            items,
+            return_height,
+        },
+    ] = &sent[..]
+    else {
+        panic!("{sent:?}");
+    };
+    assert_eq!((items.len(), *return_height), (2, 30.0));
+    drop(sent);
     drop(window);
     let _ = std::fs::remove_dir_all(store.dir());
 }

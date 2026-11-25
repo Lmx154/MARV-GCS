@@ -3,6 +3,10 @@
 //! CRC_EXTRA values, and the plan ids are computed here by a second CRC-32, so these tests do not use the
 //! `mavlink` crate's mission messages (a frame may carry a `frame` or `command` that is no enum value).
 //!
+//! A list is n items: the waypoints, then the return item (command 20, `x` = `y` = 0, `z` the return height), as the
+//! firmware stores it (`docs/link-contract.md`, Amendment A5). The limits of `z` are the firmware's defaults, 5 m
+//! to 50 m. A test's "plan id of the points" is that of the points followed by the return item `RET`.
+//!
 //! The 5 ms slot sends at the first multiple of 5 ms after the time a message was handed to it (a step at 100
 //! ms hands a reply over, the frame comes out of the step at 105 ms).
 
@@ -18,8 +22,10 @@ const ERROR: u8 = 1;
 const UNSUPPORTED_FRAME: u8 = 2;
 const UNSUPPORTED: u8 = 3;
 const NO_SPACE: u8 = 4;
+const INVALID: u8 = 5;
 const INVALID_PARAM5_X: u8 = 10;
 const INVALID_PARAM6_Y: u8 = 11;
+const INVALID_PARAM7: u8 = 12;
 const INVALID_SEQUENCE: u8 = 13;
 const DENIED: u8 = 14;
 const CANCELLED: u8 = 15;
@@ -50,7 +56,15 @@ const P2: Pt = Pt {
     y: -299_990_000,
     z_bits: 0x4170_0000,
 };
-const EXAMPLE_PLAN_ID: u32 = 0x99C3_BD49;
+/// The return item of the examples: 20.0 m (0x41A00000).
+const RET: Pt = Pt {
+    x: 0,
+    y: 0,
+    z_bits: 0x41A0_0000,
+};
+/// The plan id of the items P0, P1, P2, RET: the CRC-32 (zlib.crc32 of the 48 bytes, `x`, `y`, `z` little-endian
+/// each) is 0x1862F4A2. (P0, P1, P2 alone, as the contract's example 1 had it before Amendment A5, gave 0x99C3BD49.)
+const EXAMPLE_PLAN_ID: u32 = 0x1862_F4A2;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Pt {
@@ -188,6 +202,19 @@ impl Spec {
         }
     }
 
+    /// The return item `seq`: command 20, `x` = `y` = 0.
+    fn ret(seq: u16) -> Self {
+        Self::ret_at(seq, RET)
+    }
+
+    /// A command 20 item with the values of `pt`.
+    fn ret_at(seq: u16, pt: Pt) -> Self {
+        Self {
+            command: 20,
+            ..Self::new(seq, pt)
+        }
+    }
+
     fn raw(&self) -> Raw {
         let mut p = Vec::with_capacity(38);
         for v in self.params {
@@ -217,6 +244,10 @@ impl Spec {
 
 fn s_item(seq: u16, pt: Pt) -> Raw {
     Spec::new(seq, pt).raw()
+}
+
+fn s_ret(seq: u16) -> Raw {
+    Spec::ret(seq).raw()
 }
 
 // ---- the vehicle's frames --------------------------------------------------------------------------------
@@ -295,6 +326,21 @@ fn v_item(seq: u16, pt: Pt) -> Got {
         pt,
         frame: 3,
         command: 16,
+        current: 0,
+        autocontinue: 1,
+        params: [0; 4],
+        mt: 0,
+    }
+}
+
+/// The return item a download sends: command 20, frame 3, `x` = `y` = 0, parameters 0.0.
+fn v_ret(seq: u16) -> Got {
+    Got::Item {
+        to: GCS,
+        seq,
+        pt: RET,
+        frame: 3,
+        command: 20,
         current: 0,
         autocontinue: 1,
         params: [0; 4],
@@ -462,13 +508,15 @@ impl Rig {
     }
 }
 
-/// The station's upload at its own pace: it answers every request; returns the vehicle's last message.
+/// The station's upload at its own pace: the waypoints and then the return item `RET`, one item more than `pts`;
+/// it answers every request; returns the vehicle's last message.
 fn upload(r: &mut Rig, pts: &[Pt]) -> Got {
-    r.send(&s_count(pts.len() as u16));
-    for _ in 0..=pts.len() + 2 {
+    r.send(&s_count(pts.len() as u16 + 1));
+    for _ in 0..=pts.len() + 3 {
         r.run(10);
         for (_, got) in r.take() {
             match got {
+                Got::Req { seq, .. } if usize::from(seq) == pts.len() => r.send(&s_ret(seq)),
                 Got::Req { seq, .. } => r.send(&s_item(seq, pts[usize::from(seq)])),
                 Got::Ack { .. } => return got,
                 other => panic!("{other:?}"),
@@ -478,8 +526,9 @@ fn upload(r: &mut Rig, pts: &[Pt]) -> Got {
     panic!("the upload did not end");
 }
 
-/// The station's download: the count, the plan id and the items (each checked to be what the vehicle sends: frame
-/// 3, command 16, current 0, autocontinue 1, parameters 0.0).
+/// The station's download: the count, the plan id and the waypoints (each checked to be what the vehicle sends: frame
+/// 3, command 16, current 0, autocontinue 1, parameters 0.0), the last item being the return item `RET` (command 20,
+/// frame 3, `x` = `y` = 0). An empty vehicle gives count 0.
 fn download(r: &mut Rig) -> (u16, u32, Vec<Pt>) {
     let first = r.ask(&s_list());
     let [
@@ -499,15 +548,21 @@ fn download(r: &mut Rig) -> (u16, u32, Vec<Pt>) {
         let [Got::Item { pt, .. }] = got[..] else {
             panic!("{got:?}");
         };
-        assert_eq!(got, [v_item(seq, pt)]);
-        pts.push(pt);
+        if seq + 1 == count {
+            assert_eq!(got, [v_ret(seq)]);
+        } else {
+            assert_eq!(got, [v_item(seq, pt)]);
+            pts.push(pt);
+        }
     }
     assert_eq!(r.ask(&s_ack(ACCEPTED)), []);
     (count, opaque, pts)
 }
 
+/// The vehicle holds `pts` and the return item `RET` with the plan id `plan`; `holds(r, &[], 0)`: nothing.
 fn holds(r: &mut Rig, pts: &[Pt], plan: u32) {
-    assert_eq!(download(r), (pts.len() as u16, plan, pts.to_vec()));
+    let count = if plan == 0 { 0 } else { pts.len() as u16 + 1 };
+    assert_eq!(download(r), (count, plan, pts.to_vec()));
 }
 
 fn three(r: &mut Rig) {
@@ -536,24 +591,35 @@ fn crc_reg(bytes: &[u8]) -> u32 {
     })
 }
 
+/// The plan id of `pts` followed by the return item `RET`.
 fn plan_of(pts: &[Pt]) -> u32 {
+    plan_of_items(&[pts, &[RET]].concat())
+}
+
+/// The plan id of the items as they are.
+fn plan_of_items(items: &[Pt]) -> u32 {
     let mut bytes = Vec::new();
-    for p in pts {
+    for p in items {
         bytes.extend_from_slice(&p.x.to_le_bytes());
         bytes.extend_from_slice(&p.y.to_le_bytes());
         bytes.extend_from_slice(&p.z_bits.to_le_bytes());
     }
     match !crc_reg(&bytes) {
-        0 if !pts.is_empty() => 1,
+        0 if !items.is_empty() => 1,
         crc => crc,
     }
 }
 
-/// Four bytes that, appended to `prefix`, make the CRC-32 of the whole 0.
-fn forge_to_zero(prefix: &[u8]) -> [u8; 4] {
+/// Four bytes that, put between `prefix` and `suffix`, make the CRC-32 of the whole 0.
+fn forge_to_zero(prefix: &[u8], suffix: &[u8]) -> [u8; 4] {
     let t = crc_table();
-    let mut index = [0usize; 4];
+    // The register after the four bytes: the one that the suffix turns into the register of CRC 0, found backwards.
     let mut want = 0xFFFF_FFFFu32;
+    for &b in suffix.iter().rev() {
+        let i = (0..256).find(|&i| t[i] >> 24 == want >> 24).unwrap();
+        want = ((want ^ t[i]) << 8) | ((i as u32 ^ u32::from(b)) & 0xFF);
+    }
+    let mut index = [0usize; 4];
     for j in (0..4).rev() {
         let i = (0..256).find(|&i| t[i] >> 24 == want >> 24).unwrap();
         index[j] = i;
@@ -573,18 +639,19 @@ fn forge_to_zero(prefix: &[u8]) -> [u8; 4] {
 #[test]
 fn the_second_crc_agrees_with_the_check_string_and_the_test_vector() {
     assert_eq!(!crc_reg(b"123456789"), 0xCBF4_3926);
-    assert_eq!(plan_of(&[P0, P1, P2]), EXAMPLE_PLAN_ID);
-    assert_eq!(plan_of(&[]), 0);
+    assert_eq!(plan_of_items(&[P0, P1, P2, RET]), EXAMPLE_PLAN_ID);
+    assert_eq!(plan_of_items(&[P0, P1, P2]), 0x99C3_BD49);
+    assert_eq!(plan_of_items(&[]), 0);
 }
 
 #[test]
-fn three_points_give_plan_id_99c3bd49_on_the_wire_as_49_bd_c3_99() {
+fn three_points_and_the_return_item_give_plan_id_1862f4a2_on_the_wire_as_a2_f4_62_18() {
     let mut r = Rig::new();
-    assert_eq!(upload(&mut r, &[P0, P1, P2]), v_ack_plan(0x99C3_BD49));
+    assert_eq!(upload(&mut r, &[P0, P1, P2]), v_ack_plan(0x1862_F4A2));
     let ack = r.wire.last().unwrap();
-    assert_eq!(*ack, [255, 190, 0, 0, 0x49, 0xBD, 0xC3, 0x99]);
-    // The same id in every download's MISSION_COUNT.
-    assert_eq!(r.ask(&s_list()), [v_count(3, 2_579_742_025)]);
+    assert_eq!(*ack, [255, 190, 0, 0, 0xA2, 0xF4, 0x62, 0x18]);
+    // The same id in every download's MISSION_COUNT: 3 waypoints and the return item.
+    assert_eq!(r.ask(&s_list()), [v_count(4, 409_138_338)]);
 }
 
 #[test]
@@ -598,22 +665,37 @@ fn the_empty_list_has_plan_id_0() {
 
 #[test]
 fn a_non_empty_list_whose_crc_is_zero_has_plan_id_1() {
-    let mut prefix = Vec::new();
-    prefix.extend_from_slice(&P0.x.to_le_bytes());
-    prefix.extend_from_slice(&P0.y.to_le_bytes());
-    let z = forge_to_zero(&prefix);
-    let pt = Pt {
-        z_bits: u32::from_le_bytes(z),
-        ..P0
-    };
-    assert_eq!(!crc_reg(&[prefix, z.to_vec()].concat()), 0);
+    // The `y` of the waypoint is forged so that the CRC over the 24 bytes of the waypoint and the return item is 0
+    // (the first `x` that leaves `y` within its range).
+    let ret_bytes: Vec<u8> = [
+        RET.x.to_le_bytes(),
+        RET.y.to_le_bytes(),
+        RET.z_bits.to_le_bytes(),
+    ]
+    .concat();
+    let (mut x, mut y) = (P0.x, i32::MAX);
+    while !(-1_800_000_000..=1_800_000_000).contains(&y) {
+        let prefix = x.to_le_bytes();
+        let suffix = [P0.z_bits.to_le_bytes().to_vec(), ret_bytes.clone()].concat();
+        y = i32::from_le_bytes(forge_to_zero(&prefix, &suffix));
+        x += 1;
+    }
+    let pt = Pt { x: x - 1, y, ..P0 };
+    assert_eq!(plan_of_items(&[pt, RET]), 1);
+    let mut all = Vec::new();
+    for p in [pt, RET] {
+        all.extend_from_slice(&p.x.to_le_bytes());
+        all.extend_from_slice(&p.y.to_le_bytes());
+        all.extend_from_slice(&p.z_bits.to_le_bytes());
+    }
+    assert_eq!(!crc_reg(&all), 0);
     let mut r = Rig::new();
     assert_eq!(upload(&mut r, &[pt]), v_ack_plan(1));
     holds(&mut r, &[pt], 1);
 }
 
 #[test]
-fn sixteen_points_are_accepted_and_come_back_with_their_plan_id() {
+fn sixteen_waypoints_and_the_return_item_are_accepted_and_come_back_with_their_plan_id() {
     let pts: Vec<Pt> = (0..16)
         .map(|i| Pt {
             x: 100_000_000 + i * 10_000,
@@ -633,7 +715,7 @@ fn sixteen_points_are_accepted_and_come_back_with_their_plan_id() {
 fn worked_example_1_a_lost_item_then_the_read_back() {
     let mut r = Rig::new();
     // The slot is 5 ms here: a reply handed over at t comes out at the next multiple of 5 ms after t.
-    r.send_at(100, &s_count(3));
+    r.send_at(100, &s_count(4));
     r.run_to(106);
     assert_eq!(r.take(), [(105, v_req(0))]);
     r.send_at(107, &s_item(0, P0));
@@ -649,16 +731,22 @@ fn worked_example_1_a_lost_item_then_the_read_back() {
     assert_eq!(r.take(), [(1615, v_req(2))]);
     r.send_at(1617, &s_item(2, P2));
     r.run_to(1621);
-    assert_eq!(r.take(), [(1620, v_ack_plan(EXAMPLE_PLAN_ID))]);
-    // The read-back.
-    r.send_at(1622, &s_list());
+    assert_eq!(r.take(), [(1620, v_req(3))]);
+    r.send_at(1622, &s_ret(3));
     r.run_to(1626);
-    assert_eq!(r.take(), [(1625, v_count(3, 2_579_742_025))]);
-    let mut t = 1627;
-    for (seq, pt) in [P0, P1, P2].into_iter().enumerate() {
+    assert_eq!(r.take(), [(1625, v_ack_plan(EXAMPLE_PLAN_ID))]);
+    // The read-back.
+    r.send_at(1627, &s_list());
+    r.run_to(1631);
+    assert_eq!(r.take(), [(1630, v_count(4, 409_138_338))]);
+    let mut t = 1632;
+    for (seq, got) in [v_item(0, P0), v_item(1, P1), v_item(2, P2), v_ret(3)]
+        .into_iter()
+        .enumerate()
+    {
         r.send_at(t, &s_req(seq as u16));
         r.run_to(t + 4);
-        assert_eq!(r.take(), [(t / 5 * 5 + 5, v_item(seq as u16, pt))]);
+        assert_eq!(r.take(), [(t / 5 * 5 + 5, got)]);
         t += 5;
     }
     r.send_at(t, &s_ack(ACCEPTED));
@@ -667,10 +755,10 @@ fn worked_example_1_a_lost_item_then_the_read_back() {
 }
 
 #[test]
-fn worked_example_2_a_refused_17_point_upload_leaves_the_list_alone() {
+fn worked_example_2_a_refused_18_item_upload_leaves_the_list_alone() {
     let mut r = Rig::new();
     three(&mut r);
-    r.send(&s_count(17));
+    r.send(&s_count(18));
     r.run(10);
     let got = r.take();
     assert_eq!(got.len(), 1, "{got:?}");
@@ -849,6 +937,195 @@ fn the_checks_of_an_item_run_in_the_contracts_order() {
     );
 }
 
+/// The vehicle holds the three points; an upload of 3 items whose item 0 and item 1 were accepted: the item `seq` 2
+/// (the last one, which must be the return item) is checked in the test.
+fn at_last_item() -> Rig {
+    let mut r = mid_upload(3);
+    assert_eq!(r.ask(&s_item(1, P1)), [v_req(2)]);
+    r
+}
+
+/// The last item `spec` is refused with `ty`, and the stored list is still the three points.
+fn last_refused(spec: Spec, ty: u8) {
+    let mut r = at_last_item();
+    assert_eq!(
+        r.ask(&spec.raw()),
+        [Got::Ack {
+            to: GCS,
+            ty,
+            mt: spec.mission_type,
+            opaque: 0
+        }]
+    );
+    r.quiet_for(10_000);
+    holds(&mut r, &[P0, P1, P2], EXAMPLE_PLAN_ID);
+}
+
+#[test]
+fn a_last_item_that_is_not_command_20_is_invalid() {
+    for command in [0, 16, 17, 22, 65_535] {
+        last_refused(
+            Spec {
+                command,
+                ..Spec::ret(2)
+            },
+            INVALID,
+        );
+    }
+    // A waypoint with its own coordinates as the last item is no better.
+    last_refused(Spec::new(2, P2), INVALID);
+}
+
+#[test]
+fn command_20_before_the_last_item_is_invalid() {
+    item_refused(Spec::ret(1), INVALID);
+    item_refused(
+        Spec {
+            command: 20,
+            ..Spec::new(1, P1)
+        },
+        INVALID,
+    );
+}
+
+#[test]
+fn a_return_item_with_x_or_y_not_0_is_refused_with_param5_x_or_param6_y() {
+    for x in [1, -1, i32::MAX, i32::MIN] {
+        last_refused(Spec::ret_at(2, Pt { x, ..RET }), INVALID_PARAM5_X);
+    }
+    for y in [1, -1, i32::MAX, i32::MIN] {
+        last_refused(Spec::ret_at(2, Pt { y, ..RET }), INVALID_PARAM6_Y);
+    }
+}
+
+#[test]
+fn a_return_item_in_frame_6_is_accepted_and_the_frame_checks_hold_for_it() {
+    let mut r = at_last_item();
+    let frame_6 = Spec {
+        frame: 6,
+        ..Spec::ret(2)
+    };
+    assert_eq!(r.ask(&frame_6.raw()), [v_ack_plan(plan_of(&[P1, P1]))]);
+    holds(&mut r, &[P1, P1], plan_of(&[P1, P1]));
+    for frame in [0, 2, 4, 99] {
+        last_refused(
+            Spec {
+                frame,
+                ..Spec::ret(2)
+            },
+            UNSUPPORTED_FRAME,
+        );
+    }
+    last_refused(
+        Spec {
+            mission_type: 1,
+            ..Spec::ret(2)
+        },
+        UNSUPPORTED,
+    );
+}
+
+#[test]
+fn a_height_that_is_not_finite_or_outside_5_to_50_m_is_invalid_param7_the_limits_are_in() {
+    let bad = [
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        4.999_999,
+        50.000_004,
+        0.0,
+        -10.0,
+        -0.0,
+        1e30,
+    ];
+    for z in bad {
+        let z_bits = z.to_bits();
+        item_refused(Spec::new(1, Pt { z_bits, ..P1 }), INVALID_PARAM7);
+        last_refused(Spec::ret_at(2, Pt { z_bits, ..RET }), INVALID_PARAM7);
+    }
+    let limits = [
+        Pt {
+            z_bits: 5.0f32.to_bits(),
+            ..P0
+        },
+        Pt {
+            z_bits: 50.0f32.to_bits(),
+            ..P1
+        },
+    ];
+    let mut r = Rig::new();
+    let ret = Pt {
+        z_bits: 50.0f32.to_bits(),
+        ..RET
+    };
+    let items = [limits[0], limits[1], ret];
+    r.send(&s_count(3));
+    r.run(10);
+    r.take();
+    r.send(&s_item(0, items[0]));
+    r.run(10);
+    r.send(&s_item(1, items[1]));
+    r.run(10);
+    r.take();
+    assert_eq!(
+        r.ask(&Spec::ret_at(2, ret).raw()),
+        [v_ack_plan(plan_of_items(&items))]
+    );
+}
+
+#[test]
+fn the_checks_of_the_last_item_run_in_the_firmwares_order() {
+    // Everything wrong at once; each step repairs the check that fired.
+    let mut spec = Spec {
+        mission_type: 1,
+        command: 16,
+        frame: 99,
+        ..Spec::new(
+            2,
+            Pt {
+                x: 5,
+                y: 6,
+                z_bits: f32::NAN.to_bits(),
+            },
+        )
+    };
+    type Repair<'a> = (&'a dyn Fn(&mut Spec), u8);
+    let steps: [Repair; 7] = [
+        (&|s: &mut Spec| s.mission_type = 0, UNSUPPORTED),
+        (&|_: &mut Spec| (), ERROR),
+        (&|s: &mut Spec| s.command = 20, INVALID),
+        (&|s: &mut Spec| s.frame = 3, UNSUPPORTED_FRAME),
+        (&|s: &mut Spec| s.pt.x = 0, INVALID_PARAM5_X),
+        (&|s: &mut Spec| s.pt.y = 0, INVALID_PARAM6_Y),
+        (
+            &|s: &mut Spec| s.pt.z_bits = 20.0f32.to_bits(),
+            INVALID_PARAM7,
+        ),
+    ];
+    for (i, (repair, expect)) in steps.iter().enumerate() {
+        let mut r = at_last_item();
+        // Armed only in step 1: the check after the mission type.
+        r.v.set_armed(i == 1);
+        let got = r.ask(&spec.raw());
+        let Got::Ack { ty, .. } = got[0] else {
+            panic!("{got:?}");
+        };
+        assert_eq!(ty, *expect, "step {i}");
+        repair(&mut spec);
+    }
+    let mut r = at_last_item();
+    assert_eq!(r.ask(&spec.raw()), [v_ack_plan(plan_of(&[P1, P1]))]);
+}
+
+#[test]
+fn a_count_of_1_is_the_return_item_alone() {
+    let mut r = Rig::new();
+    assert_eq!(upload(&mut r, &[]), v_ack_plan(plan_of(&[])));
+    holds(&mut r, &[], plan_of(&[]));
+    assert_eq!(r.ask(&s_list()), [v_count(1, plan_of(&[]))]);
+    assert_eq!(r.ask(&s_req(0)), [v_ret(0)]);
+}
+
 #[test]
 fn a_count_with_mission_type_not_0_is_unsupported() {
     for mt in [1, 2, 255] {
@@ -883,7 +1160,7 @@ fn mission_type_is_checked_before_armed_and_before_the_count() {
     let mut r = Rig::new();
     r.v.set_armed(true);
     assert!(matches!(
-        r.ask(&s_count_full(17, 1, 0))[..],
+        r.ask(&s_count_full(18, 1, 0))[..],
         [Got::Ack {
             ty: UNSUPPORTED,
             mt: 1,
@@ -891,18 +1168,20 @@ fn mission_type_is_checked_before_armed_and_before_the_count() {
         }]
     ));
     // Armed is checked before the count.
-    assert_eq!(r.ask(&s_count(17)), [v_ack(ERROR)]);
+    assert_eq!(r.ask(&s_count(18)), [v_ack(ERROR)]);
     r.v.set_armed(false);
-    assert_eq!(r.ask(&s_count(17)), [v_ack(NO_SPACE)]);
+    assert_eq!(r.ask(&s_count(18)), [v_ack(NO_SPACE)]);
 }
 
 #[test]
-fn a_count_of_17_or_more_is_no_space() {
-    for n in [17, 18, 255, 256, 65_535] {
+fn a_count_of_18_or_more_is_no_space_and_17_is_taken() {
+    for n in [18, 255, 256, 65_535] {
         let mut r = Rig::new();
         assert_eq!(r.ask(&s_count(n)), [v_ack(NO_SPACE)], "count {n}");
         r.quiet_for(10_000);
     }
+    let mut r = Rig::new();
+    assert_eq!(r.ask(&s_count(17)), [v_req(0)]);
 }
 
 #[test]
@@ -1013,19 +1292,20 @@ fn an_item_or_a_request_with_no_transaction_is_an_error_and_an_ack_is_ignored() 
 
 #[test]
 fn a_request_in_a_download_at_or_above_the_count_is_invalid_sequence_and_ends_it() {
-    for seq in [3, 4, 65_535] {
+    for seq in [4, 5, 65_535] {
         let mut r = Rig::new();
         three(&mut r);
-        assert_eq!(r.ask(&s_list()), [v_count(3, EXAMPLE_PLAN_ID)]);
+        assert_eq!(r.ask(&s_list()), [v_count(4, EXAMPLE_PLAN_ID)]);
         assert_eq!(r.ask(&s_req(seq)), [v_ack(INVALID_SEQUENCE)]);
         // It ended: no transaction, so a request is an error now.
         assert_eq!(r.ask(&s_req(0)), [v_ack(ERROR)]);
     }
-    // Seq 2 is the last one that is served.
+    // Seq 3, the return item, is the last one that is served.
     let mut r = Rig::new();
     three(&mut r);
     r.ask(&s_list());
     assert_eq!(r.ask(&s_req(2)), [v_item(2, P2)]);
+    assert_eq!(r.ask(&s_req(3)), [v_ret(3)]);
 }
 
 #[test]
@@ -1057,7 +1337,7 @@ fn an_upload_that_ends_any_other_way_than_its_last_item_leaves_the_list_alone() 
         holds(&mut r, &[P0, P1, P2], EXAMPLE_PLAN_ID);
     }
     let mut r = mid_upload(2);
-    assert_eq!(r.ask(&s_list()), [v_count(3, EXAMPLE_PLAN_ID)]);
+    assert_eq!(r.ask(&s_list()), [v_count(4, EXAMPLE_PLAN_ID)]);
     r.ask(&s_ack(ACCEPTED));
     holds(&mut r, &[P0, P1, P2], EXAMPLE_PLAN_ID);
     let mut r = mid_upload(2);
@@ -1095,40 +1375,55 @@ fn a_count_of_0_clears_the_list_answers_at_once_and_leaves_no_transaction() {
 
 #[test]
 fn a_download_returns_exactly_what_was_committed() {
-    let nan = Pt {
-        z_bits: 0x7FC0_0001,
+    // The limits of the height, and a `z` with a low bit set: stored bit for bit.
+    let low = Pt {
+        z_bits: 5.0f32.to_bits(),
         ..P0
     };
-    let neg_zero = Pt {
-        z_bits: 0x8000_0000,
+    let high = Pt {
+        z_bits: 50.0f32.to_bits(),
         ..P1
     };
+    let odd = Pt {
+        z_bits: 0x4170_0001,
+        ..P2
+    };
     let mut r = Rig::new();
-    r.send(&s_count(3));
+    r.send(&s_count(4));
     r.run(10);
     r.take();
     // Frame 6 is stored as 3, `current`, `autocontinue` and the parameters (NaN too) are ignored.
-    let odd = |seq, pt, frame| Spec {
+    let odd_item = |seq, pt, frame| Spec {
         frame,
         current: 1,
         autocontinue: 0,
         params: [f32::NAN, -1.0, 1e30, 7.0],
         ..Spec::new(seq, pt)
     };
-    r.send(&odd(0, nan, 6).raw());
+    r.send(&odd_item(0, low, 6).raw());
     r.run(10);
-    r.send(&odd(1, neg_zero, 3).raw());
+    r.send(&odd_item(1, high, 3).raw());
     r.run(10);
-    r.send(&odd(2, P2, 6).raw());
+    r.send(&odd_item(2, odd, 6).raw());
     r.run(10);
-    let pts = [nan, neg_zero, P2];
+    let ret = Spec {
+        command: 20,
+        ..odd_item(3, RET, 6)
+    };
+    r.send(&ret.raw());
+    r.run(10);
+    let pts = [low, high, odd];
     let got = r.take();
     assert_eq!(got.last().unwrap().1, v_ack_plan(plan_of(&pts)));
     holds(&mut r, &pts, plan_of(&pts));
     // In any order and as often as asked.
     r.ask(&s_list());
-    for seq in [2, 0, 2, 1, 0] {
-        assert_eq!(r.ask(&s_req(seq)), [v_item(seq, pts[usize::from(seq)])]);
+    for seq in [2, 0, 3, 2, 1, 0] {
+        let want = match pts.get(usize::from(seq)) {
+            Some(pt) => v_item(seq, *pt),
+            None => v_ret(seq),
+        };
+        assert_eq!(r.ask(&s_req(seq)), [want]);
     }
 }
 
@@ -1199,7 +1494,7 @@ fn a_wrong_item_is_dropped_unchecked_the_request_is_repeated_and_its_timer_resta
     assert_eq!(r.take(), [(2605, v_req(1))]);
     // And the upload goes on.
     assert_eq!(r.ask(&s_item(1, P1)), [v_req(2)]);
-    assert_eq!(r.ask(&s_item(2, P2)), [v_ack_plan(EXAMPLE_PLAN_ID)]);
+    assert_eq!(r.ask(&s_ret(2)), [v_ack_plan(plan_of(&[P0, P1]))]);
 }
 
 #[test]
@@ -1213,7 +1508,7 @@ fn a_download_ends_after_9000_ms_without_a_message_from_its_owner() {
     assert_eq!(
         r.take(),
         [
-            (slot(t0), v_count(3, EXAMPLE_PLAN_ID)),
+            (slot(t0), v_count(4, EXAMPLE_PLAN_ID)),
             (slot(t0 + 9000), v_ack(CANCELLED))
         ]
     );
@@ -1259,7 +1554,7 @@ fn a_second_owner_is_denied_and_the_running_upload_is_not_changed() {
         assert_eq!(r.ask(&s_ack(CANCELLED).from(who)), []);
         // The owner goes on: item 1, item 2, and the stored list is the new one.
         assert_eq!(r.ask(&s_item(1, P1)), [v_req(2)]);
-        assert_eq!(r.ask(&s_item(2, P2)), [v_ack_plan(plan_of(&[P1, P1, P2]))]);
+        assert_eq!(r.ask(&s_ret(2)), [v_ack_plan(plan_of(&[P1, P1]))]);
         // After the end, the other sender may start.
         assert_eq!(
             r.ask(&s_count(1).from(who)),
@@ -1276,7 +1571,7 @@ fn a_second_owner_is_denied_and_the_running_upload_is_not_changed() {
 fn a_second_owner_is_denied_during_a_download_too_and_a_denial_ends_nothing() {
     let mut r = Rig::new();
     three(&mut r);
-    assert_eq!(r.ask(&s_list()), [v_count(3, EXAMPLE_PLAN_ID)]);
+    assert_eq!(r.ask(&s_list()), [v_count(4, EXAMPLE_PLAN_ID)]);
     for raw in [s_count(0), s_clear(), s_list(), s_req(0), s_item(0, P0)] {
         assert_eq!(
             r.ask(&raw.from(OTHER)),
@@ -1317,12 +1612,12 @@ fn a_repeated_count_or_request_list_of_the_owner_starts_again_from_the_beginning
     // The count again: staging is gone, item 0 is asked for.
     assert_eq!(r.ask(&s_count(2)), [v_req(0)]);
     assert_eq!(r.ask(&s_item(0, P2)), [v_req(1)]);
-    assert_eq!(r.ask(&s_item(1, P0)), [v_ack_plan(plan_of(&[P2, P0]))]);
-    holds(&mut r, &[P2, P0], plan_of(&[P2, P0]));
+    assert_eq!(r.ask(&s_ret(1)), [v_ack_plan(plan_of(&[P2]))]);
+    holds(&mut r, &[P2], plan_of(&[P2]));
     // A repeated request list answers with the count again; item requests go on from there.
-    assert_eq!(r.ask(&s_list()), [v_count(2, plan_of(&[P2, P0]))]);
+    assert_eq!(r.ask(&s_list()), [v_count(2, plan_of(&[P2]))]);
     assert_eq!(r.ask(&s_req(0)), [v_item(0, P2)]);
-    assert_eq!(r.ask(&s_list()), [v_count(2, plan_of(&[P2, P0]))]);
+    assert_eq!(r.ask(&s_list()), [v_count(2, plan_of(&[P2]))]);
     // A clear from the owner in the middle of an upload ends it.
     assert_eq!(r.ask(&s_count(3)), [v_req(0)]);
     assert_eq!(r.ask(&s_clear()), [v_ack(ACCEPTED)]);
@@ -1336,13 +1631,13 @@ fn a_repeat_of_the_last_item_after_a_commit_gets_the_same_ack_and_changes_nothin
     assert_eq!(upload(&mut r, &[P0, P1, P2]), v_ack_plan(EXAMPLE_PLAN_ID));
     // Any content: only the owner and the seq count.
     for _ in 0..2 {
-        assert_eq!(r.ask(&s_item(2, P2)), [v_ack_plan(EXAMPLE_PLAN_ID)]);
-        assert_eq!(r.ask(&s_item(2, P0)), [v_ack_plan(EXAMPLE_PLAN_ID)]);
+        assert_eq!(r.ask(&s_ret(3)), [v_ack_plan(EXAMPLE_PLAN_ID)]);
+        assert_eq!(r.ask(&s_item(3, P0)), [v_ack_plan(EXAMPLE_PLAN_ID)]);
     }
     // Another seq, or another sender: an error.
     assert_eq!(r.ask(&s_item(1, P1)), [v_ack(ERROR)]);
     assert_eq!(
-        r.ask(&s_item(2, P2).from(OTHER)),
+        r.ask(&s_ret(3).from(OTHER)),
         [Got::Ack {
             to: OTHER,
             ty: ERROR,
@@ -1353,7 +1648,7 @@ fn a_repeat_of_the_last_item_after_a_commit_gets_the_same_ack_and_changes_nothin
     r.quiet_for(10_000);
     holds(&mut r, &[P0, P1, P2], EXAMPLE_PLAN_ID);
     // Any start message makes it forget (the download above was one).
-    assert_eq!(r.ask(&s_item(2, P2)), [v_ack(ERROR)]);
+    assert_eq!(r.ask(&s_ret(3)), [v_ack(ERROR)]);
 }
 
 #[test]
@@ -1462,12 +1757,12 @@ fn at_most_one_mission_message_leaves_per_5_ms() {
 fn a_message_for_another_system_or_component_is_dropped_and_not_answered() {
     let mut r = Rig::new();
     for to in [(2, 1), (1, 2), (255, 190), (0, 2), (2, 0)] {
-        assert_eq!(r.ask(&s_count(17).to(to)), [], "{to:?}");
+        assert_eq!(r.ask(&s_count(18).to(to)), [], "{to:?}");
         assert_eq!(r.ask(&s_clear().to(to)), []);
     }
     // 0 means everyone; a frame cut before its target component reads 0 there.
     for to in [(0, 0), (0, 1), (1, 0)] {
-        assert_eq!(r.ask(&s_count(17).to(to)), [v_ack(NO_SPACE)], "{to:?}");
+        assert_eq!(r.ask(&s_count(18).to(to)), [v_ack(NO_SPACE)], "{to:?}");
     }
     let mut cut = s_list();
     cut.p = vec![1];
@@ -1477,7 +1772,7 @@ fn a_message_for_another_system_or_component_is_dropped_and_not_answered() {
 #[test]
 fn a_mission_message_from_the_vehicles_own_system_is_ignored() {
     let mut r = Rig::new();
-    assert_eq!(r.ask(&s_count(17).from((1, 1))), []);
+    assert_eq!(r.ask(&s_count(18).from((1, 1))), []);
 }
 
 // ---- fault injection ------------------------------------------------------------------------------------------

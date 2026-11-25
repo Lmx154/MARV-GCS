@@ -63,7 +63,10 @@ mod tests {
         let operate = access_of(&udp);
         assert_eq!(operate, Access::Operate);
         for command in [
-            Command::UploadMission { items: Vec::new() },
+            Command::UploadMission {
+                items: Vec::new(),
+                return_height: 20.0,
+            },
             Command::DownloadMission,
             Command::ClearMission,
         ] {

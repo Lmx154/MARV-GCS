@@ -6,6 +6,9 @@
 //! fields last, trailing zero bytes cut): a station may send a `frame`, `command` or `mission_type` that is no
 //! value of the dialect's enums, and the contract refuses it with a result instead of dropping the frame.
 //!
+//! The list is n items: the waypoints, then the return item (command 20, `z` the return height), as the firmware
+//! stores it. The height limits are the firmware's defaults (5 m and 50 m), fixed.
+//!
 //! Readings where the text is open (all in the test file `tests/missions.rs` too):
 //! - The slot sends on a fixed 5 ms grid of the simulator's clock, at the first multiple of 5 ms after the time
 //!   the message was handed to it (example 1: handed at t 0, sent at t 40).
@@ -17,6 +20,12 @@
 
 /// Waypoints the vehicle holds.
 pub(crate) const CAPACITY: u16 = 16;
+/// Items the vehicle holds: the waypoints and the return item (link contract, section 17, Amendment A5).
+const MAX_ITEMS: u16 = CAPACITY + 1;
+/// The firmware's default `GDN_ALT_MIN`, m: a fixed limit here (the simulator has no such parameter).
+const ALT_MIN: f32 = 5.0;
+/// The firmware's default `GDN_ALT_MAX`, m.
+const ALT_MAX: f32 = 50.0;
 /// A retry of the vehicle's MISSION_REQUEST_INT, and the wait after the last send.
 const RETRY_MS: u64 = 1500;
 /// Retries after the first send (6 sends in all).
@@ -34,6 +43,7 @@ pub(crate) const ID_REQUEST_INT: u32 = 51;
 pub(crate) const ID_ITEM_INT: u32 = 73;
 
 const MAV_CMD_NAV_WAYPOINT: u16 = 16;
+const MAV_CMD_NAV_RETURN: u16 = 20;
 const FRAME_GLOBAL_RELATIVE_ALT: u8 = 3;
 const FRAME_GLOBAL_RELATIVE_ALT_INT: u8 = 6;
 const MAX_LAT: i32 = 900_000_000;
@@ -46,8 +56,10 @@ pub(crate) mod result {
     pub const UNSUPPORTED_FRAME: u8 = 2;
     pub const UNSUPPORTED: u8 = 3;
     pub const NO_SPACE: u8 = 4;
+    pub const INVALID: u8 = 5;
     pub const INVALID_PARAM5_X: u8 = 10;
     pub const INVALID_PARAM6_Y: u8 = 11;
+    pub const INVALID_PARAM7: u8 = 12;
     pub const INVALID_SEQUENCE: u8 = 13;
     pub const DENIED: u8 = 14;
     pub const OPERATION_CANCELLED: u8 = 15;
@@ -174,6 +186,11 @@ pub(crate) enum Out {
         y: i32,
         z_bits: u32,
     },
+    /// The return item (the last one): command 20, frame 3, `x` = `y` = 0.
+    ReturnItem {
+        seq: u16,
+        z_bits: u32,
+    },
 }
 
 impl Out {
@@ -202,19 +219,29 @@ impl Out {
                 p.extend_from_slice(&[to.0, to.1, 0]);
                 (ID_REQUEST_INT, p)
             }
-            Self::Item { seq, x, y, z_bits } => {
-                let mut p = Vec::with_capacity(38);
-                p.extend_from_slice(&[0u8; 16]);
-                p.extend_from_slice(&x.to_le_bytes());
-                p.extend_from_slice(&y.to_le_bytes());
-                p.extend_from_slice(&z_bits.to_le_bytes());
-                p.extend_from_slice(&seq.to_le_bytes());
-                p.extend_from_slice(&MAV_CMD_NAV_WAYPOINT.to_le_bytes());
-                p.extend_from_slice(&[to.0, to.1, FRAME_GLOBAL_RELATIVE_ALT, 0, 1, 0]);
-                (ID_ITEM_INT, p)
-            }
+            Self::Item { seq, x, y, z_bits } => (
+                ID_ITEM_INT,
+                item_payload(to, seq, MAV_CMD_NAV_WAYPOINT, x, y, z_bits),
+            ),
+            Self::ReturnItem { seq, z_bits } => (
+                ID_ITEM_INT,
+                item_payload(to, seq, MAV_CMD_NAV_RETURN, 0, 0, z_bits),
+            ),
         }
     }
+}
+
+/// The payload of a MISSION_ITEM_INT of a download: frame 3, `current` 0, `autocontinue` 1, `param1` to `param4` 0.0.
+fn item_payload(to: Id, seq: u16, command: u16, x: i32, y: i32, z_bits: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(38);
+    p.extend_from_slice(&[0u8; 16]);
+    p.extend_from_slice(&x.to_le_bytes());
+    p.extend_from_slice(&y.to_le_bytes());
+    p.extend_from_slice(&z_bits.to_le_bytes());
+    p.extend_from_slice(&seq.to_le_bytes());
+    p.extend_from_slice(&command.to_le_bytes());
+    p.extend_from_slice(&[to.0, to.1, FRAME_GLOBAL_RELATIVE_ALT, 0, 1, 0]);
+    p
 }
 
 /// A message and where it goes.
@@ -244,8 +271,8 @@ fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
-/// The plan id of a list: the CRC-32 of 12 bytes per waypoint (`x`, `y`, `z` bits, little-endian); 0 for the
-/// empty list; 1 when a non-empty list comes out 0.
+/// The plan id of a list of items (the waypoints and the return item): the CRC-32 of 12 bytes per item (`x`, `y`, `z`
+/// bits, little-endian); 0 for the empty list; 1 when a non-empty list comes out 0.
 fn plan_id(list: &[Waypoint]) -> u32 {
     if list.is_empty() {
         return 0;
@@ -390,7 +417,7 @@ impl Missions {
                 if armed {
                     return vec![ack(from, result::ERROR, mission_type, 0)];
                 }
-                if count > CAPACITY {
+                if count > MAX_ITEMS {
                     return vec![ack(from, result::NO_SPACE, mission_type, 0)];
                 }
                 if count == 0 {
@@ -467,7 +494,7 @@ impl Missions {
                         txn.deadline_ms = now_ms + RETRY_MS;
                         return vec![(from, Out::RequestInt { seq: k })];
                     }
-                    if let Some(refusal) = refuse_item(&item, armed) {
+                    if let Some(refusal) = refuse_item(&item, armed, k + 1 == *count) {
                         let reply = ack(from, refusal, item.mission_type, 0);
                         self.last = Some(LastUpload {
                             owner: from,
@@ -514,6 +541,15 @@ impl Missions {
                             return vec![ack(from, result::UNSUPPORTED, mission_type, 0)];
                         }
                         match self.list.get(usize::from(seq)) {
+                            Some(w) if usize::from(seq) + 1 == self.list.len() => {
+                                vec![(
+                                    from,
+                                    Out::ReturnItem {
+                                        seq,
+                                        z_bits: w.z_bits,
+                                    },
+                                )]
+                            }
                             Some(w) => vec![(
                                 from,
                                 Out::Item {
@@ -540,21 +576,27 @@ impl Missions {
     }
 }
 
-/// The checks of an item of the expected `seq`, in the contract's order: the result that refuses it, if any.
-fn refuse_item(item: &ItemIn, armed: bool) -> Option<u8> {
+/// The checks of an item of the expected `seq`, in the firmware's order: the result that refuses it, if any. `last`:
+/// it is item n - 1, which must be the return item (command 20, `x` = `y` = 0); command 20 is refused anywhere else.
+fn refuse_item(item: &ItemIn, armed: bool, last: bool) -> Option<u8> {
+    let z = f32::from_bits(item.z_bits);
     if item.mission_type != 0 {
         Some(result::UNSUPPORTED)
     } else if armed {
         Some(result::ERROR)
-    } else if item.command != MAV_CMD_NAV_WAYPOINT {
+    } else if last != (item.command == MAV_CMD_NAV_RETURN) {
+        Some(result::INVALID)
+    } else if !last && item.command != MAV_CMD_NAV_WAYPOINT {
         Some(result::UNSUPPORTED)
     } else if item.frame != FRAME_GLOBAL_RELATIVE_ALT && item.frame != FRAME_GLOBAL_RELATIVE_ALT_INT
     {
         Some(result::UNSUPPORTED_FRAME)
-    } else if !(-MAX_LAT..=MAX_LAT).contains(&item.x) {
+    } else if last && item.x != 0 || !last && !(-MAX_LAT..=MAX_LAT).contains(&item.x) {
         Some(result::INVALID_PARAM5_X)
-    } else if !(-MAX_LON..=MAX_LON).contains(&item.y) {
+    } else if last && item.y != 0 || !last && !(-MAX_LON..=MAX_LON).contains(&item.y) {
         Some(result::INVALID_PARAM6_Y)
+    } else if !(z.is_finite() && (ALT_MIN..=ALT_MAX).contains(&z)) {
+        Some(result::INVALID_PARAM7)
     } else {
         None
     }

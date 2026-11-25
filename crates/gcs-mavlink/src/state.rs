@@ -254,10 +254,13 @@ pub enum Command {
     },
     /// Abandon the running download and tell the vehicle to stop sending.
     CancelLogDownload,
-    /// Send this waypoint list to the vehicle and read it back (docs/link-contract.md section 17). An empty
-    /// list clears. The outcome shows in `VehicleState.missions`.
+    /// Send this waypoint list and the return height (metres above home) to the vehicle and read it back
+    /// (docs/link-contract.md section 17). The vehicle's list is the waypoints followed by one return item: there
+    /// is no upload without a return height. An empty `items` sends the return item alone. The outcome shows in
+    /// `VehicleState.missions`.
     UploadMission {
         items: Vec<MissionPoint>,
+        return_height: f32,
     },
     /// Read the vehicle's list. The outcome shows in `VehicleState.missions`.
     DownloadMission,

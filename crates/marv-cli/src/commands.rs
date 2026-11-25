@@ -120,7 +120,10 @@ fn run_command(
     echo: &mut Echo,
 ) -> Outcome {
     let upload = match &invocation.command {
-        Command::MissionUpload(path) => Some(read_waypoints(path)?),
+        Command::MissionUpload {
+            file,
+            return_height,
+        } => Some(upload_list(file, *return_height)?),
         _ => None,
     };
     if let Command::MissionDownload {
@@ -181,19 +184,20 @@ fn run_command(
             output,
             force,
         } => logs_get(session, *number, output.as_deref(), *force, out, echo),
-        Command::MissionUpload(_) => {
-            let points = upload.unwrap_or_default();
+        Command::MissionUpload { .. } => {
+            let (points, return_height) = upload.unwrap_or_default();
             let state = mission_run(
                 session,
                 SessionCommand::UploadMission {
                     items: points.clone(),
+                    return_height,
                 },
                 echo,
             )?;
             mission_verdict("upload", &state)?;
             writeln!(
                 out,
-                "verified\t{} waypoints\tplan id {:#010X}",
+                "verified\t{} waypoints\treturn height {return_height} m\tplan id {:#010X}",
                 points.len(),
                 state.vehicle.as_ref().map_or(0, |v| v.plan_id)
             )?;
@@ -224,6 +228,10 @@ fn run_command(
                     point.z
                 )?;
             }
+            let height = list
+                .return_height
+                .map_or("none".to_string(), |height| format!("{height} m"));
+            writeln!(out, "return height\t{height}")?;
             writeln!(
                 out,
                 "{} waypoints\tplan id {:#010X}",
@@ -231,7 +239,7 @@ fn run_command(
                 list.plan_id
             )?;
             if let Some(path) = file {
-                write_waypoints(path, &list.items, *force)?;
+                write_waypoints(path, &list.items, list.return_height, *force)?;
                 writeln!(out, "written\t{}", path.display())?;
             }
             Ok(())
@@ -294,16 +302,32 @@ fn flight_run(
     }
 }
 
-/// The waypoints of a `.waypoints` file, ready to send.
-fn read_waypoints(path: &Path) -> Result<Vec<MissionPoint>, Fail> {
+/// The waypoints and the return height of a `.waypoints` file, ready to send: the height of its last row (command
+/// 20), else `supplied` (`--return-height`); a file with neither is refused.
+fn upload_list(path: &Path, supplied: Option<f32>) -> Result<(Vec<MissionPoint>, f32), Fail> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| Fail::new(exit::FAILED, format!("cannot read {}: {e}", path.display())))?;
-    waypoints::parse(&text)
-        .map_err(|why| Fail::new(exit::FAILED, format!("{}: {why}", path.display())))
+    let (points, in_file) = waypoints::parse(&text)
+        .map_err(|why| Fail::new(exit::FAILED, format!("{}: {why}", path.display())))?;
+    match in_file.or(supplied) {
+        Some(height) => Ok((points, height)),
+        None => Err(Fail::new(
+            exit::FAILED,
+            format!(
+                "{} has no return row (a last row with command 20, its altitude the return height in m above home), and the vehicle refuses a list without a return item; add the row or give the height with --return-height <m>",
+                path.display()
+            ),
+        )),
+    }
 }
 
 /// Writes the list as a `.waypoints` file the map tab opens; an existing file only with `force`.
-fn write_waypoints(path: &Path, points: &[MissionPoint], force: bool) -> Outcome {
+fn write_waypoints(
+    path: &Path,
+    points: &[MissionPoint],
+    return_height: Option<f32>,
+    force: bool,
+) -> Outcome {
     let mut options = OpenOptions::new();
     options.write(true);
     if force {
@@ -317,7 +341,7 @@ fn write_waypoints(path: &Path, points: &[MissionPoint], force: bool) -> Outcome
             format!("cannot create {}: {e}", path.display()),
         )
     })?;
-    file.write_all(waypoints::to_wpl(points).as_bytes())
+    file.write_all(waypoints::to_wpl(points, return_height).as_bytes())
         .map_err(|e| {
             Fail::new(
                 exit::FAILED,

@@ -28,7 +28,12 @@ const READ: &str = "Read from vehicle";
 const CLEAR: &str = "Clear on vehicle";
 const COPY: &str = "Copy to a new list";
 const MATCHES: &str = "The vehicle's list matches the edited list";
-const VERIFIED_3: &str = "Upload verified: the vehicle holds 3 waypoints, plan id 0x99C3BD49";
+/// A list saved before the return height existed loads with the default altitude (30 m); the plan id is that of the
+/// three waypoints and the return item (x 0, y 0, z 30.0), CRC-32 computed independently (Python: zlib.crc32).
+const VERIFIED_3: &str =
+    "Upload verified: the vehicle holds 3 waypoints, return height 30 m, plan id 0xA2D9A9F6";
+const READ_3: &str =
+    "Read complete: the vehicle holds 3 waypoints, return height 30 m, plan id 0xA2D9A9F6";
 const LEGEND: &str = "Edited list: amber discs. Vehicle's list as last read: blue dashed rings.";
 
 fn example() -> Vec<Waypoint> {
@@ -242,7 +247,8 @@ fn cleanup(store: &Store) {
 
 fn store_with(tag: &str, name: &str, list: &[Waypoint]) -> Store {
     let store = temp_store(tag);
-    store.save(name, list).expect("save the list");
+    // No return height: the file of a list saved before there was one.
+    store.save(name, list, None).expect("save the list");
     store
 }
 
@@ -276,13 +282,10 @@ fn upload_read_edit_and_clear_of_the_contracts_example() {
     // Read: the same list, still matching; the edited list and its file are what they were.
     let file = window.file("mission");
     window.click(READ);
-    window.wait_for(
-        "Read complete: the vehicle holds 3 waypoints, plan id 0x99C3BD49",
-        20.0,
-    );
+    window.wait_for(READ_3, 20.0);
     window.harness.get_by_label(MATCHES);
     assert_eq!(window.file("mission"), file, "Read does not touch the file");
-    assert_eq!(store.load("mission").unwrap(), example());
+    assert_eq!(store.load("mission").unwrap(), (example(), None));
     window.harness.get_by_label_contains("3 points, ");
 
     // Edit one point (the altitude of the second): it differs, and the file follows the edit only.
@@ -292,7 +295,8 @@ fn upload_read_edit_and_clear_of_the_contracts_example() {
     window.harness.run();
     window.harness.key_press(egui::Key::Enter);
     window.harness.run();
-    let edited = store.load("mission").unwrap();
+    let (edited, height) = store.load("mission").unwrap();
+    assert_eq!(height, Some(30.0), "the edit saves the return height too");
     assert_eq!(edited.len(), 3);
     assert_eq!(edited[1].alt_m, 20.0, "{edited:?}");
     assert_eq!((edited[0], edited[2]), (example()[0], example()[2]));
@@ -304,12 +308,9 @@ fn upload_read_edit_and_clear_of_the_contracts_example() {
     // Read again: it changes neither the edited list nor its file, and it still differs.
     let file = window.file("mission");
     window.click(READ);
-    window.wait_for(
-        "Read complete: the vehicle holds 3 waypoints, plan id 0x99C3BD49",
-        20.0,
-    );
+    window.wait_for(READ_3, 20.0);
     assert_eq!(window.file("mission"), file);
-    assert_eq!(store.load("mission").unwrap(), edited);
+    assert_eq!(store.load("mission").unwrap(), (edited, height));
     window.harness.get_by_label(
         "The vehicle's list differs from the edited list: waypoint 2 is not the same",
     );
@@ -338,15 +339,12 @@ fn the_vehicles_list_becomes_a_list_of_its_own_only_when_asked() {
     window.wait_for(VERIFIED_3, 20.0);
     let original = window.file("mission");
     window.click(READ);
-    window.wait_for(
-        "Read complete: the vehicle holds 3 waypoints, plan id 0x99C3BD49",
-        20.0,
-    );
+    window.wait_for(READ_3, 20.0);
     assert_eq!(store.names().unwrap(), ["mission"], "Read made no list");
 
     window.click(COPY);
     assert_eq!(store.names().unwrap(), ["from vehicle", "mission"]);
-    assert_eq!(store.load("from vehicle").unwrap(), example());
+    assert_eq!(store.load("from vehicle").unwrap(), (example(), Some(30.0)));
     assert_eq!(window.file("mission"), original, "the edited list's file");
     window
         .harness
@@ -357,7 +355,7 @@ fn the_vehicles_list_becomes_a_list_of_its_own_only_when_asked() {
 }
 
 #[test]
-fn seventeen_points_are_sent_and_the_vehicle_refuses_with_no_space() {
+fn seventeen_points_are_refused_by_the_station_before_anything_is_sent() {
     let rig = Rig::start(SimConfig::default());
     // The vehicle holds the example first.
     let first = store_with("seventeen-a", "mission", &example());
@@ -380,19 +378,16 @@ fn seventeen_points_are_sent_and_the_vehicle_refuses_with_no_space() {
     );
     window.click_confirmed(UPLOAD);
     window.wait_for(
-        "Upload failed: refused by the vehicle, code 4 (MAV_MISSION_NO_SPACE): the vehicle holds at most 16 waypoints; the vehicle holds 3 waypoints, plan id 0x99C3BD49",
+        "Upload failed: more than 16 waypoints (the vehicle holds at most 16); nothing was sent",
         20.0,
     );
     assert!(window.sent()[0].starts_with("UploadMission"));
     assert!(!window.shows_containing("verified"));
-    window.harness.get_by_label(
-        "The vehicle's list differs from the edited list: the vehicle holds 3 waypoints, the edited list has 17 waypoints",
-    );
     // The vehicle's list is the example still.
     window.click(READ);
-    window.wait_for(
-        "Read complete: the vehicle holds 3 waypoints, plan id 0x99C3BD49",
-        20.0,
+    window.wait_for(READ_3, 20.0);
+    window.harness.get_by_label(
+        "The vehicle's list differs from the edited list: the vehicle holds 3 waypoints, the edited list has 17 waypoints",
     );
     drop(window);
     cleanup(&first);

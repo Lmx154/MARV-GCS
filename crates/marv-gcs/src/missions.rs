@@ -3,7 +3,9 @@
 //!
 //! Folder: `$XDG_DATA_HOME/marv-gcs/missions`, else `$HOME/.local/share/marv-gcs/missions` (`data_dir`).
 //! File: `<name>.waypoints`. Row 0 is a home placeholder; the waypoints are rows 1 to n, frame 3
-//! (`MAV_FRAME_GLOBAL_RELATIVE_ALT`), command 16 (`MAV_CMD_NAV_WAYPOINT`).
+//! (`MAV_FRAME_GLOBAL_RELATIVE_ALT`), command 16 (`MAV_CMD_NAV_WAYPOINT`). The last row, when there is one, is the
+//! return item: command 20 (`MAV_CMD_NAV_RETURN_TO_LAUNCH`), its altitude the return height. A file written before
+//! the return item existed has no such row: its return height is `None`.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -18,6 +20,7 @@ pub const NAME_MAX: usize = 64;
 
 const FRAME_GLOBAL_RELATIVE_ALT: u32 = 3;
 const CMD_NAV_WAYPOINT: u32 = 16;
+const CMD_NAV_RETURN: u32 = 20;
 
 /// A point to fly to.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -58,8 +61,8 @@ pub fn environment_dir() -> Option<PathBuf> {
     )
 }
 
-/// The text of a list in QGC WPL 110.
-pub fn to_wpl(waypoints: &[Waypoint]) -> String {
+/// The text of a list in QGC WPL 110: the waypoints, then the return item when there is a return height.
+pub fn to_wpl(waypoints: &[Waypoint], return_height: Option<f32>) -> String {
     let mut text = format!("{HEADER}\n");
     let (home_lat, home_lon) = waypoints.first().map_or((0.0, 0.0), |w| (w.lat, w.lon));
     let _ = writeln!(
@@ -76,12 +79,20 @@ pub fn to_wpl(waypoints: &[Waypoint]) -> String {
             w.alt_m
         );
     }
+    if let Some(height) = return_height {
+        let _ = writeln!(
+            text,
+            "{}\t0\t{FRAME_GLOBAL_RELATIVE_ALT}\t{CMD_NAV_RETURN}\t0\t0\t0\t0\t0\t0\t{height}\t1",
+            waypoints.len() + 1
+        );
+    }
     text
 }
 
-/// The waypoints of a QGC WPL 110 text: row 0 (home) is skipped; every other row must be a
-/// `MAV_CMD_NAV_WAYPOINT` in `MAV_FRAME_GLOBAL_RELATIVE_ALT` on the globe.
-pub fn parse_wpl(text: &str) -> Result<Vec<Waypoint>, String> {
+/// The waypoints and the return height of a QGC WPL 110 text: row 0 (home) is skipped; every other row must be a
+/// `MAV_CMD_NAV_WAYPOINT` in `MAV_FRAME_GLOBAL_RELATIVE_ALT` on the globe, except a last row of command 20, whose
+/// altitude is the return height (its latitude and longitude are not read). `None`: the text has no such row.
+pub fn parse_wpl(text: &str) -> Result<(Vec<Waypoint>, Option<f32>), String> {
     let mut lines = text.lines().enumerate();
     match lines.next() {
         Some((_, first)) if first.trim() == HEADER => {}
@@ -92,6 +103,7 @@ pub fn parse_wpl(text: &str) -> Result<Vec<Waypoint>, String> {
         }
     }
     let mut waypoints = Vec::new();
+    let mut return_height: Option<(usize, f32)> = None;
     for (index, line) in lines {
         if line.trim().is_empty() {
             continue;
@@ -115,9 +127,14 @@ pub fn parse_wpl(text: &str) -> Result<Vec<Waypoint>, String> {
         }
         let frame = int(2, "frame")?;
         let command = int(3, "command")?;
-        if command != CMD_NAV_WAYPOINT {
+        if let Some((at, _)) = return_height {
             return Err(format!(
-                "line {line_no}: command {command} is not supported (only {CMD_NAV_WAYPOINT}, NAV_WAYPOINT)"
+                "line {line_no}: the return row (command {CMD_NAV_RETURN}, line {at}) must be the last row"
+            ));
+        }
+        if command != CMD_NAV_WAYPOINT && command != CMD_NAV_RETURN {
+            return Err(format!(
+                "line {line_no}: command {command} is not supported (only {CMD_NAV_WAYPOINT}, NAV_WAYPOINT, and {CMD_NAV_RETURN}, the return height, last)"
             ));
         }
         if frame != FRAME_GLOBAL_RELATIVE_ALT {
@@ -130,6 +147,17 @@ pub fn parse_wpl(text: &str) -> Result<Vec<Waypoint>, String> {
                 .parse::<f64>()
                 .map_err(|_| format!("line {line_no}: {what} \"{}\" is not a number", fields[i]))
         };
+        if command == CMD_NAV_RETURN {
+            let height = float(10, "altitude")? as f32;
+            if !height.is_finite() {
+                return Err(format!(
+                    "line {line_no}: the return height \"{}\" is not finite",
+                    fields[10]
+                ));
+            }
+            return_height = Some((line_no, height));
+            continue;
+        }
         let waypoint = Waypoint {
             lat: float(8, "latitude")?,
             lon: float(9, "longitude")?,
@@ -143,7 +171,7 @@ pub fn parse_wpl(text: &str) -> Result<Vec<Waypoint>, String> {
         }
         waypoints.push(waypoint);
     }
-    Ok(waypoints)
+    Ok((waypoints, return_height.map(|(_, height)| height)))
 }
 
 /// Why a name cannot be a list's name, or `None` when it can.
@@ -220,7 +248,8 @@ impl Store {
         Ok(names)
     }
 
-    pub fn load(&self, name: &str) -> Result<Vec<Waypoint>, String> {
+    /// The waypoints of a list and its return height (`None` for a list saved without one).
+    pub fn load(&self, name: &str) -> Result<(Vec<Waypoint>, Option<f32>), String> {
         let path = self.path(name)?;
         let text = fs::read_to_string(&path)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
@@ -228,12 +257,17 @@ impl Store {
     }
 
     /// Writes a temporary file beside the list, then renames it over the list.
-    pub fn save(&self, name: &str, waypoints: &[Waypoint]) -> Result<(), String> {
+    pub fn save(
+        &self,
+        name: &str,
+        waypoints: &[Waypoint],
+        return_height: Option<f32>,
+    ) -> Result<(), String> {
         let path = self.path(name)?;
         fs::create_dir_all(&self.dir)
             .map_err(|e| format!("cannot create {}: {e}", self.dir.display()))?;
         let temporary = self.dir.join(format!(".{name}.{EXTENSION}.tmp"));
-        fs::write(&temporary, to_wpl(waypoints))
+        fs::write(&temporary, to_wpl(waypoints, return_height))
             .map_err(|e| format!("cannot write {}: {e}", temporary.display()))?;
         fs::rename(&temporary, &path).map_err(|e| {
             let _ = fs::remove_file(&temporary);
@@ -247,7 +281,7 @@ impl Store {
         if self.exists(name) {
             return Err(format!("a list named \"{name}\" already exists"));
         }
-        self.save(name, &[])
+        self.save(name, &[], None)
     }
 
     pub fn rename(&self, from: &str, to: &str) -> Result<(), String> {
@@ -264,12 +298,12 @@ impl Store {
 
     /// Copies `from` under `to`; an error when `to` is taken.
     pub fn duplicate(&self, from: &str, to: &str) -> Result<(), String> {
-        let waypoints = self.load(from)?;
+        let (waypoints, return_height) = self.load(from)?;
         if self.exists(to) {
             return Err(format!("a list named \"{to}\" already exists"));
         }
         self.path(to)?;
-        self.save(to, &waypoints)
+        self.save(to, &waypoints, return_height)
     }
 
     pub fn delete(&self, name: &str) -> Result<(), String> {
@@ -354,7 +388,7 @@ mod tests {
             wp(45.123_456_78, 9.000_000_01, 30.0),
             wp(-33.5, -70.25, 12.5),
         ];
-        let text = to_wpl(&list);
+        let text = to_wpl(&list, None);
         assert!(text.starts_with("QGC WPL 110\n"));
         let rows: Vec<&str> = text.lines().collect();
         assert_eq!(rows.len(), 4);
@@ -366,18 +400,52 @@ mod tests {
             rows[2],
             "1\t0\t3\t16\t0\t0\t0\t0\t45.12345678\t9.00000001\t30\t1"
         );
-        assert_eq!(parse_wpl(&text).unwrap(), list);
-        assert_eq!(parse_wpl(&to_wpl(&[])).unwrap(), vec![]);
+        assert_eq!(parse_wpl(&text).unwrap(), (list, None));
+        assert_eq!(parse_wpl(&to_wpl(&[], None)).unwrap(), (vec![], None));
         assert_eq!(
-            to_wpl(&[]).lines().nth(1).unwrap(),
+            to_wpl(&[], None).lines().nth(1).unwrap(),
             "0\t1\t0\t16\t0\t0\t0\t0\t0.00000000\t0.00000000\t0\t1"
+        );
+    }
+
+    #[test]
+    fn the_return_height_is_the_last_row_with_command_20_and_round_trips() {
+        let list = vec![wp(45.0, 9.0, 30.0), wp(-33.5, -70.25, 12.5)];
+        let text = to_wpl(&list, Some(25.5));
+        let rows: Vec<&str> = text.lines().collect();
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[4], "3\t0\t3\t20\t0\t0\t0\t0\t0\t0\t25.5\t1");
+        assert_eq!(parse_wpl(&text).unwrap(), (list, Some(25.5)));
+        // A return height with no waypoint at all.
+        let text = to_wpl(&[], Some(7.0));
+        assert_eq!(
+            text.lines().nth(2),
+            Some("1\t0\t3\t20\t0\t0\t0\t0\t0\t0\t7\t1")
+        );
+        assert_eq!(parse_wpl(&text).unwrap(), (vec![], Some(7.0)));
+    }
+
+    #[test]
+    fn a_return_row_that_is_not_last_or_not_finite_is_an_error() {
+        let head = "QGC WPL 110\n";
+        let ret = "1\t0\t3\t20\t0\t0\t0\t0\t0\t0\t20\t1\n";
+        let wp = "2\t0\t3\t16\t0\t0\t0\t0\t1\t2\t10\t1\n";
+        assert!(
+            parse_wpl(&format!("{head}{ret}{wp}"))
+                .unwrap_err()
+                .contains("must be the last row")
+        );
+        assert!(
+            parse_wpl(&format!("{head}1\t0\t3\t20\t0\t0\t0\t0\t0\t0\tNaN\t1\n"))
+                .unwrap_err()
+                .contains("not finite")
         );
     }
 
     #[test]
     fn the_home_row_is_skipped_whatever_it_holds() {
         let text = "QGC WPL 110\n0\t1\t0\t16\t0\t0\t0\t0\t10\t20\t500\t1\n1\t0\t3\t16\t0\t0\t0\t0\t1\t2\t3\t1\n";
-        assert_eq!(parse_wpl(text).unwrap(), vec![wp(1.0, 2.0, 3.0)]);
+        assert_eq!(parse_wpl(text).unwrap(), (vec![wp(1.0, 2.0, 3.0)], None));
     }
 
     #[test]
@@ -451,7 +519,7 @@ mod tests {
         }
         let store = temp_store("names");
         assert!(store.create("../x").is_err());
-        assert!(store.save("a/b", &[]).is_err());
+        assert!(store.save("a/b", &[], None).is_err());
         assert!(store.load(".x").is_err());
     }
 
@@ -468,18 +536,18 @@ mod tests {
                 .contains("already exists")
         );
         assert_eq!(store.names().unwrap(), ["alpha", "beta"]);
-        assert_eq!(store.load("alpha").unwrap(), vec![]);
+        assert_eq!(store.load("alpha").unwrap(), (vec![], None));
 
         let list = vec![wp(1.0, 2.0, 3.0), wp(4.0, 5.0, 6.0)];
-        store.save("alpha", &list).unwrap();
-        assert_eq!(store.load("alpha").unwrap(), list);
+        store.save("alpha", &list, Some(22.0)).unwrap();
+        assert_eq!(store.load("alpha").unwrap(), (list.clone(), Some(22.0)));
         assert!(
             !store.dir().join(".alpha.waypoints.tmp").exists(),
             "no temporary file is left"
         );
 
         store.duplicate("alpha", "gamma").unwrap();
-        assert_eq!(store.load("gamma").unwrap(), list);
+        assert_eq!(store.load("gamma").unwrap(), (list.clone(), Some(22.0)));
         assert!(store.duplicate("alpha", "beta").is_err());
         assert!(store.duplicate("missing", "delta").is_err());
 
@@ -492,7 +560,7 @@ mod tests {
                 .contains("already exists")
         );
         assert!(store.rename("nope", "x").is_err());
-        assert_eq!(store.load("omega").unwrap(), list);
+        assert_eq!(store.load("omega").unwrap(), (list, Some(22.0)));
 
         store.delete("omega").unwrap();
         assert!(store.delete("omega").is_err());

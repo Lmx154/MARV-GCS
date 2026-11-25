@@ -345,7 +345,7 @@ pub fn run(command: &SurveyCommand, out: &mut dyn Write, err: &mut dyn Write) ->
     } else {
         options.create_new(true);
     }
-    let text = waypoints::to_wpl(&points.iter().map(|p| p.0).collect::<Vec<_>>());
+    let text = waypoints::to_wpl(&points.iter().map(|p| p.0).collect::<Vec<_>>(), None);
     let written = options
         .open(&path)
         .map_err(|e| {

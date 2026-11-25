@@ -879,6 +879,9 @@ struct WaypointEditor {
     status: Option<(String, bool)>,
     add_on_click: bool,
     default_alt: f32,
+    /// The return height of the edited list, m above home: the vehicle's last mission item. Saved with the list; a
+    /// list saved without one takes the value of `default_alt` when it is loaded.
+    return_height: f32,
     panel_open: bool,
     lat_text: String,
     lon_text: String,
@@ -901,6 +904,7 @@ impl WaypointEditor {
             status: None,
             add_on_click: true,
             default_alt: DEFAULT_ALT_M,
+            return_height: DEFAULT_ALT_M,
             panel_open: true,
             lat_text: String::new(),
             lon_text: String::new(),
@@ -943,8 +947,9 @@ impl WaypointEditor {
         self.selected = None;
         self.mode = Mode::Idle;
         match store.load(name) {
-            Ok(list) => {
+            Ok((list, return_height)) => {
                 self.list = list;
+                self.return_height = return_height.unwrap_or(self.default_alt);
                 self.current = Some(name.to_string());
                 self.status = None;
             }
@@ -966,7 +971,7 @@ impl WaypointEditor {
             .current
             .get_or_insert_with(|| store.unique_name(NEW_LIST_NAME))
             .clone();
-        match store.save(&name, &self.list) {
+        match store.save(&name, &self.list, Some(self.return_height)) {
             Ok(()) => {
                 self.refresh_names();
                 self.ok("saved");
@@ -1075,6 +1080,15 @@ impl WaypointEditor {
             ui.add(egui::DragValue::new(&mut self.default_alt).range(ALT_RANGE))
                 .labelled_by(label.id);
         });
+        ui.horizontal(|ui| {
+            let label = ui.label("Return height (m)");
+            let height = ui
+                .add(egui::DragValue::new(&mut self.return_height).range(ALT_RANGE))
+                .labelled_by(label.id);
+            if height.changed() {
+                self.commit();
+            }
+        });
         ui.add_space(2.0);
         self.add_by_coordinates(ui);
         ui.separator();
@@ -1107,10 +1121,15 @@ impl WaypointEditor {
             }
         });
         ui.separator();
-        if self.controls.ui(ui, cx, &self.list, self.selected)
+        if self
+            .controls
+            .ui(ui, cx, &self.list, self.return_height, self.selected)
             && let Some(vehicle) = &cx.state.missions.vehicle
         {
-            self.copy_vehicle_list(&mission::waypoints_of(&vehicle.items));
+            self.copy_vehicle_list(
+                &mission::waypoints_of(&vehicle.items),
+                vehicle.return_height,
+            );
         }
         ui.separator();
         self.table(ui);
@@ -1118,7 +1137,7 @@ impl WaypointEditor {
 
     /// The vehicle's list as a new list of its own, which becomes the current one. The only way a list read
     /// from the vehicle reaches a file, and only when asked for.
-    fn copy_vehicle_list(&mut self, vehicle: &[Waypoint]) {
+    fn copy_vehicle_list(&mut self, vehicle: &[Waypoint], return_height: Option<f32>) {
         let Some(store) = self.store.clone() else {
             self.fail("no data folder: lists cannot be kept");
             return;
@@ -1131,7 +1150,7 @@ impl WaypointEditor {
             return;
         }
         let name = store.unique_name(VEHICLE_LIST_NAME);
-        match store.save(&name, vehicle) {
+        match store.save(&name, vehicle, return_height) {
             Ok(()) => {
                 self.refresh_names();
                 self.select(&name);
@@ -2053,7 +2072,10 @@ mod tests {
         view.waypoints.add(w(1.0));
         view.waypoints.add(w(2.0));
         assert_eq!(view.waypoints.current.as_deref(), Some("mission"));
-        assert_eq!(store.load("mission").unwrap(), vec![w(1.0), w(2.0)]);
+        assert_eq!(
+            store.load("mission").unwrap(),
+            (vec![w(1.0), w(2.0)], Some(DEFAULT_ALT_M))
+        );
         assert_eq!(view.waypoints.status, Some(("saved".to_string(), false)));
         view.session_changed();
         assert_eq!(
@@ -2062,7 +2084,10 @@ mod tests {
             "a new session keeps the waypoints"
         );
         view.waypoints.remove(0);
-        assert_eq!(store.load("mission").unwrap(), vec![w(2.0)]);
+        assert_eq!(
+            store.load("mission").unwrap(),
+            (vec![w(2.0)], Some(DEFAULT_ALT_M))
+        );
 
         assert!(view.waypoints.perform(ListAction::New("second".into())));
         assert!(view.waypoints.list.is_empty());
@@ -2077,7 +2102,10 @@ mod tests {
         assert_eq!(view.waypoints.current.as_deref(), Some("third copy"));
         assert_eq!(view.waypoints.list, vec![w(3.0)]);
         assert!(view.waypoints.perform(ListAction::Clear));
-        assert_eq!(store.load("third copy").unwrap(), vec![]);
+        assert_eq!(
+            store.load("third copy").unwrap(),
+            (vec![], Some(DEFAULT_ALT_M))
+        );
         assert!(view.waypoints.perform(ListAction::Delete));
         assert_eq!(store.names().unwrap(), ["mission", "third"]);
         assert_eq!(view.waypoints.current.as_deref(), Some("mission"));
@@ -2167,7 +2195,36 @@ mod tests {
         click(&mut harness, first, egui::PointerButton::Secondary);
         harness.get_by_label("1 points, 0 m");
         drop(harness);
-        assert_eq!(store.load("mission").unwrap().len(), 1);
+        assert_eq!(store.load("mission").unwrap().0.len(), 1);
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn the_return_height_is_saved_with_the_list_and_an_old_list_takes_the_default_altitude() {
+        let store = temp_store("return-height");
+        let w = Waypoint {
+            lat: 1.0,
+            lon: 2.0,
+            alt_m: 10.0,
+        };
+        // A list saved before there was a return height: no return row.
+        store.save("old", &[w], None).unwrap();
+        store.save("new", &[w], Some(41.5)).unwrap();
+        let mut view = MapView::with_store(false, Some(store.clone()));
+        view.waypoints.default_alt = 22.0;
+        view.waypoints.select("old");
+        assert_eq!(view.waypoints.return_height, 22.0, "the default altitude");
+        view.waypoints.select("new");
+        assert_eq!(view.waypoints.return_height, 41.5, "the saved one");
+        // Changing it saves it with the list; the old file only changes when the list is changed.
+        view.waypoints.return_height = 35.0;
+        view.waypoints.commit();
+        assert_eq!(store.load("new").unwrap(), (vec![w], Some(35.0)));
+        assert_eq!(store.load("old").unwrap(), (vec![w], None));
+        // A new session finds it.
+        let again = MapView::with_store(false, Some(store.clone()));
+        assert_eq!(again.waypoints.current.as_deref(), Some("new"));
+        assert_eq!(again.waypoints.return_height, 35.0);
         let _ = std::fs::remove_dir_all(store.dir());
     }
 }

@@ -24,7 +24,13 @@ fn example() -> Vec<MissionPoint> {
     ]
 }
 
-const EXAMPLE_ID: u32 = 0x99C3_BD49;
+/// The return height of the examples, m.
+const RET_Z: f32 = 20.0;
+
+/// The plan id of the items P0, P1, P2 and the return item (x 0, y 0, z 20.0): the CRC-32 of their 48 bytes by the
+/// firmware's rule (each item's x, y, z little-endian), computed independently with Python's zlib.crc32. (The three
+/// waypoints alone, before Amendment A5, gave 0x99C3BD49.)
+const EXAMPLE_ID: u32 = 0x1862_F4A2;
 
 /// What the vehicle sends to the station: target 255, 190.
 fn v_request(seq: u16) -> Message {
@@ -80,6 +86,29 @@ fn v_item(seq: u16, point: MissionPoint) -> Message {
     v_item_with(seq, point, MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT)
 }
 
+/// The return item as the vehicle's download sends it: command 20, frame 3, x = y = 0.
+fn v_ret_with(seq: u16, z: f32, frame: MavFrame) -> Message {
+    let Message::MISSION_ITEM_INT(item) = v_item_with(
+        seq,
+        MissionPoint {
+            lat_e7: 0,
+            lon_e7: 0,
+            z,
+        },
+        frame,
+    ) else {
+        unreachable!()
+    };
+    Message::MISSION_ITEM_INT(MISSION_ITEM_INT_DATA {
+        command: MavCmd::MAV_CMD_NAV_RETURN_TO_LAUNCH,
+        ..item
+    })
+}
+
+fn v_ret(seq: u16) -> Message {
+    v_ret_with(seq, RET_Z, MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT)
+}
+
 /// What the station sends to the vehicle: target 1, 1; every field written out.
 fn s_count(count: u16) -> Message {
     Message::MISSION_COUNT(MISSION_COUNT_DATA {
@@ -108,6 +137,24 @@ fn s_item(seq: u16, point: MissionPoint) -> Message {
         current: 0,
         autocontinue: 1,
         mission_type: MavMissionType::MAV_MISSION_TYPE_MISSION,
+    })
+}
+
+/// The return item the station sends for the height `RET_Z`.
+fn s_ret(seq: u16) -> Message {
+    let Message::MISSION_ITEM_INT(item) = s_item(
+        seq,
+        MissionPoint {
+            lat_e7: 0,
+            lon_e7: 0,
+            z: RET_Z,
+        },
+    ) else {
+        unreachable!()
+    };
+    Message::MISSION_ITEM_INT(MISSION_ITEM_INT_DATA {
+        command: MavCmd::MAV_CMD_NAV_RETURN_TO_LAUNCH,
+        ..item
     })
 }
 
@@ -205,10 +252,16 @@ impl Rig {
         self.call(now_ms, |s, cx| s.on_command(&command, cx));
     }
 
+    /// An upload of `items` with the return height `RET_Z`.
     fn upload(&mut self, items: &[MissionPoint], now_ms: u64) {
+        self.upload_with(items, RET_Z, now_ms);
+    }
+
+    fn upload_with(&mut self, items: &[MissionPoint], return_height: f32, now_ms: u64) {
         self.command(
             Command::UploadMission {
                 items: items.to_vec(),
+                return_height,
             },
             now_ms,
         );
@@ -310,12 +363,15 @@ impl Rig {
     }
 }
 
-/// A vehicle written from the contract's rules for one owner, without timers and without a reply slot.
+/// A vehicle written from the contract's rules for one owner, without timers and without a reply slot. It holds
+/// the waypoints and the return height; its list is the waypoints followed by the return item (command 20).
 #[derive(Default)]
 struct Vehicle {
     list: Vec<MissionPoint>,
+    /// `z` of the return item; `None`: the vehicle holds nothing.
+    ret: Option<f32>,
     armed: bool,
-    /// An upload running: the count and the items staged.
+    /// An upload running: the count and the items staged (the return item as a point with x = y = 0).
     staging: Option<(u16, Vec<MissionPoint>)>,
     downloading: bool,
     /// The item of this `seq` is sent with `z` changed, in a download.
@@ -326,15 +382,37 @@ struct Vehicle {
     short_by_one: bool,
     /// The item of this `seq` is sent with frame 6, in a download.
     odd_frame: Option<u16>,
+    /// The most items a MISSION_COUNT may announce (17 when `None`).
+    max_count: Option<u16>,
+    /// A download sends its last item as a waypoint, not as the return item.
+    no_return_item: bool,
 }
 
 #[allow(deprecated)] // the frame 6 of the contract is `MAV_FRAME_GLOBAL_RELATIVE_ALT_INT`
 impl Vehicle {
+    /// A vehicle that holds `list` and the return height `RET_Z`.
     fn holding(list: Vec<MissionPoint>) -> Self {
         Self {
             list,
+            ret: Some(RET_Z),
             ..Self::default()
         }
+    }
+
+    fn items(&self) -> Vec<MissionPoint> {
+        let mut items = self.list.clone();
+        if let Some(z) = self.ret {
+            items.push(MissionPoint {
+                lat_e7: 0,
+                lon_e7: 0,
+                z,
+            });
+        }
+        items
+    }
+
+    fn plan(&self) -> u32 {
+        self.ret.map_or(0, |z| plan_id(&self.list, z))
     }
 
     fn handle(&mut self, message: &Message) -> Vec<Message> {
@@ -345,11 +423,12 @@ impl Vehicle {
                 if self.armed {
                     return vec![v_ack(R::MAV_MISSION_ERROR, 0)];
                 }
-                if m.count > 16 {
+                if m.count > self.max_count.unwrap_or(17) {
                     return vec![v_ack(R::MAV_MISSION_NO_SPACE, 0)];
                 }
                 if m.count == 0 {
                     self.list.clear();
+                    self.ret = None;
                     return vec![v_ack(R::MAV_MISSION_ACCEPTED, 0)];
                 }
                 self.staging = Some((m.count, Vec::new()));
@@ -362,17 +441,15 @@ impl Vehicle {
                     return vec![v_ack(R::MAV_MISSION_ERROR, 0)];
                 }
                 self.list.clear();
+                self.ret = None;
                 vec![v_ack(R::MAV_MISSION_ACCEPTED, 0)]
             }
             Message::MISSION_REQUEST_LIST(_) => {
                 self.staging = None;
                 self.downloading = true;
-                let held = u16::try_from(self.list.len()).unwrap();
+                let held = u16::try_from(self.items().len()).unwrap();
                 let count = held - u16::from(self.short_by_one && held > 0);
-                vec![v_count(
-                    count,
-                    self.lie_plan.unwrap_or_else(|| plan_id(&self.list)),
-                )]
+                vec![v_count(count, self.lie_plan.unwrap_or_else(|| self.plan()))]
             }
             Message::MISSION_ITEM_INT(m) => {
                 let Some((count, items)) = self.staging.as_mut() else {
@@ -382,17 +459,23 @@ impl Vehicle {
                 if m.seq != expected {
                     return vec![v_request(expected)];
                 }
+                let last = m.seq + 1 == *count;
                 let refusal = if self.armed {
                     Some(R::MAV_MISSION_ERROR)
-                } else if m.command != MavCmd::MAV_CMD_NAV_WAYPOINT {
+                } else if last != (m.command == MavCmd::MAV_CMD_NAV_RETURN_TO_LAUNCH) {
+                    Some(R::MAV_MISSION_INVALID)
+                } else if !last && m.command != MavCmd::MAV_CMD_NAV_WAYPOINT {
                     Some(R::MAV_MISSION_UNSUPPORTED)
                 } else if m.frame != MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT
                     && m.frame != MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
                 {
                     Some(R::MAV_MISSION_UNSUPPORTED_FRAME)
-                } else if !(-900_000_000..=900_000_000).contains(&m.x) {
+                } else if last && m.x != 0 || !last && !(-900_000_000..=900_000_000).contains(&m.x)
+                {
                     Some(R::MAV_MISSION_INVALID_PARAM5_X)
-                } else if !(-1_800_000_000..=1_800_000_000).contains(&m.y) {
+                } else if last && m.y != 0
+                    || !last && !(-1_800_000_000..=1_800_000_000).contains(&m.y)
+                {
                     Some(R::MAV_MISSION_INVALID_PARAM6_Y)
                 } else {
                     None
@@ -406,20 +489,27 @@ impl Vehicle {
                     lon_e7: m.y,
                     z: m.z,
                 });
-                if m.seq + 1 == *count {
-                    self.list = std::mem::take(items);
+                if last {
+                    let mut all = std::mem::take(items);
+                    self.ret = all.pop().map(|point| point.z);
+                    self.list = all;
                     self.staging = None;
-                    vec![v_ack(R::MAV_MISSION_ACCEPTED, plan_id(&self.list))]
+                    vec![v_ack(R::MAV_MISSION_ACCEPTED, self.plan())]
                 } else {
                     vec![v_request(m.seq + 1)]
                 }
             }
             Message::MISSION_REQUEST_INT(m) => {
                 let at = usize::from(m.seq);
-                if !self.downloading || at >= self.list.len() {
+                let mut items = self.items();
+                // `short_by_one`: one waypoint fewer, the return item still last.
+                if self.short_by_one && items.len() > 1 {
+                    items.remove(0);
+                }
+                if !self.downloading || at >= items.len() {
                     return vec![v_ack(R::MAV_MISSION_INVALID_SEQUENCE, 0)];
                 }
-                let mut point = self.list[at];
+                let mut point = items[at];
                 if self.tamper == Some(m.seq) {
                     point.z += 1.0;
                 }
@@ -428,7 +518,11 @@ impl Vehicle {
                 } else {
                     MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT
                 };
-                vec![v_item_with(m.seq, point, frame)]
+                if at + 1 == items.len() && !self.no_return_item {
+                    vec![v_ret_with(m.seq, point.z, frame)]
+                } else {
+                    vec![v_item_with(m.seq, point, frame)]
+                }
             }
             Message::MISSION_ACK(_) => {
                 self.staging = None;
@@ -449,46 +543,57 @@ fn the_crc_check_value_is_the_ieee_one() {
 
 #[test]
 fn the_test_vector_of_the_contract_gives_the_plan_id_of_example_1() {
-    assert_eq!(plan_id(&example()), 0x99C3_BD49);
-    assert_eq!(plan_id(&example()), 2_579_742_025);
+    // The three waypoints and the return item (z 20.0): the CRC-32 over their 48 bytes by the firmware's rule,
+    // computed independently (Python: zlib.crc32 of the bytes below) as 0x1862F4A2.
+    assert_eq!(plan_id(&example(), RET_Z), 0x1862_F4A2);
+    assert_eq!(plan_id(&example(), RET_Z), 409_138_338);
+    assert_eq!(plan_id(&example(), RET_Z), EXAMPLE_ID);
 }
 
 #[test]
-fn the_36_bytes_of_the_test_vector_are_x_y_z_little_endian_per_waypoint() {
+fn the_48_bytes_of_the_test_vector_are_x_y_z_little_endian_per_item_the_return_item_last() {
     let mut bytes = Vec::new();
     for point in example() {
         bytes.extend_from_slice(&point.lat_e7.to_le_bytes());
         bytes.extend_from_slice(&point.lon_e7.to_le_bytes());
         bytes.extend_from_slice(&point.z.to_bits().to_le_bytes());
     }
-    let contract: [u8; 36] = [
+    bytes.extend_from_slice(&[0; 8]);
+    bytes.extend_from_slice(&RET_Z.to_bits().to_le_bytes());
+    let contract: [u8; 48] = [
         0x00, 0xE1, 0xF5, 0x05, 0x00, 0x5D, 0x1E, 0xEE, 0x00, 0x00, 0x20, 0x41, //
         0x10, 0x08, 0xF6, 0x05, 0x00, 0x5D, 0x1E, 0xEE, 0x00, 0x00, 0x48, 0x41, //
-        0x10, 0x08, 0xF6, 0x05, 0x10, 0x84, 0x1E, 0xEE, 0x00, 0x00, 0x70, 0x41,
+        0x10, 0x08, 0xF6, 0x05, 0x10, 0x84, 0x1E, 0xEE, 0x00, 0x00, 0x70, 0x41, //
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xA0, 0x41,
     ];
     assert_eq!(bytes, contract);
-    assert_eq!(crc32(&bytes), 0x99C3_BD49);
+    assert_eq!(crc32(&bytes), 0x1862_F4A2);
 }
 
 #[test]
-fn the_empty_list_has_plan_id_0() {
-    assert_eq!(plan_id(&[]), 0x0000_0000);
+fn the_return_item_alone_has_a_plan_id_and_it_is_not_0() {
+    // 12 bytes: x 0, y 0, z 20.0 (0x41A00000); CRC-32 computed independently (zlib.crc32) as 0xD4090B80.
+    assert_eq!(plan_id(&[], RET_Z), 0xD409_0B80);
 }
 
 #[test]
-fn a_non_empty_list_whose_crc_is_0_has_plan_id_1() {
-    // z is chosen (its 4 bytes are free) so that the CRC of the 12 bytes is 0.
+fn a_list_whose_crc_is_0_has_plan_id_1() {
+    // The return height is chosen (its 4 bytes are free) so that the CRC of the 24 bytes of one waypoint and the
+    // return item is 0 (the bytes were found with the CRC's linear structure, checked here).
     let point = MissionPoint {
         lat_e7: 100_000_000,
         lon_e7: -300_000_000,
-        z: f32::from_bits(0xD704_32CE),
+        z: 10.0,
     };
+    let height = f32::from_bits(0x3E51_B439);
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&point.lat_e7.to_le_bytes());
     bytes.extend_from_slice(&point.lon_e7.to_le_bytes());
     bytes.extend_from_slice(&point.z.to_bits().to_le_bytes());
+    bytes.extend_from_slice(&[0; 8]);
+    bytes.extend_from_slice(&height.to_bits().to_le_bytes());
     assert_eq!(crc32(&bytes), 0);
-    assert_eq!(plan_id(&[point]), 1);
+    assert_eq!(plan_id(&[point], height), 1);
 }
 
 #[test]
@@ -539,13 +644,13 @@ fn degrees_that_are_not_a_number_or_do_not_fit_an_i32_give_nothing() {
 // ---- worked examples
 
 #[test]
-fn worked_example_1_three_points_one_item_lost_then_the_read_back() {
+fn worked_example_1_three_points_and_the_return_item_one_item_lost_then_the_read_back() {
     let mut rig = Rig::new();
     let points = example();
 
-    // 1. t 0: MISSION_COUNT 3
+    // 1. t 0: MISSION_COUNT 4: three waypoints and the return item
     rig.upload(&points, 0);
-    assert_eq!(rig.sent(), vec![s_count(3)]);
+    assert_eq!(rig.sent(), vec![s_count(4)]);
     assert_eq!(rig.status(), MissionStatus::Uploading { sent: 0, total: 3 });
 
     // 2, 3. t 40: REQUEST_INT 0; the station answers with item 0
@@ -554,7 +659,7 @@ fn worked_example_1_three_points_one_item_lost_then_the_read_back() {
     rig.deliver(v_request(1), 80);
     assert_eq!(
         rig.sent(),
-        vec![s_count(3), s_item(0, points[0]), s_item(1, points[1])]
+        vec![s_count(4), s_item(0, points[0]), s_item(1, points[1])]
     );
     // The wire values of the table: x 100000000, y -300000000, z 10.0 / 12.5.
     let Message::MISSION_ITEM_INT(item) = &rig.sent()[1] else {
@@ -573,7 +678,7 @@ fn worked_example_1_three_points_one_item_lost_then_the_read_back() {
     // 6, 7. t 1560: REQUEST_INT 1 again; the same item 1
     rig.deliver(v_request(1), 1560);
     assert_eq!(rig.sent()[3], s_item(1, points[1]));
-    // 8, 9. t 1600: REQUEST_INT 2; item 2, the last
+    // 8, 9. t 1600: REQUEST_INT 2; item 2, the last waypoint
     rig.deliver(v_request(2), 1600);
     assert_eq!(rig.sent()[4], s_item(2, points[2]));
     let Message::MISSION_ITEM_INT(item) = &rig.sent()[4] else {
@@ -581,12 +686,34 @@ fn worked_example_1_three_points_one_item_lost_then_the_read_back() {
     };
     assert_eq!((item.x, item.y, item.z), (100_010_000, -299_990_000, 15.0));
     assert_eq!(rig.status(), MissionStatus::Uploading { sent: 3, total: 3 });
+    // 10, 11. t 1620: REQUEST_INT 3; the return item, the last: command 20, frame 3, x 0, y 0, z 20.0
+    rig.deliver(v_request(3), 1620);
+    assert_eq!(rig.sent()[5], s_ret(3));
+    let Message::MISSION_ITEM_INT(item) = &rig.sent()[5] else {
+        panic!()
+    };
+    assert_eq!(
+        (item.command, item.frame, item.x, item.y, item.z, item.seq),
+        (
+            MavCmd::MAV_CMD_NAV_RETURN_TO_LAUNCH,
+            MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT,
+            0,
+            0,
+            20.0,
+            3
+        )
+    );
+    assert_eq!(
+        (item.param1, item.param2, item.param3, item.param4),
+        (0.0, 0.0, 0.0, 0.0)
+    );
+    assert_eq!((item.current, item.autocontinue), (0, 1));
 
-    // 10, 11. t 1640: MISSION_ACK ACCEPTED, opaque_id 2579742025: the upload ends accepted; the
+    // 12, 13. t 1640: MISSION_ACK ACCEPTED, opaque_id 409138338: the upload ends accepted; the
     // station asks for the list at once.
-    rig.deliver(v_ack(R::MAV_MISSION_ACCEPTED, 2_579_742_025), 1640);
-    assert_eq!(rig.sent()[5], s_list());
-    assert_eq!(rig.log[5].0, 1640);
+    rig.deliver(v_ack(R::MAV_MISSION_ACCEPTED, 409_138_338), 1640);
+    assert_eq!(rig.sent()[6], s_list());
+    assert_eq!(rig.log[6].0, 1640);
     assert_eq!(
         rig.status(),
         MissionStatus::ReadingBack {
@@ -595,30 +722,33 @@ fn worked_example_1_three_points_one_item_lost_then_the_read_back() {
         }
     );
 
-    // 12, 13. t 1680: MISSION_COUNT 3 with the plan id; one request and one item per slot
-    rig.deliver(v_count(3, 2_579_742_025), 1680);
-    assert_eq!(rig.sent()[6], s_request(0));
+    // 14, 15. t 1680: MISSION_COUNT 4 with the plan id; one request and one item per slot
+    rig.deliver(v_count(4, 409_138_338), 1680);
+    assert_eq!(rig.sent()[7], s_request(0));
     rig.deliver(v_item(0, points[0]), 1720);
-    assert_eq!(rig.sent()[7], s_request(1));
+    assert_eq!(rig.sent()[8], s_request(1));
     rig.deliver(v_item(1, points[1]), 1760);
-    assert_eq!(rig.sent()[8], s_request(2));
+    assert_eq!(rig.sent()[9], s_request(2));
     rig.deliver(v_item(2, points[2]), 1800);
+    assert_eq!(rig.sent()[10], s_request(3));
+    rig.deliver(v_ret(3), 1840);
 
-    // 14. MISSION_ACK ACCEPTED, opaque_id 0. Verdict: done.
-    assert_eq!(rig.sent()[9], s_ack(R::MAV_MISSION_ACCEPTED));
-    assert_eq!(rig.log.len(), 10);
+    // 16. MISSION_ACK ACCEPTED, opaque_id 0. Verdict: done.
+    assert_eq!(rig.sent()[11], s_ack(R::MAV_MISSION_ACCEPTED));
+    assert_eq!(rig.log.len(), 12);
     assert_eq!(rig.status(), MissionStatus::Verified);
     assert_eq!(
         rig.state.missions.vehicle,
         Some(VehicleList {
             plan_id: EXAMPLE_ID,
-            items: points
+            items: points,
+            return_height: Some(RET_Z)
         })
     );
-    assert_eq!(rig.state.missions.ended, Some(Duration::from_millis(1800)));
+    assert_eq!(rig.state.missions.ended, Some(Duration::from_millis(1840)));
     // Nothing more is ever sent.
-    rig.tick_range(1801, 20_000);
-    assert_eq!(rig.log.len(), 10);
+    rig.tick_range(1841, 20_000);
+    assert_eq!(rig.log.len(), 12);
 }
 
 #[test]
@@ -641,6 +771,7 @@ fn worked_example_1_with_the_vehicle_fake_and_the_item_lost() {
     rig.run(&mut vehicle, 1560);
     assert_eq!(rig.status(), MissionStatus::Verified);
     assert_eq!(vehicle.list, example());
+    assert_eq!(vehicle.ret, Some(RET_Z));
     assert_eq!(
         rig.times("LIST").len() + rig.times("ACK MAV_MISSION_ACCEPTED").len(),
         2
@@ -648,26 +779,30 @@ fn worked_example_1_with_the_vehicle_fake_and_the_item_lost() {
 }
 
 #[test]
-fn worked_example_2_a_17_point_upload_is_refused_and_the_list_is_read_back() {
+fn worked_example_2_an_upload_the_vehicle_has_no_space_for_is_refused_and_the_list_is_read_back() {
     let mut rig = Rig::new();
-    let mut vehicle = Vehicle::holding(example());
-    let seventeen: Vec<MissionPoint> = (0..17).map(|i| example()[i % 3]).collect();
+    // A vehicle that takes at most 3 items: the 4 of the example (3 waypoints and the return item) are too many.
+    let mut vehicle = Vehicle {
+        max_count: Some(3),
+        ..Vehicle::holding(example())
+    };
 
-    // 1. MISSION_COUNT 17
-    rig.upload(&seventeen, 0);
-    assert_eq!(rig.sent(), vec![s_count(17)]);
+    // 1. MISSION_COUNT 4
+    rig.upload(&example(), 0);
+    assert_eq!(rig.sent(), vec![s_count(4)]);
     // 2. MISSION_ACK NO_SPACE: no item is asked for
-    // 3. The upload ends refused; the station reads back: MISSION_REQUEST_LIST, MISSION_COUNT 3 with the
-    // plan id, the three items, MISSION_ACK ACCEPTED.
+    // 3. The upload ends refused; the station reads back: MISSION_REQUEST_LIST, MISSION_COUNT 4 with the
+    // plan id, the three waypoints and the return item, MISSION_ACK ACCEPTED.
     rig.run(&mut vehicle, 40);
     assert_eq!(
         rig.sent(),
         vec![
-            s_count(17),
+            s_count(4),
             s_list(),
             s_request(0),
             s_request(1),
             s_request(2),
+            s_request(3),
             s_ack(R::MAV_MISSION_ACCEPTED)
         ]
     );
@@ -688,10 +823,66 @@ fn worked_example_2_a_17_point_upload_is_refused_and_the_list_is_read_back() {
         rig.state.missions.vehicle,
         Some(VehicleList {
             plan_id: EXAMPLE_ID,
-            items: example()
+            items: example(),
+            return_height: Some(RET_Z)
         })
     );
+}
+
+#[test]
+fn more_than_16_waypoints_are_refused_before_anything_is_sent() {
+    let mut rig = Rig::new();
+    let seventeen: Vec<MissionPoint> = (0..17).map(|i| example()[i % 3]).collect();
+    rig.upload(&seventeen, 0);
+    assert!(rig.log.is_empty());
+    assert_eq!(
+        rig.failed(),
+        (MissionFailure::CountTooLarge, MissionPhase::Transfer)
+    );
+    assert!(rig.state.missions.vehicle.is_none(), "no read-back");
     assert_eq!(rig.state.missions.sent, seventeen);
+}
+
+#[test]
+fn an_upload_always_ends_with_the_return_item_so_the_count_is_the_waypoints_plus_one() {
+    // `Command::UploadMission` has no variant without `return_height`: there is no way to ask for an upload with no
+    // return item. Whatever the list, the vehicle is asked for items 0 to n and the last one is command 20.
+    for n in [0usize, 1, 3, 16] {
+        let points: Vec<MissionPoint> = (0..n).map(|i| example()[i % 3]).collect();
+        let mut rig = Rig::new();
+        let mut vehicle = Vehicle::default();
+        rig.upload_with(&points, 33.5, 0);
+        assert_eq!(rig.sent()[0], s_count(n as u16 + 1));
+        rig.run(&mut vehicle, 10);
+        let items: Vec<MISSION_ITEM_INT_DATA> = rig
+            .sent()
+            .into_iter()
+            .filter_map(|m| match m {
+                Message::MISSION_ITEM_INT(item) => Some(item),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(items.len(), n + 1);
+        let last = items.last().unwrap();
+        assert_eq!(
+            (last.seq, last.command, last.frame, last.x, last.y, last.z),
+            (
+                n as u16,
+                MavCmd::MAV_CMD_NAV_RETURN_TO_LAUNCH,
+                MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT,
+                0,
+                0,
+                33.5
+            )
+        );
+        assert!(
+            items[..n]
+                .iter()
+                .all(|i| i.command == MavCmd::MAV_CMD_NAV_WAYPOINT)
+        );
+        assert_eq!(rig.status(), MissionStatus::Verified);
+        assert_eq!((vehicle.list, vehicle.ret), (points, Some(33.5)));
+    }
 }
 
 // ---- upload, with the vehicle fake
@@ -705,21 +896,26 @@ fn an_upload_with_a_read_back_that_matches_ends_verified() {
     assert_eq!(rig.state.missions.kind, Some(MissionKind::Upload));
     rig.run(&mut vehicle, 100);
     assert_eq!(rig.status(), MissionStatus::Verified);
-    assert_eq!(vehicle.list, example());
+    assert_eq!(
+        (vehicle.list.clone(), vehicle.ret),
+        (example(), Some(RET_Z))
+    );
     assert_eq!(
         rig.timeline()
             .iter()
             .map(|(_, t)| t.as_str())
             .collect::<Vec<_>>(),
         [
-            "COUNT 3",
+            "COUNT 4",
             "ITEM 0",
             "ITEM 1",
             "ITEM 2",
+            "ITEM 3",
             "LIST",
             "REQ 0",
             "REQ 1",
             "REQ 2",
+            "REQ 3",
             "ACK MAV_MISSION_ACCEPTED"
         ]
     );
@@ -757,6 +953,61 @@ fn a_read_back_that_differs_in_one_item_is_not_verified() {
     let held = rig.state.missions.vehicle.clone().expect("the list");
     assert_eq!(held.items[1].z, 13.5);
     assert_eq!(held.items[0], example()[0]);
+}
+
+#[test]
+fn a_read_back_with_another_return_height_is_not_verified() {
+    let mut rig = Rig::new();
+    let mut vehicle = Vehicle {
+        tamper: Some(3),
+        ..Vehicle::default()
+    };
+    rig.upload(&example(), 0);
+    rig.run(&mut vehicle, 1);
+    assert_eq!(
+        rig.failed(),
+        (
+            MissionFailure::ReturnHeightDiffers {
+                sent: Some(20.0),
+                found: Some(21.0)
+            },
+            MissionPhase::ReadBack
+        )
+    );
+    assert_eq!(
+        rig.failed().0.to_string(),
+        "return height 21 m read back, 20 m sent"
+    );
+    // The waypoints are the ones sent; the height read back is shown as what the vehicle holds.
+    let held = rig.state.missions.vehicle.clone().expect("the list");
+    assert_eq!((held.items, held.return_height), (example(), Some(21.0)));
+}
+
+#[test]
+fn a_return_height_that_differs_only_in_its_bits_is_not_the_one_sent() {
+    // 0.0 and -0.0, as for the waypoints' z: the 4 bytes are compared.
+    let id = plan_id(&example(), 0.0);
+    let mut rig = Rig::new();
+    rig.upload_with(&example(), 0.0, 0);
+    for seq in 0..4 {
+        rig.deliver(v_request(seq), 1);
+    }
+    rig.deliver(v_ack(R::MAV_MISSION_ACCEPTED, id), 2);
+    rig.deliver(v_count(4, id), 3);
+    for (seq, point) in example().into_iter().enumerate() {
+        rig.deliver(v_item(seq as u16, point), 4);
+    }
+    rig.deliver(
+        v_ret_with(3, -0.0, MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT),
+        5,
+    );
+    assert_eq!(
+        rig.failed().0,
+        MissionFailure::ReturnHeightDiffers {
+            sent: Some(0.0),
+            found: Some(-0.0)
+        }
+    );
 }
 
 #[test]
@@ -828,6 +1079,18 @@ fn a_read_back_item_with_frame_6_is_not_what_was_sent() {
 }
 
 #[test]
+fn a_read_back_return_item_with_frame_6_is_not_what_was_sent_either() {
+    let mut rig = Rig::new();
+    let mut vehicle = Vehicle {
+        odd_frame: Some(3),
+        ..Vehicle::default()
+    };
+    rig.upload(&example(), 0);
+    rig.run(&mut vehicle, 1);
+    assert_eq!(rig.failed().0, MissionFailure::ItemDiffers { seq: 3 });
+}
+
+#[test]
 fn a_refused_upload_is_not_done_even_when_the_vehicle_holds_the_list() {
     let mut rig = Rig::new();
     let mut vehicle = Vehicle::holding(example());
@@ -884,6 +1147,42 @@ fn a_waypoint_out_of_the_vehicles_ranges_or_with_a_non_finite_altitude_is_refuse
 }
 
 #[test]
+fn a_return_height_that_is_not_finite_is_refused_by_the_station() {
+    for height in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let mut rig = Rig::new();
+        rig.upload_with(&example(), height, 7);
+        assert!(rig.log.is_empty(), "{height}: nothing is sent");
+        let (reason, phase) = rig.failed();
+        assert_eq!(reason, MissionFailure::InvalidReturnHeight);
+        assert_eq!(phase, MissionPhase::Transfer);
+        assert_eq!(
+            reason.to_string(),
+            "the return height is not finite; nothing was sent"
+        );
+        assert_eq!(rig.state.missions.ended, Some(Duration::from_millis(7)));
+        assert!(rig.state.missions.vehicle.is_none(), "no read-back");
+        // A failed start leaves no operation running.
+        rig.download(10);
+        assert_eq!(rig.sent(), vec![s_list()]);
+    }
+    // A waypoint's own problem is named first.
+    let mut rig = Rig::new();
+    let bad = MissionPoint {
+        lat_e7: 900_000_001,
+        lon_e7: 0,
+        z: 1.0,
+    };
+    rig.upload_with(&[bad], f32::NAN, 0);
+    assert_eq!(
+        rig.failed().0,
+        MissionFailure::InvalidWaypoint {
+            seq: 0,
+            problem: "latitude out of range"
+        }
+    );
+}
+
+#[test]
 fn the_limits_of_the_range_are_sent_and_accepted() {
     let mut rig = Rig::new();
     let mut vehicle = Vehicle::default();
@@ -909,8 +1208,13 @@ fn each_refusal_code_of_the_contract_is_surfaced_with_its_meaning() {
             "mission type 0 and the command 16",
         ),
         (R::MAV_MISSION_NO_SPACE, "at most 16 waypoints"),
+        (R::MAV_MISSION_INVALID, "does not end in a return item"),
         (R::MAV_MISSION_INVALID_PARAM5_X, "latitude"),
         (R::MAV_MISSION_INVALID_PARAM6_Y, "longitude"),
+        (
+            R::MAV_MISSION_INVALID_PARAM7,
+            "outside the vehicle's limits",
+        ),
         (R::MAV_MISSION_INVALID_SEQUENCE, "at or above the count"),
         (R::MAV_MISSION_DENIED, "another owner"),
         (R::MAV_MISSION_OPERATION_CANCELLED, "timeout"),
@@ -939,6 +1243,26 @@ fn each_refusal_code_of_the_contract_is_surfaced_with_its_meaning() {
     meanings.sort_unstable();
     meanings.dedup();
     assert_eq!(meanings.len(), codes.len(), "each code has its own words");
+}
+
+#[test]
+fn the_texts_of_results_5_and_12() {
+    assert_eq!(
+        result_meaning(R::MAV_MISSION_INVALID),
+        "the list does not end in a return item"
+    );
+    assert_eq!(
+        result_meaning(R::MAV_MISSION_INVALID_PARAM7),
+        "a height is outside the vehicle's limits (GDN_ALT_MIN to GDN_ALT_MAX)"
+    );
+    assert_eq!(
+        MissionFailure::Refused(R::MAV_MISSION_INVALID).to_string(),
+        "refused: the list does not end in a return item"
+    );
+    assert_eq!(
+        MissionFailure::Refused(R::MAV_MISSION_INVALID_PARAM7).to_string(),
+        "refused: a height is outside the vehicle's limits (GDN_ALT_MIN to GDN_ALT_MAX)"
+    );
 }
 
 #[test]
@@ -981,6 +1305,7 @@ fn a_refusal_in_the_read_back_ends_it_failed_and_nothing_is_read_back_again() {
     rig.deliver(v_request(0), 1);
     rig.deliver(v_request(1), 2);
     rig.deliver(v_request(2), 3);
+    rig.deliver(v_request(3), 3);
     rig.deliver(v_ack(R::MAV_MISSION_ACCEPTED, EXAMPLE_ID), 4);
     assert_eq!(rig.sent().last(), Some(&s_list()));
     rig.deliver(v_ack(R::MAV_MISSION_DENIED, 0), 5);
@@ -1012,16 +1337,16 @@ fn a_cancel_from_the_vehicle_ends_the_upload_refused_with_its_code() {
 fn a_request_beyond_the_list_is_answered_invalid_sequence_and_the_upload_fails() {
     let mut rig = Rig::new();
     rig.upload(&example(), 0);
-    rig.deliver(v_request(3), 10);
+    rig.deliver(v_request(4), 10);
     assert_eq!(
         rig.sent(),
-        vec![s_count(3), s_ack(R::MAV_MISSION_INVALID_SEQUENCE), s_list()]
+        vec![s_count(4), s_ack(R::MAV_MISSION_INVALID_SEQUENCE), s_list()]
     );
     rig.deliver(v_count(0, 0), 20);
     assert_eq!(
         rig.failed(),
         (
-            MissionFailure::InvalidSequence { seq: 3 },
+            MissionFailure::InvalidSequence { seq: 4 },
             MissionPhase::Transfer
         )
     );
@@ -1053,7 +1378,7 @@ fn an_accepted_ack_before_the_last_item_was_sent_does_not_end_the_upload() {
     assert_eq!(rig.log.len(), 1);
     // It stops no timer: the MISSION_COUNT is sent again at 1500.
     rig.tick_range(11, 1500);
-    assert_eq!(rig.times("COUNT 3"), [0, 1500]);
+    assert_eq!(rig.times("COUNT 4"), [0, 1500]);
     // After items 0 and 1, not the last.
     rig.deliver(v_request(0), 1600);
     rig.deliver(v_request(1), 1610);
@@ -1074,6 +1399,7 @@ fn an_accepted_ack_with_another_opaque_id_does_not_end_the_upload() {
     rig.deliver(v_request(0), 10);
     rig.deliver(v_request(1), 20);
     rig.deliver(v_request(2), 30);
+    rig.deliver(v_request(3), 35);
     for wrong in [0, EXAMPLE_ID + 1, 1] {
         rig.deliver(v_ack(R::MAV_MISSION_ACCEPTED, wrong), 40);
         assert_eq!(
@@ -1084,8 +1410,8 @@ fn an_accepted_ack_with_another_opaque_id_does_not_end_the_upload() {
     }
     assert!(rig.times("LIST").is_empty());
     // It stops no timer either: the last item is sent again 1500 ms after its send.
-    rig.tick_range(41, 1530);
-    assert_eq!(rig.times("ITEM 2"), [30, 1530]);
+    rig.tick_range(41, 1535);
+    assert_eq!(rig.times("ITEM 3"), [35, 1535]);
     // The right one ends it.
     rig.deliver(v_ack(R::MAV_MISSION_ACCEPTED, EXAMPLE_ID), 1540);
     assert_eq!(rig.times("LIST"), [1540]);
@@ -1113,7 +1439,7 @@ fn an_accepted_ack_during_a_download_is_ignored_and_stops_no_timer() {
         rig.status(),
         MissionStatus::Downloading {
             received: 0,
-            total: Some(2)
+            total: Some(1)
         }
     );
     rig.tick_range(1701, 3100);
@@ -1142,37 +1468,50 @@ fn an_accepted_ack_during_the_read_back_is_ignored() {
 // ---- count 0 and clear
 
 #[test]
-fn an_upload_of_no_waypoints_sends_count_0_and_is_a_clear() {
+fn an_upload_of_no_waypoints_sends_the_return_item_alone_and_is_not_a_clear() {
     let mut rig = Rig::new();
     let mut vehicle = Vehicle::holding(example());
     rig.upload(&[], 0);
-    assert_eq!(rig.sent(), vec![s_count(0)]);
-    // The vehicle's answer to count 0: ACCEPTED, opaque_id 0 = the plan id of the empty list.
+    assert_eq!(rig.sent(), vec![s_count(1)]);
+    assert_eq!(rig.status(), MissionStatus::Uploading { sent: 0, total: 0 });
     rig.run(&mut vehicle, 10);
     assert!(vehicle.list.is_empty());
+    assert_eq!(vehicle.ret, Some(RET_Z));
     assert_eq!(rig.status(), MissionStatus::Verified);
     assert_eq!(
         rig.sent(),
-        vec![s_count(0), s_list(), s_ack(R::MAV_MISSION_ACCEPTED)]
+        vec![
+            s_count(1),
+            s_ret(0),
+            s_list(),
+            s_request(0),
+            s_ack(R::MAV_MISSION_ACCEPTED)
+        ]
     );
     assert_eq!(
         rig.state.missions.vehicle,
         Some(VehicleList {
-            plan_id: 0,
-            items: Vec::new()
+            plan_id: plan_id(&[], RET_Z),
+            items: Vec::new(),
+            return_height: Some(RET_Z)
         })
     );
 }
 
 #[test]
-fn an_upload_of_no_waypoints_ends_on_accepted_after_the_count_and_only_with_plan_id_0() {
+fn an_upload_of_no_waypoints_ends_on_accepted_after_the_return_item_and_only_with_its_plan_id() {
     let mut rig = Rig::new();
     rig.upload(&[], 0);
+    // Before the return item was sent, ACCEPTED ends nothing, whatever its plan id.
+    rig.deliver(v_ack(R::MAV_MISSION_ACCEPTED, 0), 5);
+    rig.deliver(v_ack(R::MAV_MISSION_ACCEPTED, plan_id(&[], RET_Z)), 6);
+    assert_eq!(rig.log.len(), 1);
+    rig.deliver(v_request(0), 7);
     // ACCEPTED with another opaque_id is a late copy of an earlier answer.
     rig.deliver(v_ack(R::MAV_MISSION_ACCEPTED, EXAMPLE_ID), 10);
-    assert_eq!(rig.log.len(), 1);
-    // With plan id 0 it ends the upload of the empty list.
-    rig.deliver(v_ack(R::MAV_MISSION_ACCEPTED, 0), 20);
+    rig.deliver(v_ack(R::MAV_MISSION_ACCEPTED, 0), 15);
+    assert_eq!(rig.log.len(), 2);
+    rig.deliver(v_ack(R::MAV_MISSION_ACCEPTED, plan_id(&[], RET_Z)), 20);
     assert_eq!(rig.times("LIST"), [20]);
 }
 
@@ -1198,14 +1537,38 @@ fn a_clear_whose_read_back_still_shows_waypoints_is_not_verified() {
     let mut rig = Rig::new();
     rig.clear(0);
     rig.deliver(v_ack(R::MAV_MISSION_ACCEPTED, 0), 10);
-    rig.deliver(v_count(1, 5), 20);
+    rig.deliver(v_count(2, 5), 20);
     rig.deliver(v_item(0, example()[0]), 30);
+    rig.deliver(v_ret(1), 40);
     assert_eq!(
         rig.failed(),
         (
             MissionFailure::CountDiffers { sent: 0, found: 1 },
             MissionPhase::ReadBack
         )
+    );
+}
+
+#[test]
+fn a_clear_whose_read_back_still_shows_a_return_item_is_not_verified() {
+    let mut rig = Rig::new();
+    rig.clear(0);
+    rig.deliver(v_ack(R::MAV_MISSION_ACCEPTED, 0), 10);
+    rig.deliver(v_count(1, 5), 20);
+    rig.deliver(v_ret(0), 30);
+    assert_eq!(
+        rig.failed(),
+        (
+            MissionFailure::ReturnHeightDiffers {
+                sent: None,
+                found: Some(RET_Z)
+            },
+            MissionPhase::ReadBack
+        )
+    );
+    assert_eq!(
+        rig.failed().0.to_string(),
+        "return height 20 m read back, none sent"
     );
 }
 
@@ -1235,6 +1598,7 @@ fn a_download_asks_for_the_list_and_every_item_and_ends_with_accepted() {
             s_request(0),
             s_request(1),
             s_request(2),
+            s_request(3),
             s_ack(R::MAV_MISSION_ACCEPTED)
         ]
     );
@@ -1243,16 +1607,82 @@ fn a_download_asks_for_the_list_and_every_item_and_ends_with_accepted() {
         rig.state.missions.vehicle,
         Some(VehicleList {
             plan_id: EXAMPLE_ID,
-            items: example()
+            items: example(),
+            return_height: Some(RET_Z)
         })
     );
+}
+
+#[test]
+fn a_download_treats_the_last_item_as_the_return_height_and_the_others_as_waypoints() {
+    let mut rig = Rig::new();
+    let mut vehicle = Vehicle {
+        list: example(),
+        ret: Some(31.25),
+        ..Vehicle::default()
+    };
+    rig.download(0);
+    rig.run(&mut vehicle, 50);
+    assert_eq!(rig.status(), MissionStatus::Complete);
+    let held = rig.state.missions.vehicle.clone().expect("the list");
+    assert_eq!((held.items, held.return_height), (example(), Some(31.25)));
+    // A return item alone is no waypoint.
+    let mut rig = Rig::new();
+    let mut vehicle = Vehicle {
+        ret: Some(12.0),
+        ..Vehicle::default()
+    };
+    rig.download(0);
+    rig.run(&mut vehicle, 50);
+    let held = rig.state.missions.vehicle.clone().expect("the list");
+    assert_eq!((held.items, held.return_height), (Vec::new(), Some(12.0)));
+}
+
+#[test]
+fn a_downloaded_list_that_does_not_end_in_a_return_item_is_an_error_not_a_mission() {
+    let mut rig = Rig::new();
+    let mut vehicle = Vehicle {
+        no_return_item: true,
+        ..Vehicle::holding(example())
+    };
+    rig.download(0);
+    rig.run(&mut vehicle, 50);
+    assert_eq!(
+        rig.failed(),
+        (MissionFailure::NoReturnItem, MissionPhase::Transfer)
+    );
+    assert_eq!(
+        rig.failed().0.to_string(),
+        "the vehicle's list does not end in a return item"
+    );
+    // The transfer itself was complete: the station closed it, and the list is not shown as a mission.
+    assert_eq!(rig.sent().last(), Some(&s_ack(R::MAV_MISSION_ACCEPTED)));
+    assert_eq!(rig.state.missions.vehicle, None);
+    rig.tick_range(51, 30_000);
+    assert_eq!(rig.log.len(), 6);
+}
+
+#[test]
+fn an_upload_read_back_that_does_not_end_in_a_return_item_fails_the_read_back() {
+    let mut rig = Rig::new();
+    let mut vehicle = Vehicle {
+        no_return_item: true,
+        ..Vehicle::default()
+    };
+    rig.upload(&example(), 0);
+    rig.run(&mut vehicle, 50);
+    assert_eq!(
+        rig.failed(),
+        (MissionFailure::NoReturnItem, MissionPhase::ReadBack)
+    );
+    assert_eq!(rig.state.missions.vehicle, None);
 }
 
 #[test]
 fn a_download_shows_its_progress() {
     let mut rig = Rig::new();
     rig.download(0);
-    rig.deliver(v_count(3, EXAMPLE_ID), 10);
+    rig.deliver(v_count(4, EXAMPLE_ID), 10);
     assert_eq!(
         rig.status(),
         MissionStatus::Downloading {
@@ -1281,7 +1711,8 @@ fn a_download_of_an_empty_list_ends_at_once_after_the_count() {
         rig.state.missions.vehicle,
         Some(VehicleList {
             plan_id: 0,
-            items: Vec::new()
+            items: Vec::new(),
+            return_height: None
         })
     );
 }
@@ -1290,7 +1721,7 @@ fn a_download_of_an_empty_list_ends_at_once_after_the_count() {
 fn a_wrong_item_is_dropped_and_the_expected_one_is_asked_for_again_at_once() {
     let mut rig = Rig::new();
     rig.download(0);
-    rig.deliver(v_count(3, EXAMPLE_ID), 10);
+    rig.deliver(v_count(4, EXAMPLE_ID), 10);
     rig.deliver(v_item(0, example()[0]), 20);
     // Item 2 when 1 was asked for, and a repeat of 0.
     rig.deliver(v_item(2, example()[2]), 30);
@@ -1307,6 +1738,7 @@ fn a_wrong_item_is_dropped_and_the_expected_one_is_asked_for_again_at_once() {
     );
     rig.deliver(v_item(1, example()[1]), 50);
     rig.deliver(v_item(2, example()[2]), 60);
+    rig.deliver(v_ret(3), 70);
     assert_eq!(rig.status(), MissionStatus::Complete);
     assert_eq!(
         rig.state.missions.vehicle.as_ref().map(|v| v.items.clone()),
@@ -1318,18 +1750,20 @@ fn a_wrong_item_is_dropped_and_the_expected_one_is_asked_for_again_at_once() {
 fn a_second_count_in_the_same_download_is_ignored() {
     let mut rig = Rig::new();
     rig.download(0);
-    rig.deliver(v_count(3, EXAMPLE_ID), 10);
+    rig.deliver(v_count(4, EXAMPLE_ID), 10);
     rig.deliver(v_count(1, 9), 20);
     assert_eq!(rig.sent(), vec![s_list(), s_request(0)]);
     rig.deliver(v_item(0, example()[0]), 30);
     rig.deliver(v_count(1, 9), 40);
     rig.deliver(v_item(1, example()[1]), 50);
     rig.deliver(v_item(2, example()[2]), 60);
+    rig.deliver(v_ret(3), 70);
     assert_eq!(
         rig.state.missions.vehicle,
         Some(VehicleList {
             plan_id: EXAMPLE_ID,
-            items: example()
+            items: example(),
+            return_height: Some(RET_Z)
         })
     );
 }
@@ -1349,7 +1783,7 @@ fn the_count_is_sent_six_times_1500_ms_apart_then_given_up_and_the_read_back_is_
     let mut rig = Rig::new();
     rig.upload(&example(), 0);
     rig.tick_range(1, 8999);
-    assert_eq!(rig.times("COUNT 3"), [0, 1500, 3000, 4500, 6000, 7500]);
+    assert_eq!(rig.times("COUNT 4"), [0, 1500, 3000, 4500, 6000, 7500]);
     assert_eq!(rig.log.len(), 6);
     rig.tick(9000);
     // The station gives up: MISSION_ACK CANCELLED, then the read-back at once.
@@ -1395,10 +1829,11 @@ fn a_timed_out_upload_whose_read_back_shows_the_list_is_still_not_done() {
     let mut rig = Rig::new();
     rig.upload(&example(), 0);
     rig.tick_range(1, 9000);
-    rig.deliver(v_count(3, EXAMPLE_ID), 9010);
+    rig.deliver(v_count(4, EXAMPLE_ID), 9010);
     for (seq, point) in example().into_iter().enumerate() {
         rig.deliver(v_item(seq as u16, point), 9020 + seq as u64);
     }
+    rig.deliver(v_ret(3), 9030);
     assert_eq!(
         rig.failed(),
         (MissionFailure::TimedOut, MissionPhase::Transfer)
@@ -1417,7 +1852,7 @@ fn a_request_from_the_vehicle_stops_the_count_timer() {
     rig.deliver(v_request(0), 1499);
     // The wait is now the item wait: 9000 ms after item 0, not 1500 after the count.
     rig.tick_range(1500, 10_498);
-    assert_eq!(rig.times("COUNT 3"), [0]);
+    assert_eq!(rig.times("COUNT 4"), [0]);
     assert!(rig.times("LIST").is_empty());
     rig.tick(10_499);
     assert_eq!(rig.times("LIST"), [10_499]);
@@ -1459,7 +1894,7 @@ fn a_request_restarts_the_9000_ms_wait() {
 #[test]
 fn the_last_item_is_sent_six_times_1500_ms_apart_then_given_up() {
     let mut rig = Rig::new();
-    rig.upload(&example()[..1], 0);
+    rig.upload(&[], 0);
     rig.deliver(v_request(0), 10);
     rig.tick_range(11, 9009);
     assert_eq!(
@@ -1469,6 +1904,7 @@ fn the_last_item_is_sent_six_times_1500_ms_apart_then_given_up() {
         rig.timeline()
     );
     assert_eq!(rig.sent()[1], rig.sent()[2], "the same message again");
+    assert_eq!(rig.sent()[1], s_ret(0), "the return item is the last item");
     assert!(rig.times("LIST").is_empty());
     rig.tick(9010);
     assert_eq!(rig.times("ACK MAV_MISSION_OPERATION_CANCELLED"), [9010]);
@@ -1485,7 +1921,7 @@ fn the_last_item_is_sent_six_times_1500_ms_apart_then_given_up() {
 #[test]
 fn a_request_for_the_last_item_stops_its_timer_and_the_answer_starts_a_new_one() {
     let mut rig = Rig::new();
-    rig.upload(&example()[..1], 0);
+    rig.upload(&[], 0);
     rig.deliver(v_request(0), 10);
     rig.tick_range(11, 1509);
     rig.deliver(v_request(0), 1509);
@@ -1773,7 +2209,7 @@ fn a_message_not_from_the_vehicle_or_not_for_the_station_is_dropped() {
         body: Body::Unknown,
     };
     rig.call(10, |s, cx| s.on_frame(&frame, cx));
-    assert_eq!(rig.sent(), vec![s_count(3)]);
+    assert_eq!(rig.sent(), vec![s_count(4)]);
     // Target 0 and 0 is for everybody.
     rig.deliver(to(0, 0), 20);
     rig.deliver(to(255, 0), 21);
@@ -1807,7 +2243,7 @@ fn messages_that_belong_to_no_step_of_the_operation_are_ignored() {
     rig.upload(&example(), 0);
     rig.deliver(v_count(3, 1), 1);
     rig.deliver(v_item(0, example()[0]), 1);
-    assert_eq!(rig.sent(), vec![s_count(3)]);
+    assert_eq!(rig.sent(), vec![s_count(4)]);
 
     let mut rig = Rig::new();
     rig.download(0);

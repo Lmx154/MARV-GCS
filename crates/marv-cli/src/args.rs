@@ -37,10 +37,14 @@ Commands:
   record <FILE> [--for <s>]        record the link to a .tlog (default 60 s)
   logs list                        the logs on the vehicle's card: NUMBER<TAB>SIZE, then last<TAB>N (USB or TCP only)
   logs get <N> [-o FILE] [--force] download log N (default file NNNNNNNN.BIN here; an existing file is kept without --force)
-  mission upload <file.waypoints>  send the waypoints of a QGC WPL 110 file (row 0, the home placeholder, is skipped), read the
-                                   list back and print `verified`, the count and the plan id (hex), or why not (exit 1)
-  mission download [<out.waypoints>]  the vehicle's list: one line per waypoint, then the count and the plan id; with a
-                                   file name also writes it as a .waypoints file (an existing file is kept without --force)
+  mission upload <file.waypoints> [--return-height <m>]
+                                   send the waypoints of a QGC WPL 110 file (row 0, the home placeholder, is skipped) and the
+                                   return item (the file's last row, command 20, altitude = the return height in m above
+                                   home; --return-height supplies it for a file without one), read the list back and print
+                                   `verified`, the count, the return height and the plan id (hex), or why not (exit 1)
+  mission download [<out.waypoints>]  the vehicle's list: one line per waypoint, then the return height on its own line and
+                                   the count and the plan id; with a file name also writes it as a .waypoints file with the
+                                   return height as its last row, command 20 (an existing file is kept without --force)
   mission clear                    empty the vehicle's list and read it back; prints `verified`, 0 waypoints, plan id 0x00000000
   mission start | pause | abort | land | return
                                    a flight command (radio link through the WiFi backpack): prints accepted, or the
@@ -91,6 +95,7 @@ Options:
                          motor line's speed at both
   --json <file>          log report: also write the report as JSON
   --json                 log tune: print the analysis as JSON on stdout instead of text (a flag, no file)
+  --return-height <m>    mission upload: the return height, m above home, for a file with no command-20 row
   --force                let logs get, mission download and log survey overwrite an existing file
   --alt <m>, --channel <n>  log survey: the height of the points above take-off (default 5), the RC channel (default 9)
   --from <s>, --to <s>   log tune: only the part of the log between these log times (TimeUS seconds)
@@ -155,7 +160,11 @@ pub enum Command {
         output: Option<PathBuf>,
         force: bool,
     },
-    MissionUpload(PathBuf),
+    /// `mission upload FILE [--return-height M]`: the return height M supplies the file's missing command-20 row.
+    MissionUpload {
+        file: PathBuf,
+        return_height: Option<f32>,
+    },
     MissionDownload {
         /// Where to write the list as a `.waypoints` file; `None`: print only.
         file: Option<PathBuf>,
@@ -280,6 +289,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
     let mut debug = false;
     let mut output = None;
     let mut force = false;
+    let mut return_height = None;
     let mut words: Vec<&str> = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -290,6 +300,17 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         };
         match arg.as_str() {
             "--help" | "-h" => return Ok(Parsed::Help),
+            "--return-height" => {
+                let text = value("--return-height")?;
+                return_height = match text.parse::<f32>() {
+                    Ok(metres) if metres.is_finite() => Some(metres),
+                    _ => {
+                        return Err(format!(
+                            "--return-height needs a number of metres above home, not {text:?}"
+                        ));
+                    }
+                };
+            }
             "--connect" => {
                 let text = value("--connect")?;
                 connect = Some(text.parse::<Endpoint>().map_err(|e| e.to_string())?);
@@ -308,6 +329,16 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         return Err("missing --connect <endpoint>".to_string());
     };
     let (mut command, takes_for) = command(&words, yes)?;
+    match &mut command {
+        Command::MissionUpload {
+            return_height: supplied,
+            ..
+        } => *supplied = return_height,
+        _ if return_height.is_some() => {
+            return Err("--return-height only applies to mission upload".to_string());
+        }
+        _ => {}
+    }
     match &mut command {
         Command::LogsGet {
             output: file,
@@ -707,7 +738,13 @@ fn command(words: &[&str], yes: bool) -> Result<(Command, bool), String> {
             [other, ..] => Err(format!("unknown logs command {other:?}: list or get")),
         },
         "mission" => match rest {
-            ["upload", file] => Ok((Command::MissionUpload(PathBuf::from(file)), false)),
+            ["upload", file] => Ok((
+                Command::MissionUpload {
+                    file: PathBuf::from(file),
+                    return_height: None,
+                },
+                false,
+            )),
             ["upload"] => Err("mission upload needs a FILE.waypoints".to_string()),
             ["upload", _, extra, ..] => Err(format!("unexpected argument {extra:?}")),
             ["download"] => Ok((

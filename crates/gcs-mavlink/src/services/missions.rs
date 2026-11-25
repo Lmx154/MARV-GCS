@@ -1,6 +1,8 @@
 //! Mission service: uploads a waypoint list to the vehicle, reads it back, clears it (docs/link-contract.md,
 //! section 17). Sans-IO: the time comes from `cx.now`. An upload or a clear is done only when a read-back
-//! shows the vehicle holds what was sent (the station's verdict).
+//! shows the vehicle holds what was sent (the station's verdict). The vehicle's list is n items: the waypoints, then
+//! one return item (command 20, `x` = `y` = 0, `z` the return height, Amendment A5); an upload always carries the
+//! return height, so it cannot be sent without the return item.
 
 use std::fmt;
 use std::time::Duration;
@@ -23,6 +25,9 @@ pub const ITEM_WAIT: Duration = Duration::from_millis(9000);
 
 const FRAME: MavFrame = MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT;
 const WAYPOINT: MavCmd = MavCmd::MAV_CMD_NAV_WAYPOINT;
+const RETURN: MavCmd = MavCmd::MAV_CMD_NAV_RETURN_TO_LAUNCH;
+/// Waypoints the vehicle holds; with the return item a list has at most `MAX_WAYPOINTS + 1` items.
+pub const MAX_WAYPOINTS: usize = 16;
 const PLAN: MavMissionType = MavMissionType::MAV_MISSION_TYPE_MISSION;
 
 /// One waypoint as the station sends it: `x`, `y` in degrees x 10^7, `z` in metres above home.
@@ -82,18 +87,18 @@ fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
-/// The plan id of a list: the CRC-32 over `x`, `y`, `z` of each item, little-endian, 12 bytes an item.
-/// 0 for the empty list; a non-empty list whose CRC is 0 has the id 1.
-pub fn plan_id(points: &[MissionPoint]) -> u32 {
-    if points.is_empty() {
-        return 0;
-    }
-    let mut bytes = Vec::with_capacity(points.len() * 12);
+/// The plan id of a list of waypoints and its return height: the CRC-32 over `x`, `y`, `z` of every item, the return
+/// item (`x` = `y` = 0, `z` the return height) last, little-endian, 12 bytes an item. A list always has the return
+/// item, so it is never empty; a CRC of 0 gives the id 1 (the id 0 is "no plan", of a vehicle that holds nothing).
+pub fn plan_id(points: &[MissionPoint], return_height: f32) -> u32 {
+    let mut bytes = Vec::with_capacity((points.len() + 1) * 12);
     for point in points {
         bytes.extend_from_slice(&point.lat_e7.to_le_bytes());
         bytes.extend_from_slice(&point.lon_e7.to_le_bytes());
         bytes.extend_from_slice(&point.z.to_bits().to_le_bytes());
     }
+    bytes.extend_from_slice(&[0; 8]);
+    bytes.extend_from_slice(&return_height.to_bits().to_le_bytes());
     match crc32(&bytes) {
         0 => 1,
         id => id,
@@ -112,8 +117,12 @@ pub fn result_meaning(result: MavMissionResult) -> &'static str {
             "the vehicle takes only mission type 0 and the command 16"
         }
         MavMissionResult::MAV_MISSION_NO_SPACE => "the vehicle holds at most 16 waypoints",
+        MavMissionResult::MAV_MISSION_INVALID => "the list does not end in a return item",
         MavMissionResult::MAV_MISSION_INVALID_PARAM5_X => "latitude out of range",
         MavMissionResult::MAV_MISSION_INVALID_PARAM6_Y => "longitude out of range",
+        MavMissionResult::MAV_MISSION_INVALID_PARAM7 => {
+            "a height is outside the vehicle's limits (GDN_ALT_MIN to GDN_ALT_MAX)"
+        }
         MavMissionResult::MAV_MISSION_INVALID_SEQUENCE => {
             "a waypoint at or above the count was asked for"
         }
@@ -144,11 +153,15 @@ pub enum MissionPhase {
 pub enum MissionFailure {
     /// Not started: no vehicle is connected.
     NoVehicle,
-    /// Not started: the list has more waypoints than a `MISSION_COUNT` can say.
+    /// Not started: the list has more waypoints than the vehicle holds (16).
     CountTooLarge,
     /// Not started: waypoint `seq` of the list is out of the vehicle's ranges or has a non-finite altitude; nothing
     /// was sent and no read-back is made.
     InvalidWaypoint { seq: u16, problem: &'static str },
+    /// Not started: the return height is not finite; nothing was sent and no read-back is made.
+    InvalidReturnHeight,
+    /// The vehicle's list does not end in a return item (command 20): it is not a mission.
+    NoReturnItem,
     /// The vehicle's MISSION_ACK with this `type`.
     Refused(MavMissionResult),
     /// Timed out: no answer after every send ("no answer"). The station sent MISSION_ACK CANCELLED.
@@ -159,6 +172,11 @@ pub enum MissionFailure {
     InvalidSequence { seq: u16 },
     /// The read-back holds `found` waypoints, `sent` were sent.
     CountDiffers { sent: u16, found: u16 },
+    /// The read-back's return height is not the one sent (`None`: the vehicle holds no list, or none was sent).
+    ReturnHeightDiffers {
+        sent: Option<f32>,
+        found: Option<f32>,
+    },
     /// The first waypoint of the read-back that differs from the one sent (`frame` 3 and `command` 16
     /// included).
     ItemDiffers { seq: u16 },
@@ -170,9 +188,29 @@ impl fmt::Display for MissionFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             MissionFailure::NoVehicle => f.write_str("the vehicle is not connected"),
-            MissionFailure::CountTooLarge => f.write_str("too many waypoints to send"),
+            MissionFailure::CountTooLarge => f.write_str(
+                "more than 16 waypoints (the vehicle holds at most 16); nothing was sent",
+            ),
             MissionFailure::InvalidWaypoint { seq, problem } => {
                 write!(f, "waypoint {seq}: {problem}; nothing was sent")
+            }
+            MissionFailure::InvalidReturnHeight => {
+                f.write_str("the return height is not finite; nothing was sent")
+            }
+            MissionFailure::NoReturnItem => {
+                f.write_str("the vehicle's list does not end in a return item")
+            }
+            MissionFailure::ReturnHeightDiffers { sent, found } => {
+                let text = |height: &Option<f32>| match height {
+                    Some(metres) => format!("{metres} m"),
+                    None => "none".to_string(),
+                };
+                write!(
+                    f,
+                    "return height {} read back, {} sent",
+                    text(found),
+                    text(sent)
+                )
             }
             MissionFailure::Refused(result) => {
                 write!(f, "refused: {}", result_meaning(*result))
@@ -203,13 +241,15 @@ pub enum MissionStatus {
     /// Nothing asked yet.
     #[default]
     Idle,
-    /// Upload: `sent` waypoints handed over so far (the highest asked for + 1), of `total`.
+    /// Upload: `sent` waypoints handed over so far (the highest asked for + 1, at most `total`), of `total`: the
+    /// waypoints, not the return item.
     Uploading {
         sent: u16,
         total: u16,
     },
     Clearing,
-    /// A download asked for by itself; `total` is the vehicle's count once it said it.
+    /// A download asked for by itself; `total` is the vehicle's number of waypoints (its count less the return item)
+    /// once it said its count.
     Downloading {
         received: u16,
         total: Option<u16>,
@@ -229,11 +269,14 @@ pub enum MissionStatus {
     },
 }
 
-/// The vehicle's list as read back (or downloaded): the waypoints and the plan id of its MISSION_COUNT.
+/// The vehicle's list as read back (or downloaded): the waypoints, the return height and the plan id of its
+/// MISSION_COUNT. The return item is not a waypoint: `items` holds the waypoints only.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VehicleList {
     pub plan_id: u32,
     pub items: Vec<MissionPoint>,
+    /// `z` of the return item (the vehicle's last item); `None` when the vehicle holds nothing.
+    pub return_height: Option<f32>,
 }
 
 /// What the window shows of this service: the current or last operation.
@@ -280,10 +323,15 @@ enum Step {
 
 #[derive(Default)]
 struct Download {
+    /// The vehicle's count: its waypoints and the return item.
     count: Option<u16>,
     plan_id: u32,
+    /// The waypoints received.
     items: Vec<MissionPoint>,
-    /// The first received item whose `frame` is not 3 or whose `command` is not 16.
+    /// `z` of the return item (the last), once received.
+    ret: Option<f32>,
+    /// The first received item whose `frame` is not 3, whose `command` is not 16 (20 for the last), or the last one
+    /// whose `x` or `y` is not 0.
     odd: Option<u16>,
 }
 
@@ -291,7 +339,10 @@ struct Run {
     target: (u8, u8),
     kind: MissionKind,
     plan: Vec<MissionPoint>,
+    /// The return height of an upload (`None` for the other operations).
+    return_height: Option<f32>,
     plan_id: u32,
+    /// Items the MISSION_COUNT says: the waypoints and the return item for an upload, 0 for the others.
     count: u16,
     /// Item n - 1 has been sent (for n = 0 and for a clear: the start message has).
     last_sent: bool,
@@ -339,18 +390,22 @@ impl Run {
         }
     }
 
+    /// Item `seq` of an upload: a waypoint, or for the last `seq` (n - 1) the return item: command 20, `x` = `y` = 0.
     fn item(&self, seq: u16) -> Message {
-        let point = self.plan[usize::from(seq)];
+        let (command, x, y, z) = match self.plan.get(usize::from(seq)) {
+            Some(point) => (WAYPOINT, point.lat_e7, point.lon_e7, point.z),
+            None => (RETURN, 0, 0, self.return_height.unwrap_or_default()),
+        };
         Message::MISSION_ITEM_INT(MISSION_ITEM_INT_DATA {
             param1: 0.0,
             param2: 0.0,
             param3: 0.0,
             param4: 0.0,
-            x: point.lat_e7,
-            y: point.lon_e7,
-            z: point.z,
+            x,
+            y,
+            z,
             seq,
-            command: WAYPOINT,
+            command,
             target_system: self.target.0,
             target_component: self.target.1,
             frame: FRAME,
@@ -372,7 +427,7 @@ impl Run {
 
     fn download_status(&self) -> MissionStatus {
         let received = u16::try_from(self.down.items.len()).unwrap_or(u16::MAX);
-        let total = self.down.count;
+        let total = self.down.count.map(|count| count.saturating_sub(1));
         if self.read_back {
             MissionStatus::ReadingBack { received, total }
         } else {
@@ -402,7 +457,13 @@ impl Missions {
             .then_some((vehicle.system_id, vehicle.component_id))
     }
 
-    fn begin(&mut self, kind: MissionKind, plan: Vec<MissionPoint>, cx: &mut Ctx) {
+    fn begin(
+        &mut self,
+        kind: MissionKind,
+        plan: Vec<MissionPoint>,
+        return_height: Option<f32>,
+        cx: &mut Ctx,
+    ) {
         cx.changed = true;
         if self.run.is_some() {
             cx.state.missions.refused += 1;
@@ -416,22 +477,34 @@ impl Missions {
         state.started = Some(cx.now);
         state.ended = None;
         let target = Self::target(cx);
-        let count = u16::try_from(plan.len());
+        let count = if kind == MissionKind::Upload {
+            u16::try_from(plan.len() + 1)
+        } else {
+            Ok(0)
+        };
         let invalid = plan
             .iter()
             .enumerate()
             .find_map(|(at, point)| Some((at, point_problem(point)?)));
-        let (Some(target), Ok(count), None) = (target, count, invalid) else {
+        let height_ok = return_height.is_none_or(f32::is_finite);
+        let (Some(target), Ok(count), None, true, false) = (
+            target,
+            count,
+            invalid,
+            height_ok,
+            plan.len() > MAX_WAYPOINTS,
+        ) else {
             let reason = if target.is_none() {
                 MissionFailure::NoVehicle
-            } else if count.is_err() {
+            } else if count.is_err() || plan.len() > MAX_WAYPOINTS {
                 MissionFailure::CountTooLarge
-            } else {
-                let (at, problem) = invalid.unwrap_or_default();
+            } else if let Some((at, problem)) = invalid {
                 MissionFailure::InvalidWaypoint {
                     seq: u16::try_from(at).unwrap_or(u16::MAX),
                     problem,
                 }
+            } else {
+                MissionFailure::InvalidReturnHeight
             };
             cx.state.missions.status = MissionStatus::Failed {
                 reason,
@@ -445,7 +518,7 @@ impl Missions {
                 Retry::Count,
                 MissionStatus::Uploading {
                     sent: 0,
-                    total: count,
+                    total: count - 1,
                 },
             ),
             MissionKind::Clear => (Retry::ClearAll, MissionStatus::Clearing),
@@ -460,10 +533,11 @@ impl Missions {
         let run = Run {
             target,
             kind,
-            plan_id: plan_id(&plan),
+            plan_id: return_height.map_or(0, |height| plan_id(&plan, height)),
             plan,
+            return_height,
             count,
-            last_sent: kind == MissionKind::Clear || count == 0,
+            last_sent: kind != MissionKind::Upload,
             sent_items: 0,
             step: Step::Await {
                 what,
@@ -513,6 +587,7 @@ impl Missions {
         let list = VehicleList {
             plan_id: run.down.plan_id,
             items: std::mem::take(&mut run.down.items),
+            return_height: run.down.ret,
         };
         let status = if !run.read_back {
             MissionStatus::Complete
@@ -536,19 +611,31 @@ impl Missions {
 
     /// Why the read-back is not what was sent; `None` when it is.
     fn compare(run: &Run, list: &VehicleList) -> Option<MissionFailure> {
+        let sent = u16::try_from(run.plan.len()).unwrap_or(u16::MAX);
         let found = u16::try_from(list.items.len()).unwrap_or(u16::MAX);
-        if found != run.count {
-            return Some(MissionFailure::CountDiffers {
-                sent: run.count,
-                found,
-            });
+        if found != sent {
+            return Some(MissionFailure::CountDiffers { sent, found });
         }
-        let first = (0..run.count).find(|&seq| {
+        let first = (0..sent).find(|&seq| {
             let at = usize::from(seq);
             list.items[at] != run.plan[at] || run.down.odd == Some(seq)
         });
         if let Some(seq) = first {
             return Some(MissionFailure::ItemDiffers { seq });
+        }
+        let same_height = match (run.return_height, list.return_height) {
+            (Some(sent), Some(found)) => sent.to_bits() == found.to_bits(),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same_height {
+            return Some(MissionFailure::ReturnHeightDiffers {
+                sent: run.return_height,
+                found: list.return_height,
+            });
+        }
+        if run.down.odd == Some(sent) {
+            return Some(MissionFailure::ItemDiffers { seq: sent });
         }
         (list.plan_id != run.plan_id).then_some(MissionFailure::PlanIdDiffers {
             sent: run.plan_id,
@@ -618,8 +705,8 @@ impl Missions {
             Step::ItemWait { since: cx.now }
         };
         cx.state.missions.status = MissionStatus::Uploading {
-            sent: run.sent_items,
-            total: run.count,
+            sent: run.sent_items.min(run.count - 1),
+            total: run.count - 1,
         };
         cx.changed = true;
     }
@@ -698,18 +785,32 @@ impl Missions {
             cx.out.push(run.message(Retry::RequestInt(asked)));
             return;
         }
-        if (item.frame != FRAME || item.command != WAYPOINT) && run.down.odd.is_none() {
+        let last = Some(asked + 1) == run.down.count;
+        let (command, flat) = if last {
+            (RETURN, item.x == 0 && item.y == 0)
+        } else {
+            (WAYPOINT, true)
+        };
+        if (item.frame != FRAME || item.command != command || !flat) && run.down.odd.is_none() {
             run.down.odd = Some(asked);
         }
-        run.down.items.push(MissionPoint {
-            lat_e7: item.x,
-            lon_e7: item.y,
-            z: item.z,
-        });
+        if last {
+            run.down.ret = (item.command == RETURN).then_some(item.z);
+        } else {
+            run.down.items.push(MissionPoint {
+                lat_e7: item.x,
+                lon_e7: item.y,
+                z: item.z,
+            });
+        }
         cx.changed = true;
-        if Some(asked + 1) == run.down.count {
+        if last {
             cx.out.push(run.ack(MavMissionResult::MAV_MISSION_ACCEPTED));
-            self.finish_download(cx);
+            if run.down.ret.is_some() {
+                self.finish_download(cx);
+            } else {
+                self.fail_download(MissionFailure::NoReturnItem, cx);
+            }
             return;
         }
         run.step = Step::Await {
@@ -805,9 +906,12 @@ impl Service for Missions {
 
     fn on_command(&mut self, command: &Command, cx: &mut Ctx) {
         match command {
-            Command::UploadMission { items } => self.begin(MissionKind::Upload, items.clone(), cx),
-            Command::ClearMission => self.begin(MissionKind::Clear, Vec::new(), cx),
-            Command::DownloadMission => self.begin(MissionKind::Download, Vec::new(), cx),
+            Command::UploadMission {
+                items,
+                return_height,
+            } => self.begin(MissionKind::Upload, items.clone(), Some(*return_height), cx),
+            Command::ClearMission => self.begin(MissionKind::Clear, Vec::new(), None, cx),
+            Command::DownloadMission => self.begin(MissionKind::Download, Vec::new(), None, cx),
             _ => {}
         }
     }

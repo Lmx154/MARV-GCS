@@ -1019,7 +1019,10 @@ mod access {
                 |m| matches!(m, Message::MISSION_CLEAR_ALL(_)),
             ),
             (
-                || Command::UploadMission { items: Vec::new() },
+                || Command::UploadMission {
+                    items: Vec::new(),
+                    return_height: 20.0,
+                },
                 |m| matches!(m, Message::MISSION_COUNT(_)),
             ),
         ];
@@ -1156,7 +1159,10 @@ mod access {
             ),
             (Command::StopSessionLog, Access::Operate, "StopSessionLog"),
             (
-                Command::UploadMission { items: Vec::new() },
+                Command::UploadMission {
+                    items: Vec::new(),
+                    return_height: 20.0,
+                },
                 Access::Operate,
                 "UploadMission",
             ),
