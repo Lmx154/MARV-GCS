@@ -3,11 +3,11 @@
 //! What to show is decided by the pure functions below, tested without a display; `Controls::ui` only draws it.
 //! There is no button here that arms, disarms or stops the motors.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eframe::egui::{self, RichText};
 use gcs_mavlink::{
-    Command, FlightCommand, FlightMode, FlightResult, FlightState, LinkState, LinkStatus,
+    Command, FlightCommand, FlightMode, FlightOutcome, FlightState, LinkState, LinkStatus,
     VehicleState,
 };
 
@@ -45,18 +45,71 @@ pub fn mode_line(flight: &FlightState, link_up: bool) -> String {
     }
 }
 
-/// The error under the buttons: the last result when it is not an acceptance and was not dismissed. `key`
-/// tells one result from the next, equal ones included (the session time the command started).
-pub fn error_line(
-    last: Option<FlightResult>,
-    key: Option<Duration>,
-    dismissed: Option<(FlightResult, Option<Duration>)>,
-) -> Option<String> {
-    let last = last?;
-    if dismissed == Some((last, key)) {
+/// How the result line is coloured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Waiting,
+    Accepted,
+    Failed,
+}
+
+/// The result line under the buttons: what the vehicle answered to the last flight command and when, or that it has
+/// not answered yet. `clock` turns a session time into the laptop's local time of day. `dismissed` is the `sent` time
+/// of the result the user dismissed (or that a new press cleared); that result is not shown.
+pub fn result_line(
+    flight: &FlightState,
+    dismissed: Option<Option<Duration>>,
+    clock: impl Fn(Duration) -> String,
+) -> Option<(Tone, String)> {
+    if dismissed == Some(flight.sent) {
         return None;
     }
-    last.error()
+    let sent = flight.sent.map(&clock).unwrap_or_default();
+    if let Some(command) = flight.pending {
+        return Some((
+            Tone::Waiting,
+            format!("{}: sent, waiting for the vehicle", command.label()),
+        ));
+    }
+    let last = flight.last?;
+    let button = last.command.label();
+    let at = flight.answered.map(&clock).unwrap_or_default();
+    Some(match last.outcome {
+        FlightOutcome::Accepted => (
+            Tone::Accepted,
+            format!("{button} ACCEPTED by the vehicle at {at}"),
+        ),
+        FlightOutcome::NoAnswer => (
+            Tone::Failed,
+            format!("{button}: NO ANSWER from the vehicle (sent {sent})"),
+        ),
+        FlightOutcome::NotSent => (
+            Tone::Failed,
+            format!("{button} NOT SENT at {at}: the vehicle is not connected"),
+        ),
+        FlightOutcome::Denied { .. } | FlightOutcome::Other(_) => (
+            Tone::Failed,
+            format!(
+                "{button} REFUSED at {at}: {}",
+                last.reason().unwrap_or_default()
+            ),
+        ),
+    })
+}
+
+/// The laptop's local time of day, HH:MM:SS, at `unix_secs` seconds after the Unix epoch.
+pub fn local_clock(unix_secs: u64) -> String {
+    let t = libc::time_t::try_from(unix_secs).unwrap_or(0);
+    // SAFETY: `tm` is plain data that `localtime_r` fills in; it is read only when `localtime_r` returned non-null.
+    let tm = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&t, &mut tm).is_null() {
+            let day = unix_secs % 86_400;
+            return format!("{:02}:{:02}:{:02} UTC", day / 3600, day / 60 % 60, day % 60);
+        }
+        tm
+    };
+    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
 /// The take-over panel.
@@ -114,11 +167,13 @@ pub fn panel_header(panel: Panel) -> Option<String> {
     }
 }
 
-/// What the buttons wait for: the Start confirmation and the dismissed error.
+/// What the buttons wait for: the Start confirmation and the dismissed (or cleared) result, by its send time.
 #[derive(Default)]
 pub struct Controls {
     pending_start: bool,
-    dismissed: Option<(FlightResult, Option<Duration>)>,
+    dismissed: Option<Option<Duration>>,
+    /// Unix seconds at session time 0, fixed at the first frame of the session so the shown times do not wobble.
+    epoch: Option<u64>,
 }
 
 impl Controls {
@@ -128,6 +183,14 @@ impl Controls {
 
     pub fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ViewCtx) {
         let state = cx.state;
+        if self.epoch.is_none()
+            && let Some(now) = cx.now
+        {
+            let unix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            self.epoch = Some(unix.saturating_sub(now.as_secs()));
+        }
         let outstanding = state.command.as_ref().is_some_and(|r| r.outstanding());
         let gate = gate(&state.link, cx.now.is_some(), outstanding);
         if gate.is_some() {
@@ -140,6 +203,7 @@ impl Controls {
                         self.pending_start = true;
                     } else {
                         self.pending_start = false;
+                        self.dismissed = Some(state.flight.sent);
                         cx.commands.push(Command::Flight(flight));
                     }
                 }
@@ -154,6 +218,7 @@ impl Controls {
                 ui.colored_label(theme::WARN, START_QUESTION);
                 if actions::button(ui, "Confirm", gate) {
                     self.pending_start = false;
+                    self.dismissed = Some(state.flight.sent);
                     cx.commands.push(Command::Flight(FlightCommand::Start));
                 }
                 if actions::button(ui, "Cancel", None) {
@@ -161,14 +226,17 @@ impl Controls {
                 }
             });
         }
-        let key = state.command.as_ref().map(|r| r.started);
-        if let Some(error) = error_line(state.flight.last, key, self.dismissed) {
+        let epoch = self.epoch.unwrap_or(0);
+        let clock = |t: Duration| local_clock(epoch + t.as_secs());
+        if let Some((tone, text)) = result_line(&state.flight, self.dismissed, clock) {
             ui.horizontal_wrapped(|ui| {
-                ui.colored_label(theme::ERROR, RichText::new(error).strong());
-                if actions::button(ui, "Dismiss", None)
-                    && let Some(last) = state.flight.last
-                {
-                    self.dismissed = Some((last, key));
+                match tone {
+                    Tone::Waiting => ui.label(theme::value(text)),
+                    Tone::Accepted => ui.colored_label(theme::OK, RichText::new(text).strong()),
+                    Tone::Failed => ui.colored_label(theme::ERROR, RichText::new(text).strong()),
+                };
+                if tone != Tone::Waiting && actions::button(ui, "Dismiss", None) {
+                    self.dismissed = Some(state.flight.sent);
                 }
             });
         }

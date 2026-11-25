@@ -1,5 +1,5 @@
 use super::*;
-use gcs_mavlink::{FlightOutcome, VehicleId};
+use gcs_mavlink::{FlightOutcome, FlightResult, VehicleId};
 
 fn state(status: LinkStatus, mode: Option<u32>) -> VehicleState {
     let mut state = VehicleState::default();
@@ -72,35 +72,130 @@ fn denied(code: i32) -> FlightResult {
     }
 }
 
+fn clock(t: Duration) -> String {
+    format!("00:00:{:02}", t.as_secs())
+}
+
+fn answered(last: FlightResult, sent: u64, at: u64) -> FlightState {
+    let mut flight = FlightState::default();
+    flight.begin(last.command, Duration::from_secs(sent));
+    flight.finish(last, Duration::from_secs(at));
+    flight
+}
+
 #[test]
-fn a_denial_is_an_error_with_the_reason_until_dismissed_or_replaced() {
-    let last = denied(6);
+fn no_command_yet_shows_no_line() {
+    assert_eq!(result_line(&FlightState::default(), None, clock), None);
+}
+
+#[test]
+fn a_command_without_an_answer_says_it_is_waiting() {
+    let mut flight = FlightState::default();
+    flight.begin(FlightCommand::Start, Duration::from_secs(1));
     assert_eq!(
-        error_line(Some(last), secs(1), None).as_deref(),
-        Some("No waypoints are stored on the vehicle: upload a mission first: Start refused")
+        result_line(&flight, None, clock),
+        Some((
+            Tone::Waiting,
+            "Start: sent, waiting for the vehicle".to_string()
+        ))
     );
-    assert_eq!(error_line(Some(last), secs(1), Some((last, secs(1)))), None);
-    // The same denial again is a new result: shown again.
-    assert!(error_line(Some(last), secs(9), Some((last, secs(1)))).is_some());
-    // An acceptance replaces it.
+}
+
+#[test]
+fn an_acceptance_is_stated_with_its_time_and_stays_until_dismissed() {
     let ok = FlightResult {
         command: FlightCommand::Start,
         outcome: FlightOutcome::Accepted,
     };
-    assert_eq!(error_line(Some(ok), secs(9), Some((last, secs(1)))), None);
-    assert_eq!(error_line(None, None, None), None);
+    let flight = answered(ok, 7, 9);
+    let shown = (
+        Tone::Accepted,
+        "Start ACCEPTED by the vehicle at 00:00:09".to_string(),
+    );
+    assert_eq!(result_line(&flight, None, clock), Some(shown.clone()));
+    // Still there on every later frame, whatever else is dismissed.
+    assert_eq!(
+        result_line(&flight, Some(Some(Duration::from_secs(3))), clock),
+        Some(shown)
+    );
+    // Dismissed: gone.
+    assert_eq!(result_line(&flight, Some(flight.sent), clock), None);
 }
 
 #[test]
-fn no_answer_is_an_error() {
+fn a_refusal_names_the_time_and_the_reason_and_stays_until_dismissed() {
+    let flight = answered(denied(6), 1, 2);
+    assert_eq!(
+        result_line(&flight, None, clock),
+        Some((
+            Tone::Failed,
+            "Start REFUSED at 00:00:02: No waypoints are stored on the vehicle: upload a mission first"
+                .to_string()
+        ))
+    );
+    assert_eq!(result_line(&flight, Some(flight.sent), clock), None);
+    let flight = answered(denied(20), 1, 2);
+    assert!(
+        result_line(&flight, None, clock)
+            .unwrap()
+            .1
+            .ends_with("set GDN_SRC to 1 in Parameters, then Start again")
+    );
+    let abort = FlightResult {
+        command: FlightCommand::Abort,
+        outcome: FlightOutcome::Denied { code: 15 },
+    };
+    assert_eq!(
+        result_line(&answered(abort, 1, 2), None, clock).unwrap().1,
+        "Abort REFUSED at 00:00:02: The arm switch is OFF: the landing continues"
+    );
+}
+
+#[test]
+fn no_answer_says_when_it_was_sent() {
     let r = FlightResult {
         command: FlightCommand::Abort,
         outcome: FlightOutcome::NoAnswer,
     };
     assert_eq!(
-        error_line(Some(r), None, None).as_deref(),
-        Some("Abort: no answer from the vehicle")
+        result_line(&answered(r, 5, 12), None, clock),
+        Some((
+            Tone::Failed,
+            "Abort: NO ANSWER from the vehicle (sent 00:00:05)".to_string()
+        ))
     );
+}
+
+#[test]
+fn an_old_refusal_is_gone_when_a_new_command_is_sent() {
+    let mut flight = answered(denied(6), 1, 2);
+    // The press hides the old result at once, before the session has taken the command.
+    let after_press = Some(flight.sent);
+    assert_eq!(result_line(&flight, after_press, clock), None);
+    // The session takes the command: the old text is replaced by the waiting line.
+    flight.begin(FlightCommand::Start, Duration::from_secs(8));
+    let line = result_line(&flight, after_press, clock).unwrap();
+    assert_eq!(line.0, Tone::Waiting);
+    assert!(!line.1.contains("REFUSED"));
+    // Answered: the new result, not the old one.
+    flight.finish(
+        FlightResult {
+            command: FlightCommand::Start,
+            outcome: FlightOutcome::Accepted,
+        },
+        Duration::from_secs(9),
+    );
+    assert_eq!(
+        result_line(&flight, after_press, clock).unwrap().1,
+        "Start ACCEPTED by the vehicle at 00:00:09"
+    );
+}
+
+#[test]
+fn the_local_clock_reads_hh_mm_ss() {
+    let text = local_clock(1_700_000_000);
+    assert_eq!(text.len(), 8, "{text}");
+    assert!(text.split(':').all(|p| p.parse::<u32>().is_ok()), "{text}");
 }
 
 #[test]

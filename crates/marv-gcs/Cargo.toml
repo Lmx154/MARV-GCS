@@ -23,6 +23,7 @@ egui_extras.workspace = true
 png.workspace = true
 walkers.workspace = true
 rfd.workspace = true
+libc = "0.2"
 
 [dev-dependencies]
 gcs-sim.workspace = true

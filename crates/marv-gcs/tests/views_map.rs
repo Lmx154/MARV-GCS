@@ -508,18 +508,65 @@ fn a_denial_shows_as_an_error_until_dismissed_and_the_mode_is_in_words() {
     let store = store_with_example("flight-deny");
     let mut state = connected();
     state.flight.mode_code = Some(3);
-    state.flight.last = Some(FlightResult {
-        command: FlightCommand::Start,
-        outcome: FlightOutcome::Denied { code: 11 },
-    });
+    state
+        .flight
+        .begin(FlightCommand::Start, Duration::from_secs(4));
+    state.flight.finish(
+        FlightResult {
+            command: FlightCommand::Start,
+            outcome: FlightOutcome::Denied { code: 11 },
+        },
+        Duration::from_secs(5),
+    );
     let mut window = window(&store, state, Some(5.0), Access::Operate);
+    let refused = |w: &Window| {
+        w.harness
+            .query_all_by_label_contains(": A waypoint is more than 1 km from the take-off point")
+            .next()
+            .is_some()
+    };
     window.harness.get_by_label("Mode: Holding position");
-    window
-        .harness
-        .get_by_label("A waypoint is more than 1 km from the take-off point: Start refused");
+    assert!(refused(&window));
+    window.harness.get_by_label_contains("Start REFUSED at ");
     window.harness.get_by_label("Dismiss").click();
     window.harness.run();
-    assert!(!window.shows("A waypoint is more than 1 km from the take-off point: Start refused"));
+    assert!(!refused(&window));
+    let _ = std::fs::remove_dir_all(store.dir());
+}
+
+#[test]
+fn an_acceptance_is_stated_and_stays_on_screen_until_dismissed() {
+    let store = store_with_example("flight-accept");
+    let mut state = connected();
+    state.flight.mode_code = Some(4);
+    state
+        .flight
+        .begin(FlightCommand::Start, Duration::from_secs(4));
+    state.flight.finish(
+        FlightResult {
+            command: FlightCommand::Start,
+            outcome: FlightOutcome::Accepted,
+        },
+        Duration::from_secs(5),
+    );
+    let mut window = window(&store, state, Some(5.0), Access::Operate);
+    window.harness.run();
+    window
+        .harness
+        .get_by_label_contains("Start ACCEPTED by the vehicle at ");
+    window.harness.run();
+    window
+        .harness
+        .get_by_label_contains("Start ACCEPTED by the vehicle at ");
+    window.harness.get_by_label("Dismiss").click();
+    window.harness.run();
+    assert!(
+        window
+            .harness
+            .query_all_by_label_contains("Start ACCEPTED")
+            .next()
+            .is_none()
+    );
     let _ = std::fs::remove_dir_all(store.dir());
 }
 

@@ -2246,6 +2246,7 @@ dependencies = [
  "gcs-mavlink",
  "gcs-sim",
  "gcs-transport",
+ "libc",
  "marv-dialect",
  "png 0.18.1",
  "rfd",

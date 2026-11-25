@@ -254,8 +254,14 @@ fn flag_names(text: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Armed from HEARTBEAT `base_mode` (flag text or number); `None` when it cannot be read.
+/// Armed from HEARTBEAT: the vehicle's mode code in `custom_mode` (1 to 8: armed in all but 7, STOP) when it reports
+/// one, else `base_mode` (flag text or number); `None` when it cannot be read.
 fn armed(entry: &MessageEntry) -> Option<bool> {
+    if let Some(code) = entry.number("custom_mode")
+        && (1.0..=8.0).contains(&code)
+    {
+        return Some(code != 7.0);
+    }
     if let Some(text) = entry.text("base_mode") {
         return Some(flag_names(text).contains(&"MAV_MODE_FLAG_SAFETY_ARMED"));
     }
@@ -304,12 +310,18 @@ pub(crate) fn motor_summary(store: &MessageStore, now: Option<Duration>) -> Moto
     }
 }
 
-fn vehicle(ui: &mut egui::Ui, store: &MessageStore, now: Option<Duration>) {
-    match fresh(store, "HEARTBEAT", now, HEARTBEAT_STALE).and_then(armed) {
-        Some(true) => line(ui, YELLOW, "ARMED"),
-        Some(false) => line(ui, GREEN, "Disarmed"),
-        None => line(ui, GREY, "Armed state: no data"),
+fn armed_line(armed: Option<bool>) -> (Color32, &'static str) {
+    match armed {
+        Some(true) => (YELLOW, "ARMED"),
+        Some(false) => (GREEN, "Disarmed"),
+        None => (GREY, "Armed state: no data"),
     }
+}
+
+fn vehicle(ui: &mut egui::Ui, store: &MessageStore, now: Option<Duration>) {
+    let (colour, text) =
+        armed_line(fresh(store, "HEARTBEAT", now, HEARTBEAT_STALE).and_then(armed));
+    line(ui, colour, text);
     match motor_summary(store, now) {
         MotorSummary::NoData => line(ui, GREY, "Motors: no data"),
         MotorSummary::AllOnline(n) => line(ui, GREEN, format!("{n}/{n} ESCs online")),
@@ -709,6 +721,41 @@ mod tests {
         assert_eq!(armed(&entry(vec![number("base_mode", 129.0)])), Some(true));
         assert_eq!(armed(&entry(vec![number("base_mode", 1.0)])), Some(false));
         assert_eq!(armed(&entry(vec![])), None);
+    }
+
+    #[test]
+    fn the_mode_code_decides_armed_when_the_vehicle_reports_one() {
+        // The vehicle's HEARTBEAT has base_mode 0 and carries its state in custom_mode.
+        for code in 1..=8 {
+            let entry = entry(vec![
+                number("base_mode", 0.0),
+                number("custom_mode", code as f64),
+            ]);
+            let shown = armed_line(armed(&entry));
+            if code == 7 {
+                assert_eq!(armed(&entry), Some(false), "code {code}");
+                assert_eq!(shown, (GREEN, "Disarmed"));
+            } else {
+                assert_eq!(armed(&entry), Some(true), "code {code}");
+                assert_eq!(shown, (YELLOW, "ARMED"));
+            }
+        }
+        // Code 0, no code, or an unassigned one: base_mode decides as before.
+        for fields in [
+            vec![number("base_mode", 0.0), number("custom_mode", 0.0)],
+            vec![number("base_mode", 0.0)],
+            vec![number("base_mode", 0.0), number("custom_mode", 9.0)],
+        ] {
+            assert_eq!(armed(&entry(fields)), Some(false));
+        }
+        assert_eq!(
+            armed(&entry(vec![
+                number("base_mode", 129.0),
+                number("custom_mode", 0.0)
+            ])),
+            Some(true)
+        );
+        assert_eq!(armed_line(None), (GREY, "Armed state: no data"));
     }
 
     #[test]
