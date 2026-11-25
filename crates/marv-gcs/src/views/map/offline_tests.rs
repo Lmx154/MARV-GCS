@@ -144,7 +144,11 @@ fn serve(tiles_answer: &'static str) -> String {
             let body = b"0123456789";
             let head = format!(
                 "HTTP/1.1 {tiles_answer}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                if tiles_answer.starts_with("200") { body.len() } else { 0 }
+                if tiles_answer.starts_with("200") {
+                    body.len()
+                } else {
+                    0
+                }
             );
             let _ = stream.write_all(head.as_bytes());
             if tiles_answer.starts_with("200") {
@@ -202,7 +206,10 @@ fn a_download_stores_every_tile_and_a_second_one_fetches_nothing() {
         assert!(f.is_stored(layer, id), "{id:?}");
     }
     let again = wait(&Job::start(&plan, &f, &ctx));
-    assert_eq!((again.done, again.fetched, again.bytes), (plan.tiles(), 0, 0));
+    assert_eq!(
+        (again.done, again.fetched, again.bytes),
+        (plan.tiles(), 0, 0)
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -211,7 +218,11 @@ fn tiles_the_server_does_not_have_are_counted_and_do_not_stop_the_download() {
     let base = serve("404 Not Found");
     let dir = scratch("absent");
     let plan = plan(&small(15.0), &[Layer::Imagery]);
-    let done = wait(&Job::start(&plan, &fetcher(&base, &dir), &egui::Context::default()));
+    let done = wait(&Job::start(
+        &plan,
+        &fetcher(&base, &dir),
+        &egui::Context::default(),
+    ));
     assert_eq!((done.absent, done.failed), (plan.tiles(), 0));
     assert_eq!(done.gave_up, None);
     let _ = std::fs::remove_dir_all(dir);
@@ -246,7 +257,11 @@ fn a_server_that_never_answers_stops_the_download() {
     };
     let plan = plan(&area, &[Layer::Imagery]);
     assert!(plan.tiles() > u64::from(GIVE_UP_AFTER) * 2);
-    let done = wait(&Job::start(&plan, &fetcher(&base, &dir), &egui::Context::default()));
+    let done = wait(&Job::start(
+        &plan,
+        &fetcher(&base, &dir),
+        &egui::Context::default(),
+    ));
     assert!(done.gave_up.is_some());
     assert!(done.done < plan.tiles());
     assert!(!dir.exists());

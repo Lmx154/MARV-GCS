@@ -372,12 +372,21 @@ impl MapView {
 }
 
 /// The tiles, created at the first frame that wants them.
-fn tiles<'a>(source: &'a mut TileSource, ctx: &egui::Context, offline: &Arc<AtomicBool>) -> Option<&'a mut Tiling> {
+fn tiles<'a>(
+    source: &'a mut TileSource,
+    ctx: &egui::Context,
+    offline: &Arc<AtomicBool>,
+) -> Option<&'a mut Tiling> {
     if matches!(source, TileSource::Pending) {
         *source = match Fetcher::new(environment_cache_dir(), offline.clone(), USER_AGENT) {
             Some(fetcher) => TileSource::Ready(Box::new(Tiling {
                 streets: DiskTiles::new(Layer::Streets, fetcher.clone(), dark_style(), ctx.clone()),
-                imagery: DiskTiles::new(Layer::Imagery, fetcher.clone(), Style::default(), ctx.clone()),
+                imagery: DiskTiles::new(
+                    Layer::Imagery,
+                    fetcher.clone(),
+                    Style::default(),
+                    ctx.clone(),
+                ),
                 fetcher,
             })),
             None => TileSource::None,
@@ -672,24 +681,24 @@ impl View for MapView {
                 &mut self.memory,
                 vehicle,
             )
-                .zoom_with_ctrl(false)
-                .show(ui, |ui, response, projector, _| {
-                    if let Some(tiles) = streets {
-                        draw_base(ui, projector, tiles);
+            .zoom_with_ctrl(false)
+            .show(ui, |ui, response, projector, _| {
+                if let Some(tiles) = streets {
+                    draw_base(ui, projector, tiles);
+                }
+                visible = Some(visible_area(projector));
+                draw_track(ui, projector, tracker, status, heading);
+                waypoints.interact_and_draw(ui, response, projector, on_vehicle.as_deref());
+                overlay_status(ui, response.rect, status);
+                if let (Some((text, at)), Some(now)) = (notice, cx_now) {
+                    if now.saturating_sub(*at) < Duration::from_secs(NOTICE_SECS) {
+                        overlay_notice(ui, response.rect, text);
                     }
-                    visible = Some(visible_area(projector));
-                    draw_track(ui, projector, tracker, status, heading);
-                    waypoints.interact_and_draw(ui, response, projector, on_vehicle.as_deref());
-                    overlay_status(ui, response.rect, status);
-                    if let (Some((text, at)), Some(now)) = (notice, cx_now) {
-                        if now.saturating_sub(*at) < Duration::from_secs(NOTICE_SECS) {
-                            overlay_notice(ui, response.rect, text);
-                        }
-                    }
-                    let attribution = overlay_attribution(ui, response.rect, layer.credit());
-                    overlay_compass(ui, response.rect, attribution);
-                    overlay_scale(ui, response.rect, projector);
-                });
+                }
+                let attribution = overlay_attribution(ui, response.rect, layer.credit());
+                overlay_compass(ui, response.rect, attribution);
+                overlay_scale(ui, response.rect, projector);
+            });
         });
         if visible.is_some() {
             self.visible = visible;
@@ -1998,7 +2007,11 @@ mod tests {
             });
         harness.run();
         harness.get_by_label(ATTRIBUTION);
-        assert!(harness.query_by_label("Imagery: USGS The National Map").is_none());
+        assert!(
+            harness
+                .query_by_label("Imagery: USGS The National Map")
+                .is_none()
+        );
         harness.get_by_label("Imagery").click();
         harness.run();
         harness.get_by_label("Imagery: USGS The National Map");
@@ -2048,7 +2061,12 @@ mod tests {
         view.layer = Layer::Imagery;
         view.tiles = TileSource::Ready(Box::new(Tiling {
             streets: DiskTiles::new(Layer::Streets, fetcher.clone(), dark_style(), ctx.clone()),
-            imagery: DiskTiles::new(Layer::Imagery, fetcher.clone(), Style::default(), ctx.clone()),
+            imagery: DiskTiles::new(
+                Layer::Imagery,
+                fetcher.clone(),
+                Style::default(),
+                ctx.clone(),
+            ),
             fetcher,
         }));
         let state = VehicleState::default();

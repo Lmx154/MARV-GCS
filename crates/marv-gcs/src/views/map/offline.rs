@@ -8,8 +8,8 @@ use std::time::Duration;
 use eframe::egui;
 use walkers::TileId;
 
-use super::tilestore::{Fetched, Fetcher, Layer};
 use super::tile_at;
+use super::tilestore::{Fetched, Fetcher, Layer};
 
 /// A download of more tiles than this is refused.
 pub const MAX_TILES: u64 = 20_000;
@@ -377,10 +377,7 @@ impl Panel {
             }
         }
         ui.horizontal_wrapped(|ui| {
-            ui.add_enabled(
-                !busy,
-                egui::Checkbox::new(&mut self.both, "Both map types"),
-            );
+            ui.add_enabled(!busy, egui::Checkbox::new(&mut self.both, "Both map types"));
             let layers: Vec<Layer> = if self.both {
                 Layer::ALL.to_vec()
             } else {

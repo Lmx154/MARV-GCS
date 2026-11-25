@@ -151,7 +151,10 @@ mod tests {
 
     #[test]
     fn extra_spaces_around_and_between_the_words_are_fine() {
-        assert_eq!(parse_mark("  MARK   2  NOFIX  "), Some(Mark::NoFix { n: 2 }));
+        assert_eq!(
+            parse_mark("  MARK   2  NOFIX  "),
+            Some(Mark::NoFix { n: 2 })
+        );
         assert_eq!(
             parse_mark("MARK  2   10000000  20000000   50 "),
             Some(Mark::Pin {
@@ -249,7 +252,10 @@ mod tests {
         marks.take(&log);
         log.entries.clear();
         push(&mut log, Severity::Info, "MARK 2 NOFIX");
-        assert_eq!(marks.take(&log).iter().map(Mark::n).collect::<Vec<_>>(), [2]);
+        assert_eq!(
+            marks.take(&log).iter().map(Mark::n).collect::<Vec<_>>(),
+            [2]
+        );
     }
 
     #[test]

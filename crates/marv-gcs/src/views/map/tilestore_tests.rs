@@ -90,7 +90,10 @@ fn the_imagery_url_has_the_row_before_the_column_and_stops_at_zoom_16() {
     assert_eq!(Layer::Imagery.tile_size(), 256);
     assert_eq!(Layer::Streets.max_zoom(), 14);
     assert_eq!(Layer::Imagery.credit(), "Imagery: USGS The National Map");
-    assert_eq!(UsgsImagery.attribution().text, "Imagery: USGS The National Map");
+    assert_eq!(
+        UsgsImagery.attribution().text,
+        "Imagery: USGS The National Map"
+    );
 }
 
 #[test]
@@ -213,7 +216,12 @@ fn the_map_draws_a_stored_tile_offline_and_over_zoomed_from_the_last_zoom() {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, png()).unwrap();
     let f = fetcher(Some(dir.clone()), "http://127.0.0.1:9", true, "ok");
-    let mut tiles = DiskTiles::new(Layer::Imagery, f, Style::default(), egui::Context::default());
+    let mut tiles = DiskTiles::new(
+        Layer::Imagery,
+        f,
+        Style::default(),
+        egui::Context::default(),
+    );
     let piece = wait_for(&mut tiles, tile(16, 100, 200)).expect("the stored tile");
     assert_eq!(piece.uv, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)));
     let closer = wait_for(&mut tiles, tile(20, 16 * 100 + 5, 16 * 200 + 15)).unwrap();
@@ -234,7 +242,12 @@ fn a_tile_that_is_not_an_image_is_discarded_so_it_is_fetched_again() {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, b"not an image").unwrap();
     let f = fetcher(Some(dir.clone()), "http://127.0.0.1:9", true, "ok");
-    let mut tiles = DiskTiles::new(Layer::Imagery, f, Style::default(), egui::Context::default());
+    let mut tiles = DiskTiles::new(
+        Layer::Imagery,
+        f,
+        Style::default(),
+        egui::Context::default(),
+    );
     assert!(wait_for(&mut tiles, tile(2, 1, 1)).is_none());
     assert!(!path.exists());
     drop(tiles);
@@ -256,7 +269,10 @@ fn live_the_real_servers_answer_over_https_and_the_tiles_decode() {
         panic!("no imagery at zoom 16");
     };
     assert_eq!(&jpeg[..2], [0xFF, 0xD8]);
-    assert_eq!(f.get(Layer::Imagery, tile(17, 29767, 55649)), Fetched::Absent);
+    assert_eq!(
+        f.get(Layer::Imagery, tile(17, 29767, 55649)),
+        Fetched::Absent
+    );
     let mut streets = DiskTiles::new(
         Layer::Streets,
         f.clone(),
@@ -265,7 +281,12 @@ fn live_the_real_servers_answer_over_https_and_the_tiles_decode() {
     );
     let street = tile(14, 3720, 6956);
     assert!(wait_for(&mut streets, street).is_some(), "street tile");
-    let mut imagery = DiskTiles::new(Layer::Imagery, f, Style::default(), egui::Context::default());
+    let mut imagery = DiskTiles::new(
+        Layer::Imagery,
+        f,
+        Style::default(),
+        egui::Context::default(),
+    );
     assert!(wait_for(&mut imagery, tile(16, 14883, 27824)).is_some());
     let _ = std::fs::remove_dir_all(dir);
 }
