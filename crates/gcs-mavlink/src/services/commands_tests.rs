@@ -982,6 +982,41 @@ mod flight {
     }
 
     #[test]
+    fn a_new_flight_command_clears_the_old_result_and_times_the_new_one() {
+        let mut rig = Rig::new();
+        flight(&mut rig, FlightCommand::Start, 1_000);
+        let mut ack = ack_data(
+            MavCmd::MAV_CMD_MISSION_START,
+            MavResult::MAV_RESULT_DENIED,
+            0,
+            255,
+            190,
+        );
+        ack.result_param2 = 6;
+        rig.ack_for(ack, 1, 1_500);
+        let f = &rig.state.flight;
+        assert_eq!(f.pending, None);
+        assert_eq!(f.sent, Some(Duration::from_millis(1_000)));
+        assert_eq!(f.answered, Some(Duration::from_millis(1_500)));
+        flight(&mut rig, FlightCommand::Start, 5_000);
+        let f = &rig.state.flight;
+        assert_eq!(f.last, None);
+        assert_eq!(f.pending, Some(FlightCommand::Start));
+        assert_eq!(f.sent, Some(Duration::from_millis(5_000)));
+        assert_eq!(f.answered, None);
+        rig.ack(
+            MavCmd::MAV_CMD_MISSION_START,
+            MavResult::MAV_RESULT_ACCEPTED,
+            0,
+            5_200,
+        );
+        let f = &rig.state.flight;
+        assert_eq!(f.last.unwrap().outcome, FlightOutcome::Accepted);
+        assert_eq!(f.pending, None);
+        assert_eq!(f.answered, Some(Duration::from_millis(5_200)));
+    }
+
+    #[test]
     fn no_ack_ends_as_no_answer_after_three_sends() {
         let mut rig = Rig::new();
         flight(&mut rig, FlightCommand::Land, 0);

@@ -1,6 +1,8 @@
 //! The five flight commands and the vehicle's reported mode (docs/link-contract.md, section 10: "Flight
 //! commands and the effective mode", Amendment C). Pure data: no command here arms, disarms or stops the motors.
 
+use std::time::Duration;
+
 use crate::dialect::{MavCmd, MavResult};
 
 /// The vehicle's HEARTBEAT `custom_mode` of PILOT, TAKEOVER, HOLD, AUTO, RETURN, LAND, STOP and BLIND.
@@ -83,6 +85,19 @@ pub struct FlightResult {
 }
 
 impl FlightResult {
+    /// What the vehicle answered, in words without the button's name; `None` when it was accepted.
+    pub fn reason(&self) -> Option<String> {
+        match self.outcome {
+            FlightOutcome::Accepted | FlightOutcome::NoAnswer => None,
+            FlightOutcome::Denied { code: 15 } if self.command == FlightCommand::Abort => {
+                Some(format!("{}: the landing continues", deny_text(15)))
+            }
+            FlightOutcome::Denied { code } => Some(deny_text(code)),
+            FlightOutcome::Other(text) => Some(text.to_string()),
+            FlightOutcome::NotSent => Some("the vehicle is not connected".to_string()),
+        }
+    }
+
     /// The error to show, or `None` when it was accepted.
     pub fn error(&self) -> Option<String> {
         let button = self.command.label();
@@ -137,6 +152,9 @@ pub fn deny_text(code: i32) -> String {
         17 => "The battery is critical",
         18 => "The link to this station was lost for more than 10 s",
         19 => "The mission switch (channel 8) is not confirmed ON: no live stick report with it ON",
+        20 => {
+            "The vehicle holds a mission but is set to ignore it (GDN_SRC is 0): set GDN_SRC to 1 in Parameters, then Start again"
+        }
         other => return format!("Refused, reason not known (code {other})"),
     }
     .to_string()
@@ -213,6 +231,29 @@ pub struct FlightState {
     pub mode_code: Option<u32>,
     /// The last flight command and how it ended; replaced by the next.
     pub last: Option<FlightResult>,
+    /// The flight command sent and not yet answered.
+    pub pending: Option<FlightCommand>,
+    /// Session time at which the last flight command was sent.
+    pub sent: Option<Duration>,
+    /// Session time at which `last` was answered (or given up on); `None` while `pending`.
+    pub answered: Option<Duration>,
+}
+
+impl FlightState {
+    /// A flight command goes out: the previous result is gone.
+    pub fn begin(&mut self, command: FlightCommand, now: Duration) {
+        self.last = None;
+        self.pending = Some(command);
+        self.sent = Some(now);
+        self.answered = None;
+    }
+
+    /// The flight command ended.
+    pub fn finish(&mut self, result: FlightResult, now: Duration) {
+        self.last = Some(result);
+        self.pending = None;
+        self.answered = Some(now);
+    }
 }
 
 #[cfg(test)]

@@ -702,6 +702,10 @@ Every DENIED `COMMAND_ACK` carries a reason code in `result_param2` (`COMMAND_AC
 CONFIRMED AGAINST THE FIRMWARE'S `DenyReason::code()` BEFORE EITHER SIDE IS BUILT. The station shows the text of the
 code, then ": " and the pressed button with " refused", for example, code 11 on Start: "A waypoint is more than 1 km
 from the take-off point: Start refused". A code not in the table: "Refused, reason not known (code N): <button> refused".
+The window's result line under the buttons (2026-11-24) states, for the last flight command only, one of: "<button>: sent,
+waiting for the vehicle"; "<button> ACCEPTED by the vehicle at HH:MM:SS"; "<button> REFUSED at HH:MM:SS: <the text of the
+code>"; "<button>: NO ANSWER from the vehicle (sent HH:MM:SS)" (laptop local time). It is cleared when the next flight
+command is sent and otherwise kept until Dismiss.
 
 | Code | Reason | The text the station shows (before ": <button> refused") |
 |---|---|---|
@@ -725,6 +729,7 @@ from the take-off point: Start refused". A code not in the table: "Refused, reas
 | 17 | battery critical | "The battery is critical" |
 | 18 | link lost | "The link to this station was lost for more than 10 s" |
 | 19 | mission switch not confirmed ON (NEW, firmware Amendment N19) | "The mission switch (channel 8) is not confirmed ON: no live stick report with it ON" |
+| 20 | a mission is stored but `GDN_SRC` is not 1 (NEW; answered where code 6 is answered when a mission is stored) | "The vehicle holds a mission but is set to ignore it (GDN_SRC is 0): set GDN_SRC to 1 in Parameters, then Start again" |
 
 The station sends them as every command above (one outstanding, three sends 1.5 s apart, the ACK rule); the first
 ACCEPTED or DENIED ends one. It shows the effective mode from the HEARTBEAT, not from the ACK.

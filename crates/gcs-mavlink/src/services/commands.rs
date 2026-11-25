@@ -194,14 +194,21 @@ impl Commands {
             refused: None,
             cancel: None,
         };
+        let flight = FlightCommand::from_wire(command, &params);
+        if let Some(flight) = flight {
+            cx.state.flight.begin(flight, cx.now);
+        }
         let Some(target) = Self::target(cx) else {
             record.status = CommandStatus::Refused("the vehicle is not connected".to_string());
             cx.state.command = Some(record);
-            if let Some(command) = FlightCommand::from_wire(command, &params) {
-                cx.state.flight.last = Some(FlightResult {
-                    command,
-                    outcome: FlightOutcome::NotSent,
-                });
+            if let Some(command) = flight {
+                cx.state.flight.finish(
+                    FlightResult {
+                        command,
+                        outcome: FlightOutcome::NotSent,
+                    },
+                    cx.now,
+                );
             }
             cx.changed = true;
             return;
@@ -309,10 +316,13 @@ impl Commands {
         };
         record.status = CommandStatus::Finished { text, accepted };
         if let Some(command) = FlightCommand::from_wire(track.command, &track.params) {
-            cx.state.flight.last = Some(FlightResult {
-                command,
-                outcome: outcome_of(result, ack.result_param2, text),
-            });
+            cx.state.flight.finish(
+                FlightResult {
+                    command,
+                    outcome: outcome_of(result, ack.result_param2, text),
+                },
+                cx.now,
+            );
         }
         if accepted {
             note_accepted(track.command, track.params, &mut cx.state.calibration);
@@ -444,10 +454,13 @@ impl Service for Commands {
                         record.status = CommandStatus::NoAnswer;
                     }
                     if let Some(command) = FlightCommand::from_wire(track.command, &track.params) {
-                        cx.state.flight.last = Some(FlightResult {
-                            command,
-                            outcome: FlightOutcome::NoAnswer,
-                        });
+                        cx.state.flight.finish(
+                            FlightResult {
+                                command,
+                                outcome: FlightOutcome::NoAnswer,
+                            },
+                            cx.now,
+                        );
                     }
                     self.end(cx);
                     cx.changed = true;

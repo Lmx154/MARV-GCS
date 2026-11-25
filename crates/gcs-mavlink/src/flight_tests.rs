@@ -49,8 +49,8 @@ fn only_exactly_these_commands_are_flight_commands() {
 }
 
 #[test]
-fn each_of_the_19_codes_and_0_has_its_text() {
-    let texts: Vec<String> = (0..=19).map(deny_text).collect();
+fn each_of_the_20_codes_and_0_has_its_text() {
+    let texts: Vec<String> = (0..=20).map(deny_text).collect();
     assert_eq!(texts[0], "Refused, no reason given");
     assert_eq!(
         texts[1],
@@ -78,6 +78,10 @@ fn each_of_the_19_codes_and_0_has_its_text() {
         texts[19],
         "The mission switch (channel 8) is not confirmed ON: no live stick report with it ON"
     );
+    assert_eq!(
+        texts[20],
+        "The vehicle holds a mission but is set to ignore it (GDN_SRC is 0): set GDN_SRC to 1 in Parameters, then Start again"
+    );
     for (a, text) in texts.iter().enumerate() {
         assert!(!text.contains("not known"), "code {a}");
         assert_eq!(
@@ -90,7 +94,7 @@ fn each_of_the_19_codes_and_0_has_its_text() {
 
 #[test]
 fn an_unknown_code_is_shown_with_its_number() {
-    assert_eq!(deny_text(20), "Refused, reason not known (code 20)");
+    assert_eq!(deny_text(21), "Refused, reason not known (code 21)");
     assert_eq!(deny_text(-4), "Refused, reason not known (code -4)");
 }
 
@@ -163,4 +167,25 @@ fn the_mode_codes_decode_and_nine_is_unknown() {
         .filter(|c| FlightMode::from_code(*c).hands_off())
         .collect();
     assert_eq!(hands_off, [3, 4, 5, 6, 8]);
+}
+
+#[test]
+fn the_reason_is_the_text_without_the_button() {
+    let denied = |command, code| FlightResult {
+        command,
+        outcome: FlightOutcome::Denied { code },
+    };
+    assert_eq!(
+        denied(FlightCommand::Start, 20).reason().as_deref(),
+        Some(deny_text(20).as_str())
+    );
+    assert_eq!(
+        denied(FlightCommand::Abort, 15).reason().as_deref(),
+        Some("The arm switch is OFF: the landing continues")
+    );
+    let accepted = FlightResult {
+        command: FlightCommand::Start,
+        outcome: FlightOutcome::Accepted,
+    };
+    assert_eq!(accepted.reason(), None);
 }
