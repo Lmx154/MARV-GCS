@@ -69,7 +69,7 @@ taken), otherwise DENIED; never IN_PROGRESS, TEMPORARILY_REJECTED or FAILED. DEN
 
 | Order | Condition | Code on failure |
 |---|---|---|
-| 1 | The station is present on the radio link: a station `HEARTBEAT` received on the radio within 5.0 s (a USB heartbeat does not count) | 5 |
+| 1 | The station is present on the radio link: a station `HEARTBEAT` received on the radio within 10.0 s (a USB heartbeat does not count) | 5 |
 | 2 | A list with waypoints is stored: `count` 2 or more (`count` 1 is the return item alone) | 6, or 20 when a mission is stored but `GDN_SRC` is 0 |
 | 3 | Home is set (its height at the arming step, its position at the first armed step with a position, before take-off; cleared at disarm) | 8 |
 | 4 | The vehicle and every stored waypoint are at most 1000 m horizontally from home (checked at every Start and nowhere else; a waypoint at 1000.5 m or a vehicle at 1001 m is refused) | 9, 10, 11 |
