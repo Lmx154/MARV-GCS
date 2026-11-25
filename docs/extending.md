@@ -1,14 +1,16 @@
 # Extending the ground station
 
+Part of [MARV-GCS](../README.md)
+
 The ground station is built so that the firmware can grow without the ground station being reworked.
 Most additions need no change here at all; the rest are one file plus one or two registry lines.
-`docs/architecture.md` has the layer rules these recipes rely on.
+[architecture](architecture.md) has the layer rules these recipes rely on.
 
 ## What needs no change here
 
 | The firmware adds | What happens |
 |---|---|
-| A parameter or setting | It shows up in the Parameters tab: the list is whatever the vehicle reports. Grouping comes from the name's prefix before the first `_`. The link carries no metadata: the units, descriptions and ranges of the firmware's 80 parameters are a table in `gcs_mavlink::param_info`, and a parameter not in it still shows up, without them. |
+| A parameter or setting | It shows up in the Parameters tab: the list is whatever the vehicle reports. Grouping comes from the name's prefix before the first `_`. The link carries no metadata: the units, descriptions and ranges of the firmware's parameters are a table in `gcs_mavlink::param_info`, and a parameter not in it still shows up, without them. |
 | A message from the standard `common` set | It shows up in the Messages tab with its rate and every field, and any numeric field can be plotted. It is also recorded in the telemetry log. |
 | A text message (STATUSTEXT) | It shows up in the Log tab. |
 
@@ -17,6 +19,7 @@ Most additions need no change here at all; the rest are one file plus one or two
 | To add | Where |
 |---|---|
 | A preset plot on the Sensors tab | One row in `PRESETS` in `crates/marv-gcs/src/views/sensors.rs`: title, message name, instance, field names, a `scale` (the unit conversion, 1.0 for none) and the raw values that mean "not available". The message and fields must be ones the real firmware sends. |
+| A sensor preset (a checked combination of existing parameters) | One entry in `crates/gcs-mavlink/src/presets/tables.rs` (`gcs_mavlink::presets`, used by the Devices cards and the `--debug` gate of `marv-cli`); the firmware needs nothing ([link-presets](link-presets.md)). |
 | A message that carries several instances (one per sensor) | One row in `INSTANCE_FIELDS` in `crates/gcs-mavlink/src/services/messages.rs`: message name and the field that says which instance. The row gives the instance its `[n]` label (`HIGHRES_IMU[2]`) and, for a number-valued field, the instance itself. If the field is an enum (the store shows it as text), the number cannot be read from the row: add also one arm to `enum_instance` in the same file, which returns it; such a message needs both. Its instances then get separate rows and separate plot series. |
 
 ## A new tab (view)
@@ -52,10 +55,10 @@ give every input widget an accessible name.
 
 Test it with plain calls and a made-up `now` (see `services/params_tests.rs`), then end to end against the
 simulator (`crates/marv-gcs/tests/e2e*.rs`, or through the command line, `crates/marv-cli/tests/logs.rs`; every loop that waits for a state or drains an API is bounded). When the firmware side of the feature is specified, write it
-into `docs/link-contract.md` first and teach the simulator (`crates/gcs-sim`) to behave that way, so the
+into the [link contract](link-contract.md) first and teach the simulator (`crates/gcs-sim`) to behave that way, so the
 ground station is developed against the real behaviour.
 
-The log service (`services/logs.rs`, contract in `docs/link-contract.md` section 11) is the worked example of a
+The log service (`services/logs.rs`, contract in [link-logs](link-logs.md)) is the worked example of a
 service that moves a lot of data: it never holds it. `Command::DownloadLog` carries a writer the caller opened
 (`LogSink`, the one the recorder takes); the service hands the bytes to it in order as they arrive and keeps
 in `VehicleState.logs` only the progress (`done` of `size`), the status and a counter (`downloads`) that a caller
@@ -67,19 +70,18 @@ its result: `Command::SendCommand { command, params }` starts it, `VehicleState.
 command button needs no change in the service: the view pushes `Command::SendCommand` (gate it with
 `status::command_gate`, draw it with `views/actions.rs::button` or `Confirm::button` when it is hard to undo),
 `status::command_label` gives it its words in the status line, and the simulator's `actions::admit` its
-answer. The vehicle's side is `docs/link-contract.md` section 10.
+answer. The vehicle's side is [link-commands](link-commands.md).
 
 ## A new transport (a telemetry radio; UDP is the worked example)
 
 1. Add a module to `crates/gcs-transport/src/` that opens the link and returns a reader and a writer that
-   follow the reader contract in `docs/architecture.md` (return as soon as a byte is there; `TimedOut`
+   follow the reader contract in [architecture](architecture.md) (return as soon as a byte is there; `TimedOut`
    after 100 ms without data; `Ok(0)` or another error when the link is down). `udp.rs` is the example
    for a link that is not a stream: it keeps the part of a datagram that did not fit the caller's buffer,
    skips empty datagrams instead of returning `Ok(0)`, and says in its module doc which error kinds are
    "nothing yet" and which end the link.
 2. Add a variant to `Endpoint` (with its text form, `udp:ADDR:PORT`) and an arm in `open`. Give the link its
-   role in `access_of` in `crates/gcs-link/src/lib.rs` (Operate or Configure, `docs/link-contract.md`
-   section 9): it is a match over `Endpoint` with no wildcard arm, so the application does not compile
+   role in `access_of` in `crates/gcs-link/src/lib.rs` (Operate or Configure, [link-access](link-access.md)): it is a match over `Endpoint` with no wildcard arm, so the application does not compile
    until you do. The mapping does not live in `gcs-transport`, and it is the one mapping for the window and for
    `marv-cli` (it needs no change there).
 3. Add the choice to the connection bar in `crates/marv-gcs/src/connection.rs` (UDP: one text field, the
@@ -94,7 +96,7 @@ This crate never names MAVLink.
 1. If it is a new MAVLink command or parameter action, first do the service and the `Command` variant as above
    (with its access class); the command line never decides access, `Session::send` does.
 2. Add the word to `command` in `crates/marv-cli/src/args.rs` (and to `mav_command` when it sends a
-   `COMMAND_LONG`: the label of its progress lines, the `MAV_CMD`, the seven parameters), and the usage text.
+   `COMMAND_LONG`: the label of its progress lines, the `MAV_CMD`, the seven parameters), and the usage text ([marv-cli](marv-cli.md) lists the commands).
 3. A command that is not a `COMMAND_LONG` gets a function (the logs ones, `logs_list` and `logs_get`, are the example
    of one that waits for a service's result and writes a file) in `crates/marv-cli/src/commands.rs` and an arm in
    `run_command`. Every wait in it goes through `wait`, which has a deadline. Its output is tab-separated
@@ -109,7 +111,7 @@ This crate never names MAVLink.
 The project's own messages live in `marv-dialect` (own repo, https://github.com/Lmx154/marv-dialect): its
 module `marv_dialect::marv` is `common` plus the messages of `definitions/marv.xml`, so far `MARV_TEST`
 (id 42420, CRC_EXTRA 100, fields `seq`, `time_ms`, `value`, `tag`; a link test message) and
-`MARV_DEVICE_STATUS` (id 42421, CRC_EXTRA 231; one message per device; `docs/link-contract.md` section 8).
+`MARV_DEVICE_STATUS` (id 42421, CRC_EXTRA 231; one message per device; [link-telemetry](link-telemetry.md)).
 `MARV_DEVICE_STATUS` is the one message the station names: its `device_id` is an enum, so it has a row in
 `INSTANCE_FIELDS` (the `[n]` label) and an arm in `enum_instance` (the instance number, one row per device) in
 `services/messages.rs`, and the Devices view (`views/devices.rs`) reads its fields.
@@ -145,3 +147,7 @@ To add the next message:
 - No parameter name and no message-specific code outside a view that is about that message (the one
   exception is `enum_instance` in the message store, for a message whose instance field is an enum: it
   supplies the instance number, and the message also needs its row in `INSTANCE_FIELDS`, which gives the label).
+
+## Related
+
+[architecture](architecture.md) · [link-contract](link-contract.md) · [ui](ui.md) · [marv-cli](marv-cli.md)
