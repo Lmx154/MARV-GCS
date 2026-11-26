@@ -509,7 +509,7 @@ fn heartbeat_modes(bytes: &[u8]) -> Vec<u32> {
 fn home_position_is_sent_every_second_only_while_armed_with_a_home() {
     let mut vehicle = booted(SimConfig::default());
     let mut sent = Vec::new();
-    let mut run = |vehicle: &mut SimVehicle, from_s: u64, to_s: u64| {
+    let run = |vehicle: &mut SimVehicle, from_s: u64, to_s: u64| {
         let mut bytes = Vec::new();
         for ms in from_s * 1000 + 1..=to_s * 1000 {
             bytes.extend(vehicle.step(ms, &[]));
