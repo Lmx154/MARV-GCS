@@ -49,7 +49,7 @@ fn only_exactly_these_commands_are_flight_commands() {
 }
 
 #[test]
-fn each_of_the_20_codes_and_0_has_its_text() {
+fn each_assigned_code_has_its_text_and_2_and_20_are_retired() {
     let texts: Vec<String> = (0..=20).map(deny_text).collect();
     assert_eq!(texts[0], "Refused, no reason given");
     assert_eq!(
@@ -65,12 +65,8 @@ fn each_of_the_20_codes_and_0_has_its_text() {
         "The link to this station was lost for more than 10 s"
     );
     assert_eq!(
-        texts[2],
-        "The transmitter is on the CRSF model: missions fly on the MAVLink model only"
-    );
-    assert_eq!(
         texts[3],
-        "Hands-off flight is off: FS_HOLD_EN is 0, or this flight was armed on the CRSF model"
+        "Flying on the CRSF model: missions need the MAVLink model"
     );
     assert_eq!(texts[15], "The arm switch is OFF");
     assert_eq!(texts[16], "The mode switch is not in Position");
@@ -78,16 +74,15 @@ fn each_of_the_20_codes_and_0_has_its_text() {
         texts[19],
         "The mission switch (channel 8) is not confirmed ON: no live stick report with it ON"
     );
-    assert_eq!(
-        texts[20],
-        "The vehicle holds a mission but is set to ignore it (GDN_SRC is 0): set GDN_SRC to 1 in Parameters, then Start again"
-    );
+    assert_eq!(texts[2], "Refused, reason not known (code 2)");
+    assert_eq!(texts[20], "Refused, reason not known (code 20)");
+    let texts: Vec<String> = (0..=19).filter(|a| *a != 2).map(deny_text).collect();
     for (a, text) in texts.iter().enumerate() {
-        assert!(!text.contains("not known"), "code {a}");
+        assert!(!text.contains("not known"), "entry {a}");
         assert_eq!(
             texts.iter().filter(|t| *t == text).count(),
             1,
-            "code {a} is unique"
+            "entry {a} is unique"
         );
     }
 }

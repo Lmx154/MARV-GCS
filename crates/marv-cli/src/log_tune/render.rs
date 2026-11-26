@@ -255,15 +255,16 @@ fn span_text(s: &mut String, sp: &SpanReport, r: &TuneReport, st: &Settings) {
     }
     let _ = writeln!(
         s,
-        "  RPM notch: {}; RPM_NOTCH_EN {}",
+        "  RPM notch: {}; {}",
         sp.notch_on_frac
             .map_or("NTCH.On not in this log".to_string(), |f| format!(
                 "NTCH.On set in {:.1} % of the airborne steps",
                 100.0 * f
             )),
-        sp.notch_param.map_or("not logged".to_string(), |v| format!(
-            "= {v} (PARM at or before the arming step)"
-        ))
+        sp.notch_param.map_or(
+            "notch always on (no RPM_NOTCH_EN in this log)".to_string(),
+            |v| format!("RPM_NOTCH_EN = {v} (PARM at or before the arming step)")
+        )
     );
     let drops = |d: &Option<super::analysis::Drops>, n: &str| match d {
         Some(d) => format!(
@@ -773,7 +774,7 @@ fn span_json(sp: &SpanReport, r: &TuneReport) -> Value {
                     "changed_during_span": g.changed_during.iter().map(|(n, t, v)| json!({"name": n, "at_s": t, "value": v})).collect::<Vec<_>>(),
                 }),
             },
-            "notch": {"ntch_on_fraction": jn(sp.notch_on_frac), "rpm_notch_en": jn(sp.notch_param)},
+            "notch": {"ntch_on_fraction": jn(sp.notch_on_frac), "rpm_notch_en": jn(Some(sp.notch_param.unwrap_or(1.0)))},
             "health": {
                 "fds_dropped": sp.fds.as_ref().map(|d| json!({"total": d.total, "within_span": d.within})),
                 "dsf_dropped": sp.dsf.as_ref().map(|d| json!({"total": d.total, "within_span": d.within})),

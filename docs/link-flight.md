@@ -35,10 +35,9 @@ stateDiagram-v2
 | 7 | STOP | Disarmed, motors stopped |
 | 8 | BLIND | Level descent with no height estimate (position tier T1) |
 
-Codes 9 and above are not assigned (a station shows "unknown" and the number). With `FS_HOLD_EN` 0, and on every flight
+Codes 9 and above are not assigned (a station shows "unknown" and the number). On every flight
 armed on the CRSF model, the vehicle sends PILOT and STOP, and after a loss of the stick reports also LAND, BLIND and
-TAKEOVER (a stick loss in the air starts a descent in every configuration); HOLD, AUTO and RETURN stay unreachable with
-`FS_HOLD_EN` 0. The station shows the effective mode from the `HEARTBEAT`, not from an ACK.
+TAKEOVER (a stick loss in the air starts a descent in every configuration); HOLD, AUTO and RETURN stay unreachable. The station shows the effective mode from the `HEARTBEAT`, not from an ACK.
 
 ## The commands
 
@@ -62,7 +61,7 @@ One `COMMAND_ACK` at once, addressed to the sender: ACCEPTED when it takes the c
 taken), otherwise DENIED; never IN_PROGRESS, TEMPORARILY_REJECTED or FAILED. DENIED when any of these holds:
 
 1. The vehicle is in a state the table does not give for that command: PILOT, TAKEOVER and STOP for all five (code 4), and
-   every state with `FS_HOLD_EN` 0. (Fresh stick reports do not refuse a command on a MAVLink flight.)
+   every state on a flight armed on the CRSF model (code 3). (Fresh stick reports do not refuse a command on a MAVLink flight.)
 2. The parameters differ from the table: Pause with param1 other than 0 (continue is not served: Start resumes);
    `MAV_CMD_DO_SET_MODE` with param1 other than 1 or param2 other than 3 or 6.
 3. Start only, also in HOLD, unless all of these hold:
@@ -70,7 +69,7 @@ taken), otherwise DENIED; never IN_PROGRESS, TEMPORARILY_REJECTED or FAILED. DEN
 | Order | Condition | Code on failure |
 |---|---|---|
 | 1 | The station is present on the radio link: a station `HEARTBEAT` received on the radio within 10.0 s (a USB heartbeat does not count) | 5 |
-| 2 | A list with waypoints is stored: `count` 2 or more (`count` 1 is the return item alone) | 6, or 20 when a mission is stored but `GDN_SRC` is 0 |
+| 2 | A list with waypoints is stored: `count` 2 or more (`count` 1 is the return item alone) | 6 |
 | 3 | Home is set (its height at the arming step, its position at the first armed step with a position, before take-off; cleared at disarm) | 8 |
 | 4 | The vehicle and every stored waypoint are at most 1000 m horizontally from home (checked at every Start and nowhere else; a waypoint at 1000.5 m or a vehicle at 1001 m is refused) | 9, 10, 11 |
 | 5 | Position tier T3 (the position is covered) | 13 |
@@ -93,8 +92,7 @@ known (code N): <button> refused".
 |---|---|---|
 | 0 | unknown | "Refused, no reason given" |
 | 1 | not the radio link | "Not on the radio link: connect through the transmitter's WiFi backpack" |
-| 2 | the flight is on the CRSF model | "The transmitter is on the CRSF model: missions fly on the MAVLink model only" |
-| 3 | hands-off not enabled, or the flight was armed on the CRSF model | "Hands-off flight is off: FS_HOLD_EN is 0, or this flight was armed on the CRSF model" |
+| 3 | the flight was armed on the CRSF model | "Flying on the CRSF model: missions need the MAVLink model" |
 | 4 | not in this state | "The vehicle is not in a state that takes this command" |
 | 5 | station heartbeat absent | "The vehicle does not hear this station on the radio link: check the link and try again" |
 | 6 | no waypoints stored | "No waypoints are stored on the vehicle: upload a mission first" |
@@ -111,7 +109,6 @@ known (code N): <button> refused".
 | 17 | battery critical | "The battery is critical" |
 | 18 | link lost | "The link to this station was lost for more than 10 s" |
 | 19 | mission switch not confirmed ON | "The mission switch (channel 8) is not confirmed ON: no live stick report with it ON" |
-| 20 | a mission is stored but `GDN_SRC` is not 1 | "The vehicle holds a mission but is set to ignore it (GDN_SRC is 0): set GDN_SRC to 1 in Parameters, then Start again" |
 
 ## Stopping the motors
 

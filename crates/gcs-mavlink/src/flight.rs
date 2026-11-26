@@ -132,8 +132,7 @@ pub fn deny_text(code: i32) -> String {
     match code {
         0 => "Refused, no reason given",
         1 => "Not on the radio link: connect through the transmitter's WiFi backpack",
-        2 => "The transmitter is on the CRSF model: missions fly on the MAVLink model only",
-        3 => "Hands-off flight is off: FS_HOLD_EN is 0, or this flight was armed on the CRSF model",
+        3 => "Flying on the CRSF model: missions need the MAVLink model",
         4 => "The vehicle is not in a state that takes this command",
         5 => {
             "The vehicle does not hear this station on the radio link: check the link and try again"
@@ -152,9 +151,6 @@ pub fn deny_text(code: i32) -> String {
         17 => "The battery is critical",
         18 => "The link to this station was lost for more than 10 s",
         19 => "The mission switch (channel 8) is not confirmed ON: no live stick report with it ON",
-        20 => {
-            "The vehicle holds a mission but is set to ignore it (GDN_SRC is 0): set GDN_SRC to 1 in Parameters, then Start again"
-        }
         other => return format!("Refused, reason not known (code {other})"),
     }
     .to_string()

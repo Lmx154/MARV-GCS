@@ -89,7 +89,6 @@ Command 245 param1 = 3 resets sensor calibrations only (not the RC end points); 
 | 80 | `GPS_RATE_MS` | I32, ms | 200 | 100, 200, 500, 1000 | Live | GNSS | fix interval |
 | 81..91 | compass block | | | | Live | MAG | [link-compass](link-compass.md) |
 | 92 | `GPS_GNSS` | I32 | 0 | 0..2 | Live | GNSS | constellation set; the receiver is re-configured on the write, no reboot |
-| 119 | `GDN_SRC` | I32 | 0 | 0..1 | Live | 0 (system) | where the shadow guidance takes its targets: 0 the `GDN_*` parameters, 1 the committed mission ([link-missions](link-missions.md); the radius stays `GDN_RADIUS`) |
 
 Notes:
 

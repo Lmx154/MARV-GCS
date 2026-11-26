@@ -134,12 +134,12 @@ fn a_refusal_names_the_time_and_the_reason_and_stays_until_dismissed() {
         ))
     );
     assert_eq!(result_line(&flight, Some(flight.sent), clock), None);
-    let flight = answered(denied(20), 1, 2);
+    let flight = answered(denied(3), 1, 2);
     assert!(
         result_line(&flight, None, clock)
             .unwrap()
             .1
-            .ends_with("set GDN_SRC to 1 in Parameters, then Start again")
+            .ends_with("Flying on the CRSF model: missions need the MAVLink model")
     );
     let abort = FlightResult {
         command: FlightCommand::Abort,
