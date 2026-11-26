@@ -220,11 +220,35 @@ impl FlightMode {
     }
 }
 
+/// The home position of a HOME_POSITION, as the vehicle sent it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Home {
+    /// Degrees times 1e7.
+    pub lat_e7: i32,
+    /// Degrees times 1e7.
+    pub lon_e7: i32,
+    /// Millimetres above mean sea level.
+    pub alt_mm: i32,
+}
+
+impl Home {
+    pub fn lat(&self) -> f64 {
+        f64::from(self.lat_e7) / 1e7
+    }
+
+    pub fn lon(&self) -> f64 {
+        f64::from(self.lon_e7) / 1e7
+    }
+}
+
 /// What the station knows of the vehicle's flight state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FlightState {
     /// The last HEARTBEAT `custom_mode` of the vehicle; kept when the heartbeat stops.
     pub mode_code: Option<u32>,
+    /// The home the vehicle last reported (HOME_POSITION) while it holds one: set by each HOME_POSITION, cleared
+    /// by a HEARTBEAT in mode 7 (STOP) or 0 (not reported); kept when the heartbeat stops. A new session has none.
+    pub home: Option<Home>,
     /// The last flight command and how it ended; replaced by the next.
     pub last: Option<FlightResult>,
     /// The flight command sent and not yet answered.
@@ -236,6 +260,15 @@ pub struct FlightState {
 }
 
 impl FlightState {
+    /// A HEARTBEAT reports `custom_mode`: the mode is kept, and home is dropped in STOP (7) and in mode 0, where the
+    /// vehicle sends no HOME_POSITION.
+    pub fn heartbeat(&mut self, custom_mode: u32) {
+        self.mode_code = Some(custom_mode);
+        if custom_mode == 7 || custom_mode == 0 {
+            self.home = None;
+        }
+    }
+
     /// A flight command goes out: the previous result is gone.
     pub fn begin(&mut self, command: FlightCommand, now: Duration) {
         self.last = None;

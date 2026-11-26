@@ -24,10 +24,10 @@
 
 use mavlink::dialects::common::{
     ATTITUDE_DATA, AUTOPILOT_VERSION_DATA, COMMAND_ACK_DATA, ESC_INFO_DATA, ESC_STATUS_DATA,
-    GPS_RAW_INT_DATA, HEARTBEAT_DATA, HIGHRES_IMU_DATA, LOG_DATA_DATA, LOG_ENTRY_DATA,
-    MANUAL_CONTROL_DATA, MavMessage, MavModeFlag, MavProtocolCapability, MavResult, MavSeverity,
-    MavState, PARAM_VALUE_DATA, RC_CHANNELS_DATA, SCALED_IMU2_DATA, SCALED_PRESSURE_DATA,
-    STATUSTEXT_DATA, SYS_STATUS_DATA,
+    GPS_RAW_INT_DATA, HEARTBEAT_DATA, HIGHRES_IMU_DATA, HOME_POSITION_DATA, LOG_DATA_DATA,
+    LOG_ENTRY_DATA, MANUAL_CONTROL_DATA, MavMessage, MavModeFlag, MavProtocolCapability, MavResult,
+    MavSeverity, MavState, PARAM_VALUE_DATA, RC_CHANNELS_DATA, SCALED_IMU2_DATA,
+    SCALED_PRESSURE_DATA, STATUSTEXT_DATA, SYS_STATUS_DATA,
 };
 use mavlink::types::CharArray;
 use mavlink::{MAVLinkV2MessageRaw, MavHeader, MavlinkVersion, Message, MessageData};
@@ -294,6 +294,11 @@ pub struct SimVehicle {
     last_heartbeat_ms: Option<u64>,
     /// Whether HEARTBEAT shows the vehicle armed ([`SimVehicle::set_armed`]).
     armed: bool,
+    /// The home the vehicle reports ([`SimVehicle::set_home`]): latitude and longitude in degrees times 1e7,
+    /// altitude in millimetres.
+    home: Option<(i32, i32, i32)>,
+    /// When the next HOME_POSITION is due; `None` until the first is sent after arming with a home.
+    home_due_ms: Option<u64>,
     /// The mission service: the stored list and the transaction.
     missions: Missions,
     /// The reply slot of the mission messages.
@@ -387,6 +392,8 @@ impl SimVehicle {
             },
             last_heartbeat_ms: None,
             armed: false,
+            home: None,
+            home_due_ms: None,
             missions: Missions::default(),
             mission_slot: Slot::default(),
             mission_rx_count: 0,
@@ -398,6 +405,12 @@ impl SimVehicle {
     /// Nothing else changes (a test double, to stop a calibration in the middle).
     pub fn set_armed(&mut self, armed: bool) {
         self.armed = armed;
+    }
+
+    /// Sets or forgets the home the vehicle holds. While it is armed and holds a home it sends HOME_POSITION every
+    /// second and its HEARTBEAT reports mode 1 (a flying mode), as the firmware does outside STOP.
+    pub fn set_home(&mut self, home: Option<(i32, i32, i32)>) {
+        self.home = home;
     }
 
     /// The link went down: a running mission transaction ends silently (the stored list stays), the message
@@ -540,6 +553,21 @@ impl SimVehicle {
                 self.push_frame(&message, out);
             }
         }
+        match self.home {
+            Some((latitude, longitude, altitude)) if self.armed => {
+                if self.home_due_ms.is_none_or(|due| now_ms >= due || jumped) {
+                    self.home_due_ms = Some(now_ms + 1000);
+                    let message = MavMessage::HOME_POSITION(HOME_POSITION_DATA {
+                        latitude,
+                        longitude,
+                        altitude,
+                        ..HOME_POSITION_DATA::default()
+                    });
+                    self.push_frame(&message, out);
+                }
+            }
+            _ => self.home_due_ms = None,
+        }
     }
 
     /// The messages of a stream at `now_ms`. MANUAL_CONTROL follows the RC parameters now in effect
@@ -564,6 +592,9 @@ impl SimVehicle {
             if self.armed {
                 for message in &mut messages {
                     if let MavMessage::HEARTBEAT(beat) = message {
+                        if self.home.is_some() {
+                            beat.custom_mode = 1;
+                        }
                         beat.base_mode |= MavModeFlag::MAV_MODE_FLAG_SAFETY_ARMED;
                         beat.system_status = MavState::MAV_STATE_ACTIVE;
                     }

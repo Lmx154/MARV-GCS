@@ -535,6 +535,26 @@ fn a_denial_shows_as_an_error_until_dismissed_and_the_mode_is_in_words() {
 }
 
 #[test]
+fn the_home_set_badge_appears_with_a_home_and_goes_with_stop() {
+    let store = store_with_example("flight-home");
+    let mut state = connected();
+    state.flight.heartbeat(3);
+    let window_without = window(&store, state.clone(), Some(5.0), Access::Operate);
+    assert!(window_without.harness.query_by_label("HOME SET").is_none());
+    state.flight.home = Some(gcs_mavlink::Home {
+        lat_e7: 473_977_000,
+        lon_e7: 85_456_000,
+        alt_mm: 488_000,
+    });
+    let with_home = window(&store, state.clone(), Some(5.0), Access::Operate);
+    with_home.harness.get_by_label("HOME SET");
+    state.flight.heartbeat(7);
+    let stopped = window(&store, state, Some(5.0), Access::Operate);
+    assert!(stopped.harness.query_by_label("HOME SET").is_none());
+    let _ = std::fs::remove_dir_all(store.dir());
+}
+
+#[test]
 fn an_acceptance_is_stated_and_stays_on_screen_until_dismissed() {
     let store = store_with_example("flight-accept");
     let mut state = connected();

@@ -21,6 +21,7 @@ flowchart LR
 |---|---|
 | Marker | The latest `GPS_RAW_INT` when its `fix_type` is 2D or better and it is younger than 3 s. The arrow turns by the `yaw` of `ATTITUDE` (0 = north, clockwise) while that is younger than 2 s, else points along the course over ground (`cog`), else a dot (`cog` 65535). The firmware sends no `ATTITUDE` yet, so on the real board the arrow follows `cog` |
 | No fix | No marker before the first fix (world view, "waiting for a GPS fix"); afterwards the last known position stays grey with "no position" or "no GPS fix" |
+| Home | While the vehicle sends `HOME_POSITION` ([link-contract](link-contract.md)): the badge "HOME SET" beside the mode line (shown only while the link is up and home is held), and a green marker with an "H" at the reported position. Both go when a `HEARTBEAT` reports STOP or mode 0, and when a new session starts; they stay while the heartbeat is lost (the badge is hidden, the marker stays). Nothing is shown before the first `HOME_POSITION` |
 | Track | Every position of the session (at most 10 000, the oldest dropped) as a line; kept while another tab is open, cleared when a new session starts |
 | Controls | "Follow vehicle" (on at the start; dragging turns it off), "Centre on vehicle", + and -, mouse wheel to zoom, drag to pan; the coordinates are written beside them. A compass rose sits bottom right; the map is always north up |
 

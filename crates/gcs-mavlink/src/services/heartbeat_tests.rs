@@ -316,3 +316,104 @@ fn the_vehicles_custom_mode_is_kept_and_a_ground_station_heartbeat_does_not_set_
     rig.frame(&heartbeat_frame(1, 1, MavType::MAV_TYPE_GCS), 200);
     assert_eq!(rig.state.flight.mode_code, Some(3));
 }
+
+fn mode_frame(system_id: u8, custom_mode: u32) -> Frame {
+    let mut frame = vehicle_frame(system_id);
+    if let Body::Known(Message::HEARTBEAT(beat)) = &mut frame.body {
+        beat.custom_mode = custom_mode;
+    }
+    frame
+}
+
+fn home_frame(system_id: u8, lat_e7: i32, lon_e7: i32, alt_mm: i32) -> Frame {
+    Frame {
+        system_id,
+        component_id: 1,
+        sequence: 0,
+        message_id: 242,
+        raw: Vec::new(),
+        body: Body::Known(Message::HOME_POSITION(crate::dialect::HOME_POSITION_DATA {
+            latitude: lat_e7,
+            longitude: lon_e7,
+            altitude: alt_mm,
+            ..Default::default()
+        })),
+    }
+}
+
+const HOME: Home = Home {
+    lat_e7: 473_977_000,
+    lon_e7: 85_456_000,
+    alt_mm: 488_000,
+};
+
+#[test]
+fn a_home_position_from_the_vehicle_sets_home() {
+    let mut rig = Rig::new(Duration::from_secs(3));
+    assert_eq!(rig.state.flight.home, None);
+    rig.frame(&mode_frame(1, 3), 100);
+    rig.frame(&home_frame(1, 473_977_000, 85_456_000, 488_000), 200);
+    assert_eq!(rig.state.flight.home, Some(HOME));
+    assert!(rig.changed);
+    assert!((HOME.lat() - 47.3977).abs() < 1e-9 && (HOME.lon() - 8.5456).abs() < 1e-9);
+}
+
+#[test]
+fn home_is_cleared_by_stop_and_by_mode_zero_and_kept_in_other_modes() {
+    for (mode, kept) in [(7, false), (0, false), (3, true), (4, true), (5, true)] {
+        let mut rig = Rig::new(Duration::from_secs(3));
+        rig.frame(&mode_frame(1, 3), 100);
+        rig.frame(&home_frame(1, 473_977_000, 85_456_000, 488_000), 200);
+        rig.frame(&mode_frame(1, mode), 300);
+        assert_eq!(rig.state.flight.home.is_some(), kept, "mode {mode}");
+        assert_eq!(rig.state.flight.mode_code, Some(mode));
+    }
+}
+
+#[test]
+fn home_is_set_again_by_the_next_home_position_after_stop() {
+    let mut rig = Rig::new(Duration::from_secs(3));
+    rig.frame(&mode_frame(1, 3), 100);
+    rig.frame(&home_frame(1, 473_977_000, 85_456_000, 488_000), 200);
+    rig.frame(&mode_frame(1, 7), 300);
+    rig.frame(&mode_frame(1, 3), 400);
+    rig.frame(&home_frame(1, 1, 2, 3), 500);
+    assert_eq!(
+        rig.state.flight.home,
+        Some(Home {
+            lat_e7: 1,
+            lon_e7: 2,
+            alt_mm: 3
+        })
+    );
+}
+
+#[test]
+fn home_is_kept_through_heartbeat_loss() {
+    let mut rig = Rig::new(Duration::from_secs(3));
+    rig.frame(&mode_frame(1, 3), 100);
+    rig.frame(&home_frame(1, 473_977_000, 85_456_000, 488_000), 200);
+    rig.tick(10_000);
+    assert_eq!(rig.status(), &LinkStatus::Lost);
+    assert_eq!(rig.state.flight.home, Some(HOME));
+    assert_eq!(rig.state.flight.mode_code, Some(3));
+}
+
+#[test]
+fn a_new_session_has_no_home() {
+    let rig = Rig::new(Duration::from_secs(3));
+    assert_eq!(rig.state.flight.home, None);
+    assert_eq!(VehicleState::default().flight.home, None);
+}
+
+#[test]
+fn a_home_position_from_another_system_or_before_a_vehicle_is_ignored() {
+    let mut rig = Rig::new(Duration::from_secs(3));
+    rig.frame(&home_frame(1, 1, 2, 3), 50);
+    assert_eq!(rig.state.flight.home, None, "no vehicle yet");
+    rig.frame(&mode_frame(1, 3), 100);
+    rig.frame(&home_frame(9, 1, 2, 3), 200);
+    assert_eq!(rig.state.flight.home, None, "another system");
+    rig.frame(&home_frame(OWN, 1, 2, 3), 300);
+    assert_eq!(rig.state.flight.home, None, "the station's own id");
+}

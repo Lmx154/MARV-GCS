@@ -675,6 +675,7 @@ impl View for MapView {
             cx.now,
             tracker.last.and_then(|fix| fix.course),
         );
+        let home = cx.state.flight.home.map(|h| (h.lat(), h.lon()));
         ui.scope_builder(UiBuilder::new().max_rect(map_area), |ui| {
             walkers::Map::new(
                 imagery.map(|tiles| tiles as &mut dyn Tiles),
@@ -688,6 +689,9 @@ impl View for MapView {
                 }
                 visible = Some(visible_area(projector));
                 draw_track(ui, projector, tracker, status, heading);
+                if let Some((lat, lon)) = home {
+                    draw_home(ui, to_pos2(projector, lat_lon(lat, lon)));
+                }
                 waypoints.interact_and_draw(ui, response, projector, on_vehicle.as_deref());
                 overlay_status(ui, response.rect, status);
                 if let (Some((text, at)), Some(now)) = (notice, cx_now) {
@@ -789,6 +793,24 @@ fn controls(
             ui.label(theme::value(text).color(colour));
         }
     });
+}
+
+/// The vehicle's home: a green disc with an "H", under the waypoints.
+fn draw_home(ui: &egui::Ui, at: Pos2) {
+    let painter = ui.painter();
+    painter.circle(
+        at,
+        MARK_RADIUS,
+        theme::OK,
+        Stroke::new(1.5, theme::TEXT_STRONG),
+    );
+    painter.text(
+        at,
+        egui::Align2::CENTER_CENTER,
+        "H",
+        egui::FontId::proportional(12.0),
+        theme::INSET,
+    );
 }
 
 fn draw_track(

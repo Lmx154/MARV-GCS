@@ -65,6 +65,22 @@ fn the_mode_is_shown_in_words_and_unknown_codes_say_so() {
     assert_eq!(mode_line(&flight, true), "Mode: Unknown mode (12)");
 }
 
+#[test]
+fn the_home_badge_shows_only_while_home_is_set_and_the_link_is_up() {
+    let mut flight = FlightState::default();
+    assert_eq!(home_badge(&flight, true), None);
+    flight.heartbeat(3);
+    flight.home = Some(gcs_mavlink::Home {
+        lat_e7: 473_977_000,
+        lon_e7: 85_456_000,
+        alt_mm: 488_000,
+    });
+    assert_eq!(home_badge(&flight, true), Some("HOME SET"));
+    assert_eq!(home_badge(&flight, false), None);
+    flight.heartbeat(7);
+    assert_eq!(home_badge(&flight, true), None);
+}
+
 fn denied(code: i32) -> FlightResult {
     FlightResult {
         command: FlightCommand::Start,

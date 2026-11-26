@@ -61,6 +61,7 @@ read them):
 | `SCALED_IMU2` | 25 Hz | IMU2 in mG and mrad/s. The gyro fields are int16 mrad/s and saturate at ±32.767 rad/s (about 1877 dps), so a faster rate shows as that limit in IMU2's Flight and Max range presets; `HIGHRES_IMU` and the log carry the full range |
 | `SCALED_PRESSURE` | 25 Hz | |
 | `SYS_STATUS`, `GPS_RAW_INT` | 1 Hz | |
+| `HOME_POSITION` (242) | USB 1 s, radio 2 s | only while home is set and the vehicle is not in STOP; `latitude`/`longitude` in degE7, `altitude` in mm. The station shows "HOME SET" and a home marker while it receives it ([ui-map](ui-map.md)) |
 | `RC_CHANNELS` | 5 Hz | while the receiver delivers sticks |
 | `ESC_STATUS` (291) 10 Hz, `ESC_INFO` (290) 1 Hz | | USB only; [link-telemetry](link-telemetry.md) |
 | `MANUAL_CONTROL` (69) | 5 Hz (fastest 50 Hz) | USB only, only while a CRSF stick report is younger than 1 s |

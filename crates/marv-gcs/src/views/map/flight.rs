@@ -45,6 +45,13 @@ pub fn mode_line(flight: &FlightState, link_up: bool) -> String {
     }
 }
 
+/// The badge beside the mode line: `HOME SET` while the vehicle reports a home and the link is up; nothing else.
+pub const HOME_SET: &str = "HOME SET";
+
+pub fn home_badge(flight: &FlightState, link_up: bool) -> Option<&'static str> {
+    (link_up && flight.home.is_some()).then_some(HOME_SET)
+}
+
 /// How the result line is coloured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
@@ -208,10 +215,11 @@ impl Controls {
                     }
                 }
             }
-            ui.label(theme::value(mode_line(
-                &state.flight,
-                gate != Some(crate::status::NOT_CONNECTED),
-            )));
+            let link_up = gate != Some(crate::status::NOT_CONNECTED);
+            ui.label(theme::value(mode_line(&state.flight, link_up)));
+            if let Some(badge) = home_badge(&state.flight, link_up) {
+                ui.colored_label(theme::OK, RichText::new(badge).strong());
+            }
         });
         if self.pending_start {
             ui.horizontal_wrapped(|ui| {

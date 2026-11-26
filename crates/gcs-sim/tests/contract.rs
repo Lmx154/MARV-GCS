@@ -484,3 +484,53 @@ fn a_motor_test_spin_shows_rpm_on_that_motor_for_its_duration() {
     );
     assert_eq!(latest_rpm(&vehicle.step(4_200, &[])), Some([0; 4]));
 }
+
+fn home_positions(bytes: &[u8]) -> Vec<(i32, i32, i32)> {
+    decode(bytes)
+        .into_iter()
+        .filter_map(|(_, m)| match m {
+            MavMessage::HOME_POSITION(h) => Some((h.latitude, h.longitude, h.altitude)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn heartbeat_modes(bytes: &[u8]) -> Vec<u32> {
+    decode(bytes)
+        .into_iter()
+        .filter_map(|(_, m)| match m {
+            MavMessage::HEARTBEAT(h) => Some(h.custom_mode),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn home_position_is_sent_every_second_only_while_armed_with_a_home() {
+    let mut vehicle = booted(SimConfig::default());
+    let mut sent = Vec::new();
+    let mut run = |vehicle: &mut SimVehicle, from_s: u64, to_s: u64| {
+        let mut bytes = Vec::new();
+        for ms in from_s * 1000 + 1..=to_s * 1000 {
+            bytes.extend(vehicle.step(ms, &[]));
+        }
+        bytes
+    };
+    sent.push(run(&mut vehicle, 0, 3));
+    vehicle.set_armed(true);
+    sent.push(run(&mut vehicle, 3, 6));
+    vehicle.set_home(Some((473_977_000, 85_456_000, 488_000)));
+    sent.push(run(&mut vehicle, 6, 9));
+    vehicle.set_armed(false);
+    sent.push(run(&mut vehicle, 9, 12));
+    assert!(home_positions(&sent[0]).is_empty(), "disarmed, no home");
+    assert!(home_positions(&sent[1]).is_empty(), "armed, no home");
+    assert_eq!(
+        home_positions(&sent[2]),
+        vec![(473_977_000, 85_456_000, 488_000); 3],
+        "one per second"
+    );
+    assert!(heartbeat_modes(&sent[2]).iter().all(|&m| m == 1));
+    assert!(heartbeat_modes(&sent[1]).iter().all(|&m| m == 0));
+    assert!(home_positions(&sent[3]).is_empty(), "disarmed again");
+}

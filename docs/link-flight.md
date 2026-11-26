@@ -74,12 +74,22 @@ taken), otherwise DENIED; never IN_PROGRESS, TEMPORARILY_REJECTED or FAILED. DEN
 | 4 | The vehicle and every stored waypoint are at most 1000 m horizontally from home (checked at every Start and nowhere else; a waypoint at 1000.5 m or a vehicle at 1001 m is refused) | 9, 10, 11 |
 | 5 | Position tier T3 (the position is covered) | 13 |
 | 6 | The heading monitor reports OK | 12 |
-| 7 | The battery is not critical | 17 |
+| 7 | The battery is not LOW and not critical | 14 at LOW (battery not OK), 17 at critical |
 | 8 | A receiver report younger than 1.0 s with the mission switch (channel 8) ON; then arm ON in it; then the mode switch in Position in it | 19, then 15, then 16 |
 
 Return is DENIED in this order: the checks common to all five (the radio link, hands-off enabled, the state), then no home
 (8), then position or heading tier lost (13), then battery critical (17). Already within `GDN_RADIUS` of home: ACCEPTED
 (RETURN goes to LAND at the next step, the intended end of a return).
+
+## Low battery
+
+When the battery reaches LOW in HOLD or AUTO, the vehicle goes to RETURN once per arming. At LOW a Start is refused with code 14, "The battery is not OK".
+
+## Home reported to the station
+
+While home is set and the vehicle is not in STOP, the vehicle sends `HOME_POSITION` (242; [link-contract](link-contract.md)).
+The station holds the last one: it drops it when a `HEARTBEAT` reports STOP (7) or mode 0, and when a session starts; the
+heartbeat stopping does not drop it.
 
 ## Deny reason codes
 

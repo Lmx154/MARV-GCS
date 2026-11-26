@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use crate::dialect::{HEARTBEAT_DATA, MavAutopilot, MavModeFlag, MavState, MavType};
+use crate::flight::Home;
 use crate::session::SessionConfig;
 use crate::{Body, Frame, LinkStatus, Message, VehicleId};
 
@@ -29,6 +30,24 @@ impl Heartbeat {
 
 impl Service for Heartbeat {
     fn on_frame(&mut self, frame: &Frame, cx: &mut Ctx) {
+        if let Body::Known(Message::HOME_POSITION(home)) = &frame.body {
+            let from_vehicle = frame.system_id != self.system_id
+                && cx
+                    .state
+                    .link
+                    .vehicle
+                    .as_ref()
+                    .is_some_and(|v| v.system_id == frame.system_id);
+            if from_vehicle {
+                cx.state.flight.home = Some(Home {
+                    lat_e7: home.latitude,
+                    lon_e7: home.longitude,
+                    alt_mm: home.altitude,
+                });
+                cx.changed = true;
+            }
+            return;
+        }
         let Body::Known(Message::HEARTBEAT(heartbeat)) = &frame.body else {
             return;
         };
@@ -53,7 +72,7 @@ impl Service for Heartbeat {
         }
         link.last_heartbeat = Some(cx.now);
         link.status = LinkStatus::Connected;
-        cx.state.flight.mode_code = Some(heartbeat.custom_mode);
+        cx.state.flight.heartbeat(heartbeat.custom_mode);
         cx.changed = true;
     }
 

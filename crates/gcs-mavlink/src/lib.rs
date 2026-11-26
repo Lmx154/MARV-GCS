@@ -16,7 +16,7 @@ mod state;
 mod test_pipe;
 pub mod tlog;
 
-pub use flight::{FlightCommand, FlightMode, FlightOutcome, FlightResult, FlightState};
+pub use flight::{FlightCommand, FlightMode, FlightOutcome, FlightResult, FlightState, Home};
 pub use frame::{Body, Deframer, Encoder, Frame, RxStats};
 pub use marv_dialect::marv as dialect;
 pub use services::{Ctx, Service, default_services};
